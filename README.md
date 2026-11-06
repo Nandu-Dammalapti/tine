@@ -6,7 +6,9 @@ Read [AGENTS.md](AGENTS.md) for the project context, Gacrux routing design, cons
 
 ## Current state
 
-This repository contains development prerequisites and an environment smoke check. The proxy, router, calibration pipeline, storage, and dashboard have not been implemented. Setup does not download models or datasets, train models, call provider APIs, or start services. No API keys, GPU, Docker daemon, or database is required.
+`tine/` holds the Gacrux router v1 evaluation path on CPU: loaders, per-model success predictors, a τ certified on held-out data, baselines and cost-quality charts. `colab/` holds the GPU work (prompt embeddings, open-model answer generation). The proxy, logger, shadow mode, storage and dashboard are not built yet. See [NEXT_STEPS.md](NEXT_STEPS.md) for status and what to do next.
+
+So far the pipeline has run on invented data only. Setup does not download models or datasets, call provider APIs, or start services.
 
 ## Setup
 
@@ -18,6 +20,7 @@ From the repository root:
 bash scripts/setup.sh
 source .tine-dev/venv/bin/activate
 bash scripts/check.sh
+python -m tine demo
 ```
 
 The setup script installs the exact versions in `requirements-dev.lock`, including NumPy, pandas, SciPy, scikit-learn, Matplotlib, FastAPI, Uvicorn, HTTPX, pytest, and Ruff. It can be rerun without changing the lockfile. `requirements-dev.in` records the direct tool choices. Keep lock updates deliberate and rerun the checks after changing dependencies.
@@ -39,9 +42,7 @@ Each cloud task is isolated. Use its existing checkout; create a worktree only w
 
 ## What the check proves
 
-The check processes 50 synthetic CSV rows, checks numeric cost totals and pairwise distances, computes a binomial confidence bound, renders a PNG with a headless plotting backend, and exercises in-memory FastAPI/HTTPX request handling. It also checks dependency compatibility and tool startup.
-
-The generated chart is at `$TINE_DEV_DIR/synthetic-cost-smoke.png` (default `.tine-dev/synthetic-cost-smoke.png`). These checks verify the installed tools. They are not Tine application tests, routing benchmarks, or evidence of a quality guarantee. There is no application test suite yet.
+`scripts/check.sh` checks dependency compatibility, lints, runs the environment smoke check, and runs the test suite in `tests/` (schema, loaders, routing rule, τ certification including a simulation of its failure rate, baselines, and an end-to-end run on synthetic data). Passing tests show the code does what it says on invented data; they are not benchmark results.
 
 ## Scope of the next work
 

@@ -14,6 +14,7 @@ if [[ ! -x "$tine_python" ]]; then
 fi
 UV_CACHE_DIR="$TINE_DEV_DIR/uv-cache" uv pip check --python "$tine_python"
 "$TINE_DEV_DIR/venv/bin/ruff" check --isolated --no-cache "$repo_root/scripts/smoke.py"
+"$TINE_DEV_DIR/venv/bin/ruff" check --no-cache "$repo_root/tine" "$repo_root/tests"
 "$tine_python" -u "$repo_root/scripts/smoke.py"
-"$tine_python" -m pytest --version
-"$tine_python" -m uvicorn --version
+cd "$repo_root"
+"$tine_python" -m pytest -q -p no:cacheprovider

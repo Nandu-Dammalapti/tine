@@ -4,7 +4,7 @@ Read this file before writing code. It records the project direction supplied by
 
 ## Current scope
 
-This repository starts with lightweight development prerequisites and environment smoke checks. The current request excludes model downloads, model training, inference servers, bulk dataset downloads, and paid API calls. Do not expand setup into product implementation without a task requesting it.
+This repository holds development prerequisites, the Gacrux v1 evaluation path on CPU (`tine/`, tests in `tests/`), and Colab notebooks for GPU work (`colab/`). NEXT_STEPS.md records status and the next tasks. CPU training of small routers (kNN, logistic regression, boosted trees) on local data is in scope. Model downloads, GPU jobs, inference servers, bulk dataset downloads, and paid API calls still need a task requesting them. Do not expand into the proxy or other product pieces without a task requesting it.
 
 Use the existing checkout. Cloud tasks are already isolated; do not create a Git worktree unless the user explicitly requests one. Inspect existing files and preserve user changes before modifying them. Never commit virtual environments, caches, credentials, customer prompts, model weights, or generated benchmark outputs.
 
