@@ -1,0 +1,26 @@
+# Local environments and caches
+.tine-dev/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+node_modules/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Downloaded data, models, and generated reports
+/artifacts/
+/downloads/
+/models/
+/data/raw/
+/data/processed/
+*.egg-info/
+build/
+dist/
+.DS_Store

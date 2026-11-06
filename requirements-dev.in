@@ -1,0 +1,11 @@
+# Development prerequisites only; no model runtimes or model downloads.
+fastapi
+uvicorn
+httpx
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+pytest==8.4.2
+ruff==0.14.3
