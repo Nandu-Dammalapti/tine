@@ -28,6 +28,17 @@ def main(argv=None):
         importer.add_argument(f"--{option}")
     importer.add_argument("--score-threshold", type=float)
     importer.add_argument("--run-selection", choices=("error", "latest"), default="error")
+    coding = commands.add_parser("import-coding-tasks", help="Prepare original coding prompts and checks")
+    coding.add_argument("--dataset", required=True, choices=("humaneval", "mbpp"))
+    coding.add_argument("--input", type=Path, required=True)
+    coding.add_argument("--output", type=Path, required=True)
+    coding.add_argument("--tenant", default="benchmark")
+    preflight = commands.add_parser("preflight", help="Check outcome coverage and calibration sample sizes")
+    preflight.add_argument("--input", type=Path, required=True)
+    preflight.add_argument("--frontier", required=True)
+    preflight.add_argument("--epsilon", type=float, default=0.02)
+    preflight.add_argument("--delta", type=float, default=0.05)
+    preflight.add_argument("--seed", type=int, default=42)
     inspect = commands.add_parser("inspect", help="Validate canonical outcomes and show models/coverage")
     inspect.add_argument("--input", type=Path, required=True)
     server = commands.add_parser("serve", help="Start the authenticated development proxy")
@@ -59,6 +70,21 @@ def main(argv=None):
                                      score_threshold=args.score_threshold, run_selection=args.run_selection)
         print(json.dumps({"rows": len(frame), "tasks": len(frame[["tenant", "task_id"]].drop_duplicates()),
                           "models": sorted(frame.model.unique()), "output": str(args.output)}, indent=2))
+    elif args.command == "import-coding-tasks":
+        from tine.coding_tasks import load_coding_tasks, write_coding_tasks
+
+        if args.input.resolve() == args.output.resolve():
+            parser.error("Coding task input and output must be different files")
+        tasks = load_coding_tasks(args.input, dataset=args.dataset, tenant=args.tenant)
+        write_coding_tasks(tasks, args.output)
+        print(json.dumps({"dataset": args.dataset, "tasks": len(tasks), "output": str(args.output)}, indent=2))
+    elif args.command == "preflight":
+        from tine.data import read_outcomes
+        from tine.pipeline import preflight as outcome_preflight
+
+        report = outcome_preflight(read_outcomes(args.input), args.frontier,
+                                   epsilon=args.epsilon, delta=args.delta, seed=args.seed)
+        print(json.dumps(report, indent=2, allow_nan=False))
     elif args.command == "inspect":
         from tine.data import read_outcomes
 

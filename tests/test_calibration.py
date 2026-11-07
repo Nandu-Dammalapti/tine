@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from tine.calibration import calibrate, clopper_pearson_upper, evaluate
+from tine.calibration import calibrate, clopper_pearson_upper, evaluate, minimum_risk_tasks
 
 
 def example(n=1000):
@@ -51,6 +51,9 @@ def test_no_cheap_routes_on_calibration_still_needs_binomial_bound():
 def test_minimum_sample_for_zero_events():
     epsilon, delta, hypotheses = 0.01, 0.05, 5
     needed = math.ceil(math.log(delta / hypotheses) / math.log(1 - epsilon))
+    assert minimum_risk_tasks(epsilon, delta, hypotheses) == needed
+    assert minimum_risk_tasks(0, delta, hypotheses) is None
+    assert minimum_risk_tasks(1, delta, hypotheses) == 1
     for n, expected_fallback in [(needed - 1, True), (needed, False)]:
         scores, costs, outcomes = example(n)
         result = calibrate(scores, costs, outcomes, 1, [0.5], epsilon, delta, hypotheses)

@@ -75,10 +75,13 @@ def test_selects_only_unique_listed_official_filename():
         fetch.select_archive(["different.tar.gz"])
 
 
-def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_path, monkeypatch):
+@pytest.mark.parametrize("has_lfs_digest", [True, False])
+def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_path, monkeypatch, has_lfs_digest):
     archive = _archive(tmp_path / "official.tar.gz", [
         ("results/bench/livecodebench/test/model/run.json", tarfile.REGTYPE, b"{}"),
     ])
+    digest = fetch.sha256_file(archive)
+    lfs = SimpleNamespace(sha256=digest) if has_lfs_digest else None
     calls = []
 
     class FakeApi:
@@ -90,6 +93,10 @@ def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_pat
             calls.append(("list", kwargs))
             return ["bench-release.tar.gz"]
 
+        def get_paths_info(self, **kwargs):
+            calls.append(("file", kwargs))
+            return [SimpleNamespace(lfs=lfs)]
+
     def download(**kwargs):
         calls.append(("download", kwargs))
         return str(archive)
@@ -99,13 +106,31 @@ def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_pat
     ))
     output = tmp_path / "output"
     first = fetch.fetch_benchmark(output, revision="release")
+    manifest_path = output / "manifest.json"
+    assert json.loads(manifest_path.read_text()) == first
+    older_manifest = {key: value for key, value in first.items() if key != "expected_archive_sha256"}
+    manifest_path.write_text(json.dumps(older_manifest))
     second = fetch.fetch_benchmark(output, revision="release")
     assert first == second
-    assert json.loads((output / "manifest.json").read_text()) == first
     assert first["source_revision"] == "a" * 40
-    assert first["archive_sha256"] == fetch.sha256_file(archive)
+    assert first["archive_sha256"] == digest
+    assert first["expected_archive_sha256"] == (digest if has_lfs_digest else None)
+    assert json.loads(manifest_path.read_text()) == first
     assert Path(first["bench_dir"]).is_dir()
-    assert all(kwargs["revision"] == "a" * 40 for kind, kwargs in calls if kind in {"list", "download"})
-    (output / "manifest.json").write_text(json.dumps({"archive_sha256": "wrong"}))
+    assert all(kwargs["revision"] == "a" * 40 for kind, kwargs in calls if kind in {"list", "file", "download"})
+    assert [kwargs["paths"] for kind, kwargs in calls if kind == "file"] == ["bench-release.tar.gz"] * 2
+
+    manifest_path.write_text(json.dumps({"archive_sha256": "wrong"}))
     with pytest.raises(FileExistsError, match="different archive"):
         fetch.fetch_benchmark(output)
+
+    lfs = SimpleNamespace(sha256="0" * 64)
+    with pytest.raises(ValueError, match="Archive SHA-256 mismatch"):
+        fetch.fetch_benchmark(output)
+    assert json.loads(manifest_path.read_text()) == {"archive_sha256": "wrong"}
+
+    new_output = tmp_path / "bad-download"
+    with pytest.raises(ValueError, match="Archive SHA-256 mismatch"):
+        fetch.fetch_benchmark(new_output)
+    assert not (new_output / "extracted").exists()
+    assert not (new_output / "manifest.json").exists()

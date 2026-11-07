@@ -4,7 +4,7 @@ Open [`notebooks/tine_colab.ipynb`](../notebooks/tine_colab.ipynb) in Google Col
 
 <https://colab.research.google.com/github/Nandu-Dammalapti/tine/blob/main/notebooks/tine_colab.ipynb>
 
-The notebook contains the exact Python cells. Run them from top to bottom. Start with a **CPU runtime**, not a GPU. It first downloads existing graded benchmark results, imports LiveCodeBench outcomes, and runs the model-free CPU baseline. It then offers a small fixed sentence encoder, with a 50-prompt CPU check before full embedding. T4 acceleration is optional; the small encoder can run on CPU too.
+Use a **CPU runtime**. Run the two setup code cells, Section 1 to fetch and import the graded LiveCodeBench outcomes, and Section 2 to inspect coverage. **Stop after Section 2 for Step 1.** It saves `outcomes.jsonl`, `step1-preflight.json`, and the archive manifest to Drive. Sections 3–5 are for later CPU evaluation and optional embeddings.
 
 ## What you need to change
 
@@ -12,16 +12,16 @@ Only one value is required: set `FRONTIER` to the exact name of your intended de
 
 The standard output location is `/content/drive/MyDrive/tine`. If you already have canonical Tine outcomes, skip the archive download/import cells and set `DATASET` to that JSONL or CSV file instead.
 
-The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. Do not loosen the quality requirement to manufacture savings. A frontier-only routing result can be the correct answer when calibration data or predictive quality is insufficient.
+The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. With one tenant and task type, the default 21 thresholds and three routing methods need at least 354 risk-calibration tasks even with zero observed degradations. The [publisher lists 1,055 LiveCodeBench tasks](https://github.com/ynulihao/LLMRouterBench#datasets), which yields at most 211 with the current 20% risk split. The preflight reports the actual usable counts after exclusions. Expect frontier fallback at the default settings for this cohort.
 
 ## Cells and outputs
 
 | Stage | What to run | What it saves |
 | --- | --- | --- |
 | Mount and install | First two code cells | Current repository revision is displayed |
-| Fetch existing data | `scripts/fetch_benchmark.py` cell | Archive, safe extraction, source revision and SHA-256 manifest in `tine/benchmark/` |
+| Fetch existing data | `scripts/fetch_benchmark.py` cell | Pinned archive, safe extraction, and SHA-256 manifest in `tine/benchmark/` |
 | Import | `import-llmrouterbench` cell | `tine/outcomes.jsonl` using existing binary labels and recorded costs |
-| Inspect and choose baseline | Data summary, then `FRONTIER` cell | `tine/run-config.json` |
+| Inspect and choose baseline | Data summary, then `FRONTIER` and preflight cell | `tine/run-config.json`, `tine/step1-preflight.json` |
 | CPU evaluation | `python -m tine run` without embeddings | `tine/cpu-lexical/` report artifacts |
 | Pin encoder | Optional dependency/model metadata cell | `tine/encoder-config.json`, `tine/colab-packages.txt` |
 | Debug encoder | `scripts/embed.py --limit 50 --device cpu` cell | `tine/embeddings-smoke.npz` and batch checkpoints |
@@ -39,7 +39,7 @@ The default encoder is `sentence-transformers/all-MiniLM-L6-v2`. Its full commit
 ## Boundaries and troubleshooting
 
 - No LLM answer generation or paid provider APIs are used. The optional encoder stage downloads model weights only when you run it in Colab.
-- The benchmark archive can be large. The fetch cell reports metadata and limits extraction to 20 GB; ensure sufficient runtime and Drive storage. Do not increase the limit without reviewing the archive size.
+- The pinned [benchmark archive](https://huggingface.co/datasets/NPULH/LLMRouterBench/blob/b95870f9e60c589e82f7972c91ffa8de9ca89f85/bench-release.tar.gz) is about 1.28 GB compressed. Drive holds the archive and extracted results. The helper limits extraction to 20 GB and verifies the published LFS checksum when available.
 - Missing costs, fractional/ambiguous grades, incompatible schemas, and conflicting runs produce errors. Do not turn missing values into zero or choose an arbitrary success threshold to force an import.
 - If Git clone cannot read a private repository, upload and extract your authorized repository ZIP so `/content/tine/pyproject.toml` exists, then rerun setup. ZIP sources are recorded without a Git revision; never paste tokens into saved cells.
 - CPU modules and local helper behavior are tested in the development environment. The real Hugging Face download and Colab encoder path still need validation when this notebook is run; they are not described as already executed.

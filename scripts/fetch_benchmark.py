@@ -3,8 +3,8 @@
 
 No data is downloaded merely by importing this module. Hugging Face helpers are
 optional dependencies, loaded only for a network fetch. Downloads use the SDK's
-normal transport, authentication, and TLS verification. A computed SHA256 is
-provenance, not an independent publisher signature.
+normal transport, authentication, and TLS verification. The archive is checked
+against the Hub's LFS digest when available.
 """
 
 from __future__ import annotations
@@ -131,11 +131,18 @@ def fetch_benchmark(
         raise ValueError("Official dataset revision could not be resolved")
     filenames = api.list_repo_files(repo_id=REPO_ID, repo_type="dataset", revision=resolved_revision)
     filename = select_archive(filenames)
+    file_info = api.get_paths_info(
+        repo_id=REPO_ID, repo_type="dataset", paths=filename, revision=resolved_revision,
+    )
+    lfs = getattr(file_info[0], "lfs", None) if file_info else None
+    expected_checksum = lfs.sha256 if lfs is not None else None
     archive = Path(hf_hub_download(
         repo_id=REPO_ID, repo_type="dataset", filename=filename,
         revision=resolved_revision, local_dir=output_dir / "archive",
     ))
     checksum = sha256_file(archive)
+    if expected_checksum is not None and checksum != expected_checksum:
+        raise ValueError(f"Archive SHA-256 mismatch for {filename} at {resolved_revision}")
     extracted = output_dir / "extracted"
     manifest_path = output_dir / "manifest.json"
     if extracted.exists():
@@ -157,10 +164,15 @@ def fetch_benchmark(
     manifest = {
         "source_repo": REPO_ID, "source_revision": resolved_revision,
         "archive_filename": filename, "archive_path": str(archive),
-        "archive_sha256": checksum, "archive_size_bytes": archive.stat().st_size,
+        "archive_sha256": checksum, "expected_archive_sha256": expected_checksum,
+        "archive_size_bytes": archive.stat().st_size,
         "extracted_dir": str(extracted), "bench_dir": str(bench),
         "max_extracted_gb": max_extracted_gb,
-        "checksum_note": "Computed local provenance digest; not an independent publisher signature",
+        "checksum_note": (
+            "Verified against the Hugging Face LFS SHA-256 for the pinned revision"
+            if expected_checksum is not None
+            else "Computed local SHA-256 for provenance because LFS metadata has no digest"
+        ),
     }
     temporary = manifest_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(manifest, indent=2) + "\n")

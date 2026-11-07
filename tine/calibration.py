@@ -10,6 +10,8 @@ it is not a guarantee under distribution shift or dependent/reused tasks.
 
 from __future__ import annotations
 
+from fractions import Fraction
+from math import ceil, log, log1p
 from numbers import Integral, Real
 
 import numpy as np
@@ -51,6 +53,22 @@ def clopper_pearson_upper(k: int, n: int, alpha: float) -> float:
         return 1.0
     # isf avoids cancellation in 1-alpha for very small corrected alpha.
     return float(beta.isf(alpha, k + 1, n - k))
+
+
+def minimum_risk_tasks(epsilon: float, delta: float, comparisons: int) -> int | None:
+    """Smallest nonempty calibration set that can pass with zero degradations."""
+    epsilon = _probability(epsilon, "epsilon")
+    delta = _probability(delta, "delta", open_interval=True)
+    comparisons = _integer(comparisons, "comparisons", minimum=1)
+    alpha = delta / comparisons
+    if alpha == 0:
+        raise ValueError("corrected alpha underflows; reduce the hypothesis family")
+    if epsilon == 0:
+        return None
+    if epsilon == 1:
+        return 1
+    # For zero degradations the bound is 1 - (delta / comparisons)**(1/n).
+    return ceil(Fraction(log(alpha)) / Fraction(log1p(-epsilon)))
 
 
 def _matrices(outcomes, costs, frontier_index):

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from tine.data import synthetic_fixture
-from tine.pipeline import complete_tasks, load_embeddings, prompt_hash, run_experiment, split_tasks
+from tine.pipeline import complete_tasks, load_embeddings, preflight, prompt_hash, run_experiment, split_tasks
 
 
 def test_duplicate_prompts_stay_in_same_partition():
@@ -56,6 +56,11 @@ def test_full_experiment_reports_fallback_and_no_split_leakage(tmp_path):
     assert {item["method"] for item in result["metrics"]} == {"frontier", "random", "oracle", "logistic", "knn", "cluster"}
     calibration = json.loads((tmp_path / "calibration.json").read_text())
     assert all(item["force_frontier"] for item in calibration)
+    readiness = preflight(frame, "frontier")
+    assert readiness["minimum_risk_tasks_at_zero_degradations"] == 354
+    assert readiness["comparisons"] == len(calibration) * calibration[0]["thresholds_tested"]
+    assert readiness["groups"][0]["risk_calibration"] == calibration[0]["n"]
+    assert readiness["groups"][0]["enough_risk_tasks_at_zero_degradations"] is False
     choices = pd.read_csv(tmp_path / "decisions.csv")
     assert choices.loc[choices.method.isin(["logistic", "knn", "cluster"]), "model"].eq("frontier").all()
     splits = pd.read_csv(tmp_path / "splits.csv")

@@ -22,12 +22,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from tine.calibration import calibrate, evaluate
+from tine.calibration import calibrate, evaluate, minimum_risk_tasks
 from tine.data import outcome_json_lines, validate_outcomes
-from tine.routing import Router, route_indices
+from tine.routing import METHODS, Router, route_indices
 
-METHODS = ("logistic", "knn", "cluster")
 SPLITS = ("train", "score_calibration", "risk_calibration", "test")
+DEFAULT_THRESHOLDS = tuple(np.linspace(0, 1, 21))
 
 
 def prompt_hash(prompt: str) -> str:
@@ -94,6 +94,29 @@ def complete_tasks(frame: pd.DataFrame, frontier: str):
     return frame, tasks, excluded
 
 
+def preflight(frame, frontier, *, epsilon=0.02, delta=0.05, seed=42):
+    """Check overlap and calibration sample sizes before fitting any router."""
+    _, tasks, excluded = complete_tasks(frame, frontier)
+    tasks = split_tasks(tasks, seed)
+    groups = (
+        tasks.groupby(["tenant", "task_type", "split"]).size()
+        .unstack(fill_value=0).reindex(columns=list(SPLITS), fill_value=0)
+        .reset_index().to_dict(orient="records")
+    )
+    comparisons = len(groups) * len(METHODS) * len(DEFAULT_THRESHOLDS)
+    minimum = minimum_risk_tasks(epsilon, delta, comparisons)
+    for group in groups:
+        group["enough_risk_tasks_at_zero_degradations"] = (
+            minimum is not None and group["risk_calibration"] >= minimum
+        )
+    return {
+        "frontier": frontier, "epsilon": epsilon, "delta": delta, "seed": seed,
+        "thresholds_tested": len(DEFAULT_THRESHOLDS), "comparisons": comparisons,
+        "minimum_risk_tasks_at_zero_degradations": minimum,
+        "complete_tasks": len(tasks), "groups": groups, "excluded": excluded,
+    }
+
+
 def load_embeddings(path: str | Path, tasks: pd.DataFrame) -> dict:
     """Load data-only NPZ; bind every vector to tenant/task and prompt digest."""
     with np.load(path, allow_pickle=False) as blob:
@@ -141,7 +164,7 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
                    embeddings=None, thresholds=None, synthetic=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    thresholds = list(np.linspace(0, 1, 21)) if thresholds is None else list(thresholds)
+    thresholds = DEFAULT_THRESHOLDS if thresholds is None else list(thresholds)
     frame, tasks, excluded = complete_tasks(frame, frontier)
     tasks = split_tasks(tasks, seed)
     lookup = load_embeddings(embeddings, tasks) if embeddings else None

@@ -59,6 +59,7 @@ For real data, import existing graded outcomes rather than regenerating answers:
 python -m tine import-llmrouterbench --input /path/to/bench \
   --dataset livecodebench --run-selection latest --output artifacts/outcomes.jsonl
 python -m tine inspect --input artifacts/outcomes.jsonl
+python -m tine preflight --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME
 python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME \
   --epsilon 0.02 --delta 0.05 --output artifacts/real-evaluation
 ```
@@ -67,11 +68,24 @@ python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME 
 
 The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
 
+## Prepare original coding tasks
+
+Use the task-only loader when preparing inputs for later model generation and grading. It preserves original splits and check code as text and omits reference solutions. Keep its output separate from graded model outcomes. MBPP here refers to the sanitized subset.
+
+```bash
+python -m tine import-coding-tasks --dataset humaneval --input HumanEval.jsonl.gz \
+  --output artifacts/humaneval-tasks.jsonl
+python -m tine import-coding-tasks --dataset mbpp --input sanitized-mbpp.json \
+  --output artifacts/mbpp-tasks.jsonl
+```
+
+Pinned source files used to verify the loaders are [OpenAI's HumanEval](https://github.com/openai/human-eval/blob/463c980b59e818ace59f6f9803cd92c749ceae61/data/HumanEval.jsonl.gz) and [Google Research's sanitized MBPP](https://github.com/google-research/google-research/blob/f82046ba5aabbbb427dbfd38a254d26bff08b533/mbpp/sanitized-mbpp.json).
+
 ## Exact Colab handoff
 
-Open [the ready-to-run Colab notebook](https://colab.research.google.com/github/Nandu-Dammalapti/tine/blob/main/notebooks/tine_colab.ipynb) and follow [the Colab instructions](docs/COLAB.md). Begin with a CPU runtime. The notebook downloads the official graded benchmark, imports it, prints model choices, and runs the CPU workflow. Set `FRONTIER` to your intended baseline when prompted.
+Open [the Colab notebook](https://colab.research.google.com/github/Nandu-Dammalapti/tine/blob/main/notebooks/tine_colab.ipynb) and follow [the Colab instructions](docs/COLAB.md). Use CPU and run setup through Section 2 to finish Step 1. Set `FRONTIER` to your intended baseline when prompted. The preflight reports overlapping graded outcomes, split counts, and whether the risk sample could support the default quality bound.
 
-Only the optional fixed-embedding stage downloads a small sentence encoder. It pins its official revision, checks 50 prompts on CPU first, supports GPU batches, and saves resumable checkpoints on Drive. Its NPZ output plugs directly into `tine run --embeddings`. This environment could inspect the upstream source format, but its network policy blocks Hugging Face/Drive; the real archive and GPU path remain unexecuted here.
+The optional fixed-embedding stage pins a small sentence encoder, checks 50 prompts on CPU first, supports GPU batches, and saves resumable checkpoints on Drive. Its NPZ output plugs directly into `tine run --embeddings`. The archive metadata and the original HumanEval and sanitized MBPP inputs were checked locally. The full graded archive and Colab paths still need a run.
 
 ## Development proxy
 
