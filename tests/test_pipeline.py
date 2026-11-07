@@ -1,0 +1,70 @@
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from tine.data import synthetic_fixture
+from tine.pipeline import complete_tasks, load_embeddings, prompt_hash, run_experiment, split_tasks
+
+
+def test_duplicate_prompts_stay_in_same_partition():
+    tasks = pd.DataFrame({"tenant": ["a"] * 20, "task_id": [str(i) for i in range(20)],
+                          "prompt": [f"question {i % 10}" for i in range(20)], "task_type": "coding"})
+    split = split_tasks(tasks)
+    assert set(split.split) == {"train", "score_calibration", "risk_calibration", "test"}
+    assert split.groupby("prompt").split.nunique().eq(1).all()
+    pd.testing.assert_frame_equal(split, split_tasks(tasks))
+
+
+def test_incomplete_outcome_is_excluded_not_filled():
+    frame = synthetic_fixture(n_tasks=30)
+    missing_id = frame.iloc[0].task_id
+    frame = frame.drop(frame.index[0])
+    result, tasks, excluded = complete_tasks(frame, "frontier")
+    assert missing_id not in tasks.task_id.to_list()
+    assert missing_id not in result.task_id.to_list()
+    assert len(excluded) == 1
+
+
+def test_duplicate_tasks_cannot_inflate_calibration_sample_size():
+    frame = synthetic_fixture(n_tasks=30)
+    copy = frame.loc[frame.task_id == "synthetic-0"].copy()
+    copy["task_id"] = "copy-0"
+    _, tasks, excluded = complete_tasks(pd.concat([frame, copy], ignore_index=True), "frontier")
+    assert len(tasks) == 30
+    assert len(excluded) == 1
+    assert excluded[0]["reason"] == "duplicate_prompt"
+
+
+def test_embeddings_are_bound_to_prompts_and_no_pickle(tmp_path):
+    tasks = pd.DataFrame([{"tenant": "a", "task_id": "x", "prompt": "hello"}])
+    path = tmp_path / "features.npz"
+    np.savez(path, tenants=["a"], task_ids=["x"], prompt_hashes=[prompt_hash("hello")], embeddings=[[1.0, 2.0]])
+    lookup = load_embeddings(path, tasks)
+    assert np.allclose(lookup[("a", "x")], [1, 2])
+    tasks.loc[0, "prompt"] = "changed"
+    with pytest.raises(ValueError, match="stale"):
+        load_embeddings(path, tasks)
+
+
+def test_full_experiment_reports_fallback_and_no_split_leakage(tmp_path):
+    frame = synthetic_fixture(n_tasks=60, seed=12)
+    result = run_experiment(frame, "frontier", tmp_path, synthetic=True)
+    assert result["synthetic"] is True
+    assert result["complete_tasks"] == 60
+    assert {item["method"] for item in result["metrics"]} == {"frontier", "random", "oracle", "logistic", "knn", "cluster"}
+    calibration = json.loads((tmp_path / "calibration.json").read_text())
+    assert all(item["force_frontier"] for item in calibration)
+    choices = pd.read_csv(tmp_path / "decisions.csv")
+    assert choices.loc[choices.method.isin(["logistic", "knn", "cluster"]), "model"].eq("frontier").all()
+    splits = pd.read_csv(tmp_path / "splits.csv")
+    assert splits.groupby("prompt_hash").split.nunique().eq(1).all()
+    assert (tmp_path / "cost-quality.png").read_bytes().startswith(b"\x89PNG")
+    assert "SYNTHETIC" in (tmp_path / "report.md").read_text()
+
+
+def test_insufficient_unique_prompts_refused():
+    tasks = pd.DataFrame({"tenant": "x", "task_id": [str(i) for i in range(7)], "prompt": [str(i) for i in range(7)]})
+    with pytest.raises(ValueError, match="at least 8"):
+        split_tasks(tasks)

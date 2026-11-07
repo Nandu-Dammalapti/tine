@@ -6,7 +6,9 @@ Read [AGENTS.md](AGENTS.md) for the project context, Gacrux routing design, cons
 
 ## Current state
 
-This repository contains development prerequisites and an environment smoke check. The proxy, router, calibration pipeline, storage, and dashboard have not been implemented. Setup does not download models or datasets, train models, call provider APIs, or start services. No API keys, GPU, Docker daemon, or database is required.
+The CPU workflow is implemented: validated outcome import, logistic/kNN/cluster baselines, held-out probability and risk calibration, independent test evaluation, and cost-quality reports. There is also an authenticated development proxy with a SQLite ledger, late outcome updates, and a verified exact-answer cache. The proxy defaults to the frontier; it does not automatically deploy an offline routing policy.
+
+The initial setup-only scope in AGENTS.md is superseded by the user's request for this CPU implementation. No LLM weights, benchmark archive, paid API calls, or Colab GPU jobs have been run here. Synthetic fixtures are integration checks, not measured benchmark or customer savings.
 
 ## Setup
 
@@ -20,7 +22,7 @@ source .tine-dev/venv/bin/activate
 bash scripts/check.sh
 ```
 
-The setup script installs the exact versions in `requirements-dev.lock`, including NumPy, pandas, SciPy, scikit-learn, Matplotlib, FastAPI, Uvicorn, HTTPX, pytest, and Ruff. It can be rerun without changing the lockfile. `requirements-dev.in` records the direct tool choices. Keep lock updates deliberate and rerun the checks after changing dependencies.
+The setup script installs the exact versions in `requirements-dev.lock`, including NumPy, pandas, SciPy, scikit-learn, Matplotlib, FastAPI, Uvicorn, HTTPX, pytest, and Ruff. It can be rerun without changing the lockfile. Run commands from the repository root. For an installed CLI, optionally use `uv pip install --python .tine-dev/venv/bin/python --no-deps -e .` and run `tine --help`. `requirements-dev.in` records the direct tool choices. Keep lock updates deliberate and rerun the checks after changing dependencies.
 
 Local environments, caches, credentials, raw data, models, and generated reports are excluded from Git.
 
@@ -39,10 +41,38 @@ Each cloud task is isolated. Use its existing checkout; create a worktree only w
 
 ## What the check proves
 
-The check processes 50 synthetic CSV rows, checks numeric cost totals and pairwise distances, computes a binomial confidence bound, renders a PNG with a headless plotting backend, and exercises in-memory FastAPI/HTTPX request handling. It also checks dependency compatibility and tool startup.
+The check runs the application test suite, lint, dependency compatibility, and the original 50-row environment smoke check. Tests cover data validation, source import, safe archive extraction, tenant isolation, routing, calibration, train/test separation, interrupted embedding resume, and the development proxy/ledger with mocked providers.
 
-The generated chart is at `$TINE_DEV_DIR/synthetic-cost-smoke.png` (default `.tine-dev/synthetic-cost-smoke.png`). These checks verify the installed tools. They are not Tine application tests, routing benchmarks, or evidence of a quality guarantee. There is no application test suite yet.
+The environment-check chart is at `$TINE_DEV_DIR/synthetic-cost-smoke.png` (default `.tine-dev/synthetic-cost-smoke.png`). Passing tests do not establish real routing savings or a production quality guarantee.
 
-## Scope of the next work
+## Run the complete CPU experiment
 
-Start with small CPU fixtures and existing graded outcomes. Add dataset loaders and schemas, baselines, held-out calibration, and cost-quality evaluation before model generation or infrastructure expansion. Follow the detailed build order and constraints in AGENTS.md. Keep prompts and outcomes isolated by tenant, and measure cost per completed task.
+```bash
+python -m tine demo --output artifacts/demo --tasks 2000
+```
+
+This trains the CPU baselines on explicitly synthetic data, selects thresholds on held-out calibration rows, evaluates a separate test set, and writes `report.md`, `metrics.csv`, `calibration.json`, `splits.csv`, `decisions.csv`, `curves.csv`, and `cost-quality.png`. Costs used for routing are estimated from training rows; observed test costs are used only to evaluate decisions.
+
+For real data, import existing graded outcomes rather than regenerating answers:
+
+```bash
+python -m tine import-llmrouterbench --input /path/to/bench \
+  --dataset livecodebench --run-selection latest --output artifacts/outcomes.jsonl
+python -m tine inspect --input artifacts/outcomes.jsonl
+python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME \
+  --epsilon 0.02 --delta 0.05 --output artifacts/real-evaluation
+```
+
+`EXACT_MODEL_NAME` is your predeclared baseline from the printed model names. Canonical CSV/JSONL rows contain tenant, task ID, prompt, task type, model, a known/pending success label, and recorded per-task cost. Optional token counts, latency, and timestamps remain unknown when absent. Missing outcomes are never silently treated as failures; incomplete tasks and duplicate prompts are excluded and recorded. Import does not execute model-generated code.
+
+The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
+
+## Exact Colab handoff
+
+Open [the ready-to-run Colab notebook](https://colab.research.google.com/github/Nandu-Dammalapti/tine/blob/main/notebooks/tine_colab.ipynb) and follow [the Colab instructions](docs/COLAB.md). Begin with a CPU runtime. The notebook downloads the official graded benchmark, imports it, prints model choices, and runs the CPU workflow. Set `FRONTIER` to your intended baseline when prompted.
+
+Only the optional fixed-embedding stage downloads a small sentence encoder. It pins its official revision, checks 50 prompts on CPU first, supports GPU batches, and saves resumable checkpoints on Drive. Its NPZ output plugs directly into `tine run --embeddings`. This environment could inspect the upstream source format, but its network policy blocks Hugging Face/Drive; the real archive and GPU path remain unexecuted here.
+
+## Development proxy
+
+See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, and cache isolation are tested with mocked providers. SQLite is a local development backend. Learned live routing, production Postgres, real provider validation, shadow jobs, nightly retraining, a calibrated deployment process, and model generation/distillation remain future work; none is claimed by the offline report.
