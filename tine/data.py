@@ -19,6 +19,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import date, datetime
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +33,7 @@ CANONICAL_COLUMNS = [
 ]
 _REQUIRED = CANONICAL_COLUMNS[:7]
 _NUMERIC_OPTIONAL = ["input_tokens", "output_tokens", "cached_tokens", "latency_ms"]
+_TEXT_COLUMNS = ["tenant", "task_id", "prompt", "task_type", "model"]
 
 
 def _success(value):
@@ -109,7 +112,14 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
     """Read a canonical CSV, JSONL, or JSON array, then validate it."""
     path = Path(path)
     if path.suffix.lower() == ".csv":
-        frame = pd.read_csv(path, dtype={"tenant": str, "task_id": str, "model": str})
+        source = StringIO(path.read_text(encoding="utf-8"))
+        frame = pd.read_csv(source, dtype=dict.fromkeys(_TEXT_COLUMNS, str))
+        # Preserve literal text while retaining the usual missing-value and
+        # numeric parsing for measurements and existing provenance columns.
+        source.seek(0)
+        text = pd.read_csv(source, dtype=str, keep_default_na=False,
+                           usecols=lambda column: column in _TEXT_COLUMNS)
+        frame[text.columns] = text
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
         records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         frame = pd.DataFrame(records)
@@ -123,6 +133,23 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
     return validate_outcomes(frame, require_known=require_known)
 
 
+def _json_value(value):
+    """Normalize nullable table values without rounding finite measurements."""
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [_json_value(item) for item in value]
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, np.generic):
+        return _json_value(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
 def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     """Write validated canonical CSV or JSONL without changing unknown labels."""
     frame = validate_outcomes(frame)
@@ -131,7 +158,11 @@ def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     if path.suffix.lower() == ".csv":
         frame.to_csv(path, index=False)
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
-        frame.to_json(path, orient="records", lines=True, force_ascii=False)
+        contents = "\n".join(
+            json.dumps(_json_value(row), ensure_ascii=False, allow_nan=False)
+            for row in frame.to_dict(orient="records")
+        )
+        path.write_text(contents + "\n", encoding="utf-8")
     else:
         raise ValueError("Output must be .csv, .jsonl, or .ndjson")
 

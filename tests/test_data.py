@@ -35,6 +35,58 @@ def test_roundtrip_keeps_unknown_outcomes_and_false_labels(tmp_path, suffix):
         read_outcomes(path, require_known=True)
 
 
+@pytest.mark.parametrize("suffix", [".csv", ".jsonl", ".ndjson"])
+def test_roundtrip_preserves_recorded_costs_and_measurements(tmp_path, suffix):
+    frame = synthetic_fixture(2)
+    frame["cost_usd"] = [1.234567890123456e-8, 1.234567890123456e-11, 1.234567890123456e-18] * 2
+    frame["latency_ms"] = [0.1234567890123456, np.nan, 12345.67890123456] * 2
+    frame["input_tokens"] = [123456789012345, 456, 789] * 2
+    path = tmp_path / ("outcomes" + suffix)
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    np.testing.assert_array_equal(loaded.cost_usd, frame.cost_usd)
+    np.testing.assert_array_equal(loaded.latency_ms, frame.latency_ms)
+    np.testing.assert_array_equal(loaded.input_tokens, frame.input_tokens)
+
+
+@pytest.mark.parametrize("text", ["NA", "N/A", "null", "NULL", "NaN", "None", "001", "123", "true", 'Explain "λ",\nthen return 1'])
+def test_csv_roundtrip_preserves_text_fields(tmp_path, text):
+    frame = synthetic_fixture(1).iloc[[0]].copy()
+    text_columns = ["tenant", "task_id", "prompt", "task_type", "model"]
+    for column in text_columns:
+        frame[column] = text
+    frame["success"] = None
+    frame["input_tokens"] = np.nan
+    frame["timestamp"] = None
+    path = tmp_path / "outcomes.csv"
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    assert loaded[text_columns].iloc[0].tolist() == [text] * len(text_columns)
+    assert loaded[["success", "input_tokens", "timestamp"]].isna().all().all()
+
+
+def test_jsonl_roundtrip_preserves_timestamps_and_nullable_provenance(tmp_path):
+    frame = synthetic_fixture(1).iloc[[0]].copy()
+    timestamp = pd.Timestamp("2026-11-07T09:00:00.123456+00:00")
+    frame["timestamp"] = timestamp
+    frame["source_metadata"] = [{
+        "score": np.float64(0.1234567890123456),
+        "attempts": np.int64(2),
+        "checks": [np.bool_(True), None, np.nan, pd.NA],
+        "measurements": np.array([0.1234567890123456, np.nan]),
+    }]
+    path = tmp_path / "outcomes.jsonl"
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    assert pd.Timestamp(loaded.loc[0, "timestamp"]) == timestamp
+    assert loaded.loc[0, "source_metadata"] == {
+        "score": 0.1234567890123456, "attempts": 2,
+        "checks": [True, None, None, None],
+        "measurements": [0.1234567890123456, None],
+    }
+    assert "NaN" not in path.read_text()
+
+
 @pytest.mark.parametrize("column,value", [
     ("cost_usd", -1), ("cost_usd", np.inf), ("cost_usd", np.nan),
     ("input_tokens", 1.5), ("cached_tokens", 10000), ("latency_ms", -1),
