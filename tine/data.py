@@ -150,6 +150,12 @@ def _json_value(value):
     return value
 
 
+def outcome_json_lines(frame: pd.DataFrame):
+    """Encode validated outcome records without rounding finite measurements."""
+    for row in frame.to_dict(orient="records"):
+        yield json.dumps(_json_value(row), ensure_ascii=False, allow_nan=False) + "\n"
+
+
 def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     """Write validated canonical CSV or JSONL without changing unknown labels."""
     frame = validate_outcomes(frame)
@@ -158,11 +164,7 @@ def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     if path.suffix.lower() == ".csv":
         frame.to_csv(path, index=False)
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
-        contents = "\n".join(
-            json.dumps(_json_value(row), ensure_ascii=False, allow_nan=False)
-            for row in frame.to_dict(orient="records")
-        )
-        path.write_text(contents + "\n", encoding="utf-8")
+        path.write_text("".join(outcome_json_lines(frame)), encoding="utf-8")
     else:
         raise ValueError("Output must be .csv, .jsonl, or .ndjson")
 

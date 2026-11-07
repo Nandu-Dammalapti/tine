@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from tine.calibration import calibrate, evaluate
-from tine.data import validate_outcomes
+from tine.data import outcome_json_lines, validate_outcomes
 from tine.routing import Router, route_indices
 
 METHODS = ("logistic", "knn", "cluster")
@@ -209,13 +209,13 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
                                   "success": bool(test_outcomes[i, policy[i]]),
                                   "cost_usd": float(observed_costs[i, policy[i]]),
                                   "frontier_success": bool(test_outcomes[i, frontier_index])})
-    provenance = hashlib.sha256(
-        frame.sort_values(["tenant", "task_id", "model"]).to_json(orient="records").encode()
-    ).hexdigest()
+    provenance = hashlib.sha256()
+    for line in outcome_json_lines(frame.sort_values(["tenant", "task_id", "model"])):
+        provenance.update(line.encode("utf-8"))
     summary = {"schema_version": 1, "synthetic": synthetic, "seed": seed,
                "frontier": frontier, "epsilon": epsilon, "delta": delta,
                "feature_source": "supplied_embeddings" if lookup else "train_only_tfidf",
-               "dataset_sha256": provenance, "complete_tasks": len(tasks),
+               "dataset_sha256": provenance.hexdigest(), "complete_tasks": len(tasks),
                "excluded_tasks": len(excluded), "family_size": family_size,
                "metrics": all_metrics, "group_metrics": group_metrics,
                "split_counts": tasks.groupby(["tenant", "split"]).size().reset_index(name="tasks").to_dict(orient="records"),

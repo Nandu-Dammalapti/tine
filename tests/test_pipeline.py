@@ -64,6 +64,16 @@ def test_full_experiment_reports_fallback_and_no_split_leakage(tmp_path):
     assert "SYNTHETIC" in (tmp_path / "report.md").read_text()
 
 
+
+def test_dataset_fingerprint_distinguishes_small_costs(tmp_path):
+    frame = synthetic_fixture(n_tasks=16)
+    frame.loc[0, "cost_usd"] = 1e-11
+    first = run_experiment(frame, "frontier", tmp_path / "first", thresholds=[0.5])
+    frame.loc[0, "cost_usd"] = 2e-11
+    second = run_experiment(frame, "frontier", tmp_path / "second", thresholds=[0.5])
+    assert first["dataset_sha256"] != second["dataset_sha256"]
+
+
 def test_insufficient_unique_prompts_refused():
     tasks = pd.DataFrame({"tenant": "x", "task_id": [str(i) for i in range(7)], "prompt": [str(i) for i in range(7)]})
     with pytest.raises(ValueError, match="at least 8"):
