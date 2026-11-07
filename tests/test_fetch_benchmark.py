@@ -76,9 +76,10 @@ def test_selects_only_unique_listed_official_filename():
 
 
 @pytest.mark.parametrize("has_lfs_digest", [True, False])
-def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_path, monkeypatch, has_lfs_digest):
+@pytest.mark.parametrize("root", ["results/bench", "bench-release"])
+def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_path, monkeypatch, has_lfs_digest, root):
     archive = _archive(tmp_path / "official.tar.gz", [
-        ("results/bench/livecodebench/test/model/run.json", tarfile.REGTYPE, b"{}"),
+        (f"{root}/livecodebench/model/livecodebench-model-20251029_012339.json", tarfile.REGTYPE, b"{}"),
     ])
     digest = fetch.sha256_file(archive)
     lfs = SimpleNamespace(sha256=digest) if has_lfs_digest else None
@@ -116,7 +117,7 @@ def test_fetch_records_immutable_revision_and_reuses_matching_extraction(tmp_pat
     assert first["archive_sha256"] == digest
     assert first["expected_archive_sha256"] == (digest if has_lfs_digest else None)
     assert json.loads(manifest_path.read_text()) == first
-    assert Path(first["bench_dir"]).is_dir()
+    assert Path(first["bench_dir"]) == output / "extracted" / root
     assert all(kwargs["revision"] == "a" * 40 for kind, kwargs in calls if kind in {"list", "file", "download"})
     assert [kwargs["paths"] for kind, kwargs in calls if kind == "file"] == ["bench-release.tar.gz"] * 2
 

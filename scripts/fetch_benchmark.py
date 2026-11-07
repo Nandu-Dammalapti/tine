@@ -87,14 +87,17 @@ def safe_extract_archive(
 
 
 def find_bench_dir(extracted: str | Path) -> Path:
-    """Locate the one documented bench root; fail rather than guess among runs."""
+    """Locate the release archive root or the legacy results/bench layout."""
     extracted = Path(extracted)
     candidates = [path for path in extracted.rglob("bench") if path.is_dir()]
-    if extracted.name == "bench":
+    release = extracted / "bench-release"
+    if release.is_dir():
+        candidates.append(release)
+    if extracted.name in {"bench", "bench-release"}:
         candidates.append(extracted)
     candidates = sorted(set(candidates))
     if len(candidates) != 1:
-        raise ValueError(f"Expected one extracted bench directory, found {len(candidates)}")
+        raise ValueError(f"Expected one extracted bench or bench-release directory, found {len(candidates)}")
     return candidates[0]
 
 
