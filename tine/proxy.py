@@ -292,9 +292,15 @@ def create_app(
                 outgoing = upstream.build_request("POST", url, json=body, headers=headers)
                 response = await upstream.send(outgoing, stream=stream)
                 if response.status_code < 400 or selected == frontier or attempt == 1:
+                    # Error bodies are buffered even for streaming requests.
+                    # Keep their transport failures inside the upstream handler.
+                    if stream and response.status_code >= 400:
+                        await response.aread()
                     break
                 await response.aclose()
             except httpx.HTTPError:
+                if response is not None:
+                    await response.aclose()
                 response = None
                 if selected == frontier or attempt == 1:
                     break

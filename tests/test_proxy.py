@@ -106,6 +106,54 @@ def test_frontier_error_is_not_retried_and_error_details_are_not_leaked():
     run(scenario())
 
 
+@pytest.mark.parametrize("candidate", [False, True])
+def test_streaming_error_body_failure_closes_response_and_uses_fallback(candidate):
+    class BrokenBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b'{"error":'
+            raise httpx.ReadError("private upstream connection details")
+
+        async def aclose(self):
+            self.closed = True
+
+    broken = BrokenBody()
+    attempted = []
+    data = b'data: {"choices": []}\n\ndata: [DONE]\n\n'
+
+    def provider(request):
+        model = json.loads(request.content)["model"]
+        attempted.append(model)
+        if candidate and model == "frontier":
+            return httpx.Response(200, content=data, headers={"content-type": "text/event-stream"})
+        return httpx.Response(503, stream=broken)
+
+    async def scenario():
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(allowed_models={"openai": ["cheap"]}), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "cheap" if candidate else "frontier", "messages": [], "stream": True},
+                    headers={"authorization": "Bearer tenant-token-a"},
+                )
+                assert response.status_code == (200 if candidate else 502)
+                assert "private upstream" not in response.text
+                if candidate:
+                    assert response.content == data
+                record = ledger.get("a", response.headers["x-tine-request-id"])
+                assert record["model"] == "frontier"
+                assert record["fallback_used"] == int(candidate)
+                assert record["success"] is None
+                assert record["cost_usd"] is None
+        assert broken.closed
+        assert attempted == (["cheap", "frontier"] if candidate else ["frontier"])
+
+    run(scenario())
+
+
 def test_anthropic_sse_native_headers_and_bytes_pass_through():
     data = b'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
 
