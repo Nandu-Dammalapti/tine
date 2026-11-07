@@ -228,10 +228,15 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     (output / "excluded.json").write_text(json.dumps(_json(excluded), indent=2) + "\n")
     tasks.drop(columns="prompt").to_csv(output / "splits.csv", index=False)
     pd.DataFrame(decisions).to_csv(output / "decisions.csv", index=False)
-    pd.DataFrame(curves).to_csv(output / "curves.csv", index=False)
-    pd.DataFrame(all_metrics).to_csv(output / "metrics.csv", index=False)
+    metrics_frame = pd.DataFrame(all_metrics)
+    curve_frame = pd.DataFrame(curves)
+    if curve_frame.empty:
+        curve_frame = metrics_frame.iloc[:0].drop(columns="batch_prediction_ms_per_task")
+        curve_frame.insert(2, "tau", pd.Series(dtype=float))
+    curve_frame.to_csv(output / "curves.csv", index=False)
+    metrics_frame.to_csv(output / "metrics.csv", index=False)
     pd.DataFrame(group_metrics).to_csv(output / "group-metrics.csv", index=False)
-    _plot(output, all_metrics, synthetic, curves)
+    _plot(output, all_metrics, synthetic, curve_frame)
     report = ["# Tine offline report", "", "SYNTHETIC FIXTURE — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
               f"Complete tasks: {len(tasks)}. Excluded incomplete/pending tasks: {len(excluded)}.",
               f"Frontier: `{frontier}`. Epsilon: {epsilon}. Delta: {delta}.", "",
@@ -243,9 +248,8 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     return _json(summary)
 
 
-def _plot(output, metrics, synthetic, curves):
+def _plot(output, metrics, synthetic, curve_frame):
     fig, ax = plt.subplots(figsize=(8, 5))
-    curve_frame = pd.DataFrame(curves)
     for (tenant, method), curve in curve_frame.groupby(["tenant", "method"]):
         ax.plot(curve.mean_cost_usd, curve.accuracy, alpha=0.5,
                 label=f"{tenant}/{method} thresholds (test diagnostics)")
@@ -258,7 +262,8 @@ def _plot(output, metrics, synthetic, curves):
             ax.annotate(f'{metric["tenant"]}/{metric["method"]}', (cost, accuracy), fontsize=8)
     ax.set(xlabel="Observed mean cost per task (USD)", ylabel="Held-out success rate",
            title="Synthetic pipeline check" if synthetic else "Offline cost-quality comparison")
-    ax.legend(fontsize=7)
+    if not curve_frame.empty:
+        ax.legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(output / "cost-quality.png", dpi=140)
     plt.close(fig)

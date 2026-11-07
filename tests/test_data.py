@@ -87,6 +87,21 @@ def test_jsonl_roundtrip_preserves_timestamps_and_nullable_provenance(tmp_path):
     assert "NaN" not in path.read_text()
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".ndjson"])
+def test_json_lines_preserve_unicode_separators_inside_records(tmp_path, suffix):
+    frame = synthetic_fixture(1)
+    text = "First line\u2028second line\u2029next paragraph\u0085last line"
+    frame["prompt"] = text
+    frame["source_metadata"] = [{"note": text} for _ in range(len(frame))]
+    path = tmp_path / ("outcomes" + suffix)
+    write_outcomes(frame, path)
+
+    loaded = read_outcomes(path)
+
+    assert loaded["prompt"].tolist() == [text] * len(frame)
+    assert loaded["source_metadata"].tolist() == frame["source_metadata"].tolist()
+
+
 @pytest.mark.parametrize("column,value", [
     ("cost_usd", -1), ("cost_usd", np.inf), ("cost_usd", np.nan),
     ("input_tokens", 1.5), ("cached_tokens", 10000), ("latency_ms", -1),

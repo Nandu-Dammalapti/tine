@@ -74,6 +74,20 @@ def test_dataset_fingerprint_distinguishes_small_costs(tmp_path):
     assert first["dataset_sha256"] != second["dataset_sha256"]
 
 
+def test_empty_threshold_grid_writes_frontier_fallback_report(tmp_path):
+    frame = synthetic_fixture(n_tasks=60, seed=12)
+    run_experiment(frame, "frontier", tmp_path, thresholds=[], synthetic=True)
+
+    calibration = json.loads((tmp_path / "calibration.json").read_text())
+    assert all(item["force_frontier"] and item["thresholds_tested"] == 0 for item in calibration)
+    choices = pd.read_csv(tmp_path / "decisions.csv")
+    assert choices.loc[choices.method.isin(["logistic", "knn", "cluster"]), "model"].eq("frontier").all()
+    curves = pd.read_csv(tmp_path / "curves.csv")
+    assert curves.empty
+    assert {"tenant", "method", "tau", "mean_cost_usd", "accuracy"} <= set(curves.columns)
+    assert (tmp_path / "cost-quality.png").is_file()
+
+
 def test_insufficient_unique_prompts_refused():
     tasks = pd.DataFrame({"tenant": "x", "task_id": [str(i) for i in range(7)], "prompt": [str(i) for i in range(7)]})
     with pytest.raises(ValueError, match="at least 8"):

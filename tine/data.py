@@ -121,7 +121,8 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
                            usecols=lambda column: column in _TEXT_COLUMNS)
         frame[text.columns] = text
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
-        records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        with path.open(encoding="utf-8") as source:
+            records = [json.loads(line) for line in source if line.strip()]
         frame = pd.DataFrame(records)
     elif path.suffix.lower() == ".json":
         records = json.loads(path.read_text())
