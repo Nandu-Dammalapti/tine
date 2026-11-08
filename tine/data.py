@@ -209,7 +209,9 @@ def combine_outcomes(frames, *, task_type: str | None = None, exclude_models=(),
                 dropped[model] = "cost_not_recorded_all_zero"
     kept = sorted(common - set(dropped))
     if not kept:
-        raise ValueError("No models remain after combining")
+        sizes = ", ".join(f"input {i + 1}: {len(models)} models" for i, models in enumerate(model_sets))
+        raise ValueError(f"No models remain after combining ({len(common)} models are in every "
+                         f"input; {sizes}). Leave out inputs that use a different model set.")
     combined = combined.loc[combined.model.isin(kept)].reset_index(drop=True)
     zero = combined.loc[combined.cost_usd == 0]
     report = {
