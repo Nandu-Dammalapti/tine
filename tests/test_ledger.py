@@ -91,6 +91,30 @@ def test_cache_uses_latest_resolved_outcome_and_late_reversal():
     assert ledger.cached("a", "openai", body) is None
 
 
+def test_context_cache_keys_survive_reopen_and_exclude_legacy_entries(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    body = {"model": "frontier", "messages": []}
+    context = {"url": "https://provider.example/v1/chat/completions", "headers": {}}
+    ledger = Ledger(path)
+    legacy_id = row(ledger, request_body=body, success=True)
+    ledger.close()
+
+    ledger = Ledger(path)
+    assert ledger.cached("a", "openai", body)["request_id"] == legacy_id
+    assert ledger.cached("a", "openai", body, cache_context=context) is None
+    scoped_id = row(ledger, request_body=body, success=True, cache_context=context)
+    ledger.close()
+
+    ledger = Ledger(path)
+    assert ledger.cached("a", "openai", body, cache_context=context)["request_id"] == scoped_id
+    assert ledger.cached("a", "openai", body)["request_id"] == legacy_id
+    assert ledger.cached("b", "openai", body, cache_context=context) is None
+    ledger.update_outcome("a", legacy_id, False)
+    assert ledger.cached("a", "openai", body, cache_context=context)["request_id"] == scoped_id
+    assert ledger.report("a")["requests"] == 2
+    ledger.close()
+
+
 def test_known_cost_per_success_includes_failed_request_spend():
     ledger = Ledger()
     row(ledger, success=True, cost_usd=1, baseline_cost_usd=2)

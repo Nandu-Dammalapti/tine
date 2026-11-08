@@ -21,10 +21,15 @@ from typing import Any
 _UNSET = object()
 
 
-def request_fingerprint(provider: str, body: dict[str, Any]) -> str:
-    """Hash all semantic JSON request fields; tenant scope is enforced in SQL."""
+def request_fingerprint(
+    provider: str, body: dict[str, Any], *, cache_context: dict[str, Any] | None = None,
+) -> str:
+    """Hash request semantics and optional upstream context, scoped by tenant in SQL."""
+    payload = {"version": 1, "provider": provider, "body": body}
+    if cache_context is not None:
+        payload.update(version=2, cache_context=cache_context)
     encoded = json.dumps(
-        {"version": 1, "provider": provider, "body": body},
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -115,6 +120,7 @@ class Ledger:
         stream: bool = False,
         fallback_used: bool = False,
         cached_from: str | None = None,
+        cache_context: dict[str, Any] | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cached_tokens: int | None = None,
@@ -156,7 +162,7 @@ class Ledger:
                 if response_body is not None
                 else None
             ),
-            "fingerprint": request_fingerprint(provider, request_body),
+            "fingerprint": request_fingerprint(provider, request_body, cache_context=cache_context),
             "upstream_status": upstream_status,
             "stream": int(stream),
             "fallback_used": int(fallback_used),
@@ -228,18 +234,21 @@ class Ledger:
             )
         return cursor.rowcount == 1
 
-    def cached(self, tenant: str, provider: str, body: dict) -> dict | None:
+    def cached(
+        self, tenant: str, provider: str, body: dict, *, cache_context: dict[str, Any] | None = None,
+    ) -> dict | None:
         """Use the latest resolved outcome; later failures invalidate old success.
 
         An unresolved newer request is not evidence that a previously verified
         answer failed. Explicit late outcome reversals are ordered by update time.
+        Context-aware lookups require a matching context-aware fingerprint.
         """
         with self._lock:
             row = self._db.execute(
                 """SELECT * FROM requests
                    WHERE tenant=? AND fingerprint=? AND success IS NOT NULL
                    ORDER BY outcome_updated_at DESC, created_at DESC LIMIT 1""",
-                (tenant, request_fingerprint(provider, body)),
+                (tenant, request_fingerprint(provider, body, cache_context=cache_context)),
             ).fetchone()
         if (
             row is None
