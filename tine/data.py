@@ -73,6 +73,9 @@ def validate_outcomes(frame: pd.DataFrame, *, require_known: bool = False) -> pd
     result["success"] = result["success"].map(_success).astype(object)
     if require_known and result["success"].isna().any():
         raise ValueError("Pending success labels cannot be evaluated")
+    for column in ["cost_usd", *_NUMERIC_OPTIONAL]:
+        if column in result and result[column].map(lambda value: isinstance(value, (bool, np.bool_))).any():
+            raise ValueError(f"{column} must contain numeric measurements; booleans are invalid")
     costs = pd.to_numeric(result["cost_usd"], errors="raise")
     if costs.isna().any() or not np.isfinite(costs).all() or (costs < 0).any():
         raise ValueError("cost_usd must contain finite nonnegative recorded per-request costs")

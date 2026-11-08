@@ -58,6 +58,8 @@ def _validate_outcomes(frame: pd.DataFrame) -> pd.DataFrame:
         and value in (0, 1)
     ).all():
         raise ValueError("Known success labels must be Boolean or zero/one")
+    if result["cost_usd"].map(lambda value: isinstance(value, (bool, np.bool_))).any():
+        raise ValueError("cost_usd must contain numeric measurements; booleans are invalid")
     try:
         costs = result["cost_usd"].to_numpy(dtype=float)
     except (TypeError, ValueError) as exc:

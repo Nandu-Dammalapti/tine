@@ -124,6 +124,27 @@ def test_duplicate_model_outcome_and_conflicting_prompts_are_rejected():
         validate_outcomes(frame)
 
 
+@pytest.mark.parametrize("column", ["cost_usd", "input_tokens", "output_tokens", "cached_tokens", "latency_ms"])
+@pytest.mark.parametrize("value", [False, True])
+def test_import_rejects_boolean_measurements(tmp_path, column, value):
+    records = synthetic_fixture(2).to_dict(orient="records")
+    records[0][column] = value
+    path = tmp_path / "outcomes.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+    with pytest.raises(ValueError, match=column):
+        read_outcomes(path)
+
+
+def test_nullable_numpy_measurements_keep_unknowns_and_reject_booleans():
+    frame = synthetic_fixture(2)
+    frame["input_tokens"] = pd.Series([pd.NA, 100, 100, 100, 100, 100], dtype="Int64")
+    assert pd.isna(validate_outcomes(frame).loc[0, "input_tokens"])
+    frame["input_tokens"] = frame["input_tokens"].astype(object)
+    frame.loc[1, "input_tokens"] = np.bool_(False)
+    with pytest.raises(ValueError, match="input_tokens"):
+        validate_outcomes(frame)
+
+
 def _result_file(root, *, score=1, cost=0.01, dataset="humaneval", model="small", run="20260101_000000"):
     path = root / dataset / "test" / model / f"{run}.json"
     path.parent.mkdir(parents=True, exist_ok=True)

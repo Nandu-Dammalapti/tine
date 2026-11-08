@@ -69,6 +69,16 @@ def test_cost_estimates_ignore_prediction_outcomes_and_calibration_costs():
     assert np.allclose(router.estimated_costs(altered), [[0.01, 0.1]] * 20)
 
 
+@pytest.mark.parametrize("partition", ["train", "score_calibration"])
+@pytest.mark.parametrize("value", [False, np.bool_(True)])
+def test_fit_rejects_boolean_costs(partition, value):
+    frames = {"train": outcomes("train"), "score_calibration": outcomes("score")}
+    frames[partition]["cost_usd"] = frames[partition]["cost_usd"].astype(object)
+    frames[partition].loc[0, "cost_usd"] = value
+    with pytest.raises(ValueError, match="cost_usd"):
+        Router("frontier").fit(**frames)
+
+
 def test_tenant_boundaries(fitted):
     with pytest.raises(ValueError, match="tenant"):
         fitted.predict_scores(tasks(outcomes("test", tenant="team-b")))
