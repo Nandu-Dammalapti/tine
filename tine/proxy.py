@@ -254,26 +254,6 @@ def create_app(
         request_id = str(uuid.uuid4())
         started = time.monotonic()
 
-        if config.verified_cache and not stream:
-            try:
-                cached = store.cached(identity, provider, body)
-            except Exception:
-                cached = None
-            if cached is not None:
-                recorded = record_safely(
-                    tenant=identity, provider=provider, model=selected,
-                    requested_model=requested, request_body=body,
-                    response_body=cached["response_body"], request_id=request_id,
-                    upstream_status=cached["upstream_status"], cost_usd=0.0,
-                    baseline_cost_usd=cached["baseline_cost_usd"],
-                    cached_from=cached["request_id"],
-                    latency_ms=(time.monotonic() - started) * 1000,
-                )
-                return JSONResponse(
-                    cached["response_body"], status_code=cached["upstream_status"],
-                    headers={"x-tine-request-id": request_id, "x-tine-cache": "hit", "x-tine-ledger": "recorded" if recorded else "unavailable"},
-                )
-
         headers = {"content-type": "application/json"}
         if provider == "openai":
             headers["authorization"] = f"Bearer {api_key}"
@@ -285,6 +265,32 @@ def create_app(
                 headers["anthropic-beta"] = request.headers["anthropic-beta"]
             path = "/v1/messages"
         url = _upstream_url(getattr(config, f"{provider}_base_url"), path)
+        # Only non-secret settings that affect request semantics enter the key.
+        cache_context = {
+            "url": url,
+            "headers": {key: headers[key] for key in ("anthropic-version", "anthropic-beta") if key in headers},
+        }
+
+        if config.verified_cache and not stream:
+            try:
+                cached = store.cached(identity, provider, body, cache_context=cache_context)
+            except Exception:
+                cached = None
+            if cached is not None:
+                recorded = record_safely(
+                    tenant=identity, provider=provider, model=selected,
+                    requested_model=requested, request_body=body, cache_context=cache_context,
+                    response_body=cached["response_body"], request_id=request_id,
+                    upstream_status=cached["upstream_status"], cost_usd=0.0,
+                    baseline_cost_usd=cached["baseline_cost_usd"],
+                    cached_from=cached["request_id"],
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
+                return JSONResponse(
+                    cached["response_body"], status_code=cached["upstream_status"],
+                    headers={"x-tine-request-id": request_id, "x-tine-cache": "hit", "x-tine-ledger": "recorded" if recorded else "unavailable"},
+                )
+
         fallback = False
         response = None
         for attempt in range(2):
@@ -311,7 +317,7 @@ def create_app(
         common = dict(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
-            stream=stream, fallback_used=fallback,
+            stream=stream, fallback_used=fallback, cache_context=cache_context,
         )
         if response is None:
             recorded = record_safely(**common, latency_ms=(time.monotonic() - started) * 1000)

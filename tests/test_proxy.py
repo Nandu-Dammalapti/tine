@@ -221,6 +221,73 @@ def test_late_verified_outcome_enables_exact_cache_only_within_tenant():
     run(scenario())
 
 
+@pytest.mark.parametrize("changed_headers", [
+    {"anthropic-version": "different-version"},
+    {"anthropic-beta": "feature-test"},
+])
+def test_verified_cache_tracks_anthropic_protocol_headers(changed_headers):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": f"answer-{len(calls)}", "content": []})
+
+    async def scenario():
+        ledger = Ledger()
+        auth = {"x-api-key": "tenant-token-a"}
+        body = {"messages": [], "max_tokens": 10}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                first = await client.post("/v1/messages", json=body, headers=auth)
+                ledger.update_outcome("a", first.headers["x-tine-request-id"], True)
+                # An explicit default version is equivalent to the implicit one.
+                cached = await client.post("/v1/messages", json=body, headers={**auth, "anthropic-version": "2023-06-01"})
+                assert cached.headers["x-tine-cache"] == "hit"
+                ledger.update_outcome("a", cached.headers["x-tine-request-id"], True)
+                changed = await client.post("/v1/messages", json=body, headers={**auth, **changed_headers})
+                assert "x-tine-cache" not in changed.headers
+                assert changed.json()["id"] == "answer-2"
+                for name, value in changed_headers.items():
+                    assert calls[-1].headers[name] == value
+                # Failure evidence for a different protocol must stay separate.
+                ledger.update_outcome("a", changed.headers["x-tine-request-id"], False)
+                original = await client.post("/v1/messages", json=body, headers=auth)
+                assert original.headers["x-tine-cache"] == "hit"
+                assert original.json() == first.json()
+        assert len(calls) == 2
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("provider_name,path", [
+    ("openai", "/v1/chat/completions"), ("anthropic", "/v1/messages"),
+])
+def test_verified_cache_tracks_upstream_endpoint(provider_name, path):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": request.url.host})
+
+    async def scenario():
+        ledger = Ledger()
+        auth = {"authorization": "Bearer tenant-token-a"}
+        body = {"messages": [], "max_tokens": 10}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            for host in ["first.example", "second.example", "first.example"]:
+                cfg = config(**{f"{provider_name}_base_url": f"https://{host}"})
+                app = create_app(cfg, ledger=ledger, client=upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                    response = await client.post(path, json=body, headers=auth)
+                    assert response.json()["id"] == host
+                    ledger.update_outcome("a", response.headers["x-tine-request-id"], True)
+            assert response.headers["x-tine-cache"] == "hit"
+        assert len(calls) == 2
+
+    run(scenario())
+
+
 def test_configuration_requires_tenant_auth_and_hides_credentials():
     with pytest.raises(ValueError, match="TINE_TENANT_KEYS"):
         create_app(ProxyConfig())
