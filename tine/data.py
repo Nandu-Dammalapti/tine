@@ -170,6 +170,64 @@ def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
         raise ValueError("Output must be .csv, .jsonl, or .ndjson")
 
 
+def combine_outcomes(frames, *, task_type: str | None = None, exclude_models=(),
+                     keep_unpriced_models: bool = False):
+    """Pool several outcome tables (e.g. coding datasets) into one calibration group.
+
+    Calibration runs per task type, so small datasets (HumanEval has 164 tasks)
+    can never certify a threshold alone. Setting ``task_type`` relabels every row
+    to one pooled group; the original label is kept in ``source_task_type``. The
+    resulting guarantee covers tasks drawn like the pooled mix, not each dataset.
+
+    Only models present in every input are kept, because evaluation needs every
+    model's outcome on every task. Models whose recorded cost is zero on every row
+    are dropped unless ``keep_unpriced_models``: a zero cost means "not recorded"
+    (e.g. self-hosted runs), and routing would treat them as free.
+
+    Returns (frame, report).
+    """
+    frames = [validate_outcomes(frame) for frame in frames]
+    if not frames:
+        raise ValueError("Give at least one outcome table")
+    model_sets = [set(frame.model) for frame in frames]
+    common = set.intersection(*model_sets)
+    dropped = {model: "missing_from_some_inputs" for model in sorted(set.union(*model_sets) - common)}
+    combined = pd.concat(frames, ignore_index=True)
+    if "source_task_type" not in combined:
+        combined["source_task_type"] = combined["task_type"]
+    if task_type is not None:
+        if not isinstance(task_type, str) or not task_type.strip():
+            raise ValueError("task_type must be a nonempty string")
+        combined["task_type"] = task_type
+    for model in exclude_models:
+        if model in common:
+            dropped[model] = "excluded_by_request"
+    costs = combined.groupby("model").cost_usd.agg(lambda c: bool((c == 0).all()))
+    if not keep_unpriced_models:
+        for model in sorted(common):
+            if costs.get(model, False):
+                dropped[model] = "cost_not_recorded_all_zero"
+    kept = sorted(common - set(dropped))
+    if not kept:
+        raise ValueError("No models remain after combining")
+    combined = combined.loc[combined.model.isin(kept)].reset_index(drop=True)
+    zero = combined.loc[combined.cost_usd == 0]
+    report = {
+        "rows": len(combined),
+        "tasks_by_source": combined.drop_duplicates(["tenant", "task_id"])
+        .groupby("source_task_type").size().to_dict(),
+        "task_type": task_type,
+        "models_kept": kept,
+        "models_dropped": dropped,
+        "zero_cost_rows_in_kept_models": {
+            model: {"rows": len(rows), "success_rate": float(rows.success.astype(bool).mean())
+                    if rows.success.notna().all() else None}
+            for model, rows in zero.groupby("model")
+        },
+    }
+    return validate_outcomes(combined), report
+
+
 def _record_timestamp(path: Path):
     match = re.search(r"(\d{8})_(\d{6})\.json$", path.name)
     if match:
