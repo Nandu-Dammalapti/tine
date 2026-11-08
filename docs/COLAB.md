@@ -12,7 +12,11 @@ Only one value is required: set `FRONTIER` to the exact name of your intended de
 
 The standard output location is `/content/drive/MyDrive/tine`. If you already have canonical Tine outcomes, skip the archive download/import cells and set `DATASET` to that JSONL or CSV file instead.
 
-The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. With one tenant and task type, the default 21 thresholds and three routing methods need at least 354 risk-calibration tasks even with zero observed degradations. The [publisher lists 1,055 LiveCodeBench tasks](https://github.com/ynulihao/LLMRouterBench#datasets), which yields at most 211 with the current 20% risk split. The preflight reports the actual usable counts after exclusions. Expect frontier fallback at the default settings for this cohort.
+The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. Thresholds are tested in a fixed sequence (cautious to aggressive, stopping at the first failure), so only the three routing methods share the error budget. One tenant and task type then needs at least 203 risk-calibration tasks even with zero observed degradations. LiveCodeBench alone (1,055 tasks) gives 211, which is barely enough. Step 2 pools more coding datasets.
+
+## Step 2: pool the coding datasets
+
+Run [`notebooks/tine_colab_step2_coding.ipynb`](../notebooks/tine_colab_step2_coding.ipynb) on a CPU runtime after Step 1. It imports the graded HumanEval, MBPP and SWE-bench Verified results from the archive already on Drive. It pools them with LiveCodeBench into one `coding` group with `tine combine-outcomes`, which keeps only models present in every dataset, drops models whose recorded cost is zero on every row, and excludes `openrouter` (a router, not a model). It then evaluates against `gpt-5` and `claude-sonnet-4`. The pooled guarantee covers tasks drawn like that mix, not each dataset on its own.
 
 ## Cells and outputs
 
