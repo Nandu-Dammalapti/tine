@@ -142,6 +142,8 @@ class Router:
             for key, value in embedding_lookup.items():
                 if not isinstance(key, tuple) or len(key) != 2 or not all(isinstance(k, str) for k in key):
                     raise ValueError("Embedding keys must be (tenant, task_id) string tuples")
+                if np.iscomplexobj(value):
+                    raise ValueError("Embedding vectors must contain real values")
                 vector = np.array(value, dtype=float, copy=True)
                 if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
                     raise ValueError("Embedding vectors must be finite, nonempty one-dimensional arrays")

@@ -19,6 +19,7 @@ from typing import Any
 
 
 _UNSET = object()
+MAX_TOKEN_COUNT = 2**63 - 1  # SQLite INTEGER storage limit.
 
 
 def request_fingerprint(
@@ -144,9 +145,9 @@ class Ledger:
             ("cached_tokens", cached_tokens),
         ):
             if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_TOKEN_COUNT
             ):
-                raise ValueError(f"{name} must be a nonnegative integer or None")
+                raise ValueError(f"{name} must be an integer between 0 and {MAX_TOKEN_COUNT} or None")
         request_id = request_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         values = {

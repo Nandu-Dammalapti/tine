@@ -48,6 +48,23 @@ def test_embeddings_are_bound_to_prompts_and_no_pickle(tmp_path):
         load_embeddings(path, tasks)
 
 
+@pytest.mark.parametrize("vectors", [[[1+2j, 3+4j]], [["one", "two"]], [[True, False]]])
+def test_embeddings_require_real_numeric_vectors(tmp_path, vectors):
+    tasks = pd.DataFrame([{"tenant": "a", "task_id": "x", "prompt": "hello"}])
+    path = tmp_path / "features.npz"
+    np.savez(path, tenants=["a"], task_ids=["x"], prompt_hashes=[prompt_hash("hello")], embeddings=vectors)
+    with pytest.raises(ValueError, match="real numeric"):
+        load_embeddings(path, tasks)
+
+
+def test_embedding_metadata_shape_is_checked_before_lookup(tmp_path):
+    tasks = pd.DataFrame([{"tenant": "a", "task_id": "x", "prompt": "hello"}])
+    path = tmp_path / "features.npz"
+    np.savez(path, tenants=[["a"]], task_ids=["x"], prompt_hashes=[prompt_hash("hello")], embeddings=[[1, 2]])
+    with pytest.raises(ValueError, match="one-dimensional"):
+        load_embeddings(path, tasks)
+
+
 def test_full_experiment_reports_fallback_and_no_split_leakage(tmp_path):
     frame = synthetic_fixture(n_tasks=60, seed=12)
     result = run_experiment(frame, "frontier", tmp_path, synthetic=True)
@@ -97,3 +114,64 @@ def test_insufficient_unique_prompts_refused():
     tasks = pd.DataFrame({"tenant": "x", "task_id": [str(i) for i in range(7)], "prompt": [str(i) for i in range(7)]})
     with pytest.raises(ValueError, match="at least 8"):
         split_tasks(tasks)
+
+
+def test_source_split_provenance_does_not_override_experiment_partitions(tmp_path):
+    frame = synthetic_fixture(n_tasks=30)
+    frame["split"] = "upstream-test"
+    frame["split_source"] = "upstream-release"
+    original = frame.copy(deep=True)
+    result = run_experiment(frame, "frontier", tmp_path, thresholds=[0.5])
+    pd.testing.assert_frame_equal(frame, original)
+    partitions = pd.read_csv(tmp_path / "splits.csv")
+    assert set(partitions.split) == {"train", "score_calibration", "risk_calibration", "test"}
+    assert result["complete_tasks"] == 30
+
+
+def test_failed_demo_rerun_preserves_report_and_source_snapshot(tmp_path, monkeypatch):
+    from tine.__main__ import main
+
+    output = tmp_path / "demo"
+    main(["demo", "--tasks", "20", "--output", str(output)])
+    previous = {path.name: path.read_bytes() for path in output.iterdir()}
+
+    def fail_plot(*args):
+        raise OSError("plot failed")
+
+    monkeypatch.setattr("tine.pipeline._plot", fail_plot)
+    with pytest.raises(OSError, match="plot failed"):
+        main(["demo", "--tasks", "25", "--output", str(output)])
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == previous
+
+
+def test_failed_chart_write_closes_figure_and_leaves_no_new_run(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    figures = plt.get_fignums()
+
+    def fail_save(*args, **kwargs):
+        raise OSError("chart storage failure")
+
+    monkeypatch.setattr(Figure, "savefig", fail_save)
+    with pytest.raises(OSError, match="chart storage failure"):
+        run_experiment(synthetic_fixture(20), "frontier", tmp_path / "run", thresholds=[0.5])
+    assert plt.get_fignums() == figures
+    assert not (tmp_path / "run").exists()
+
+
+def test_run_cli_recognizes_synthetic_provenance_in_mixed_data(tmp_path):
+    from tine.__main__ import main
+    from tine.data import write_outcomes
+
+    frame = synthetic_fixture(20)
+    frame["cost_source"] = "recorded"
+    frame["success_label_source"] = "graded"
+    frame.loc[0, "cost_source"] = "synthetic"
+    source = tmp_path / "mixed.jsonl"
+    write_outcomes(frame, source)
+    output = tmp_path / "run"
+    main(["run", "--input", str(source), "--frontier", "frontier", "--output", str(output)])
+    assert json.loads((output / "summary.json").read_text())["synthetic"] is True
+    assert "SYNTHETIC" in (output / "report.md").read_text()
+    assert not (output / "synthetic-outcomes.jsonl").exists()

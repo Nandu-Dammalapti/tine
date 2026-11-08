@@ -24,6 +24,46 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
+@pytest.mark.parametrize("raw", [
+    b'{"answer":"\\ud800"}', b'{"answer":NaN}', b'{"answer":1e999}',
+])
+def test_invalid_upstream_json_values_preserve_response_and_record_without_caching(raw):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    async def scenario():
+        ledger = Ledger()
+        if b"ud800" in raw:
+            ledger.record(
+                tenant="a", provider="openai", model="frontier",
+                request_body={"messages": [], "model": "frontier"},
+                response_body=json.loads(raw), success=True, upstream_status=200,
+                cache_context={"url": "https://api.openai.com/v1/chat/completions", "headers": {}},
+            )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                for _ in range(2):
+                    response = await client.post(
+                        "/v1/chat/completions", json={"messages": []},
+                        headers={"authorization": "Bearer tenant-token-a"},
+                    )
+                    assert response.status_code == 200
+                    assert response.content == raw
+                    assert response.headers["x-tine-ledger"] == "recorded"
+                    assert "x-tine-cache" not in response.headers
+                    record = ledger.get("a", response.headers["x-tine-request-id"])
+                    assert record["response_body"] is None
+                    assert record["cost_usd"] is None
+                    ledger.update_outcome("a", record["request_id"], True)
+        assert len(calls) == 2
+
+    run(scenario())
+
+
 def test_auth_frontier_default_credentials_and_json_passthrough():
     seen = []
 
@@ -325,4 +365,72 @@ def test_malformed_usage_never_breaks_provider_answer():
                 assert response.status_code == 200
                 assert response.json() == payload
 
+    run(scenario())
+
+
+@pytest.mark.parametrize("path,usage", [
+    ("/v1/chat/completions", {"prompt_tokens": 10**400, "completion_tokens": 1}),
+    ("/v1/messages", {"input_tokens": 2**63, "output_tokens": 1}),
+    ("/v1/messages", {"input_tokens": 2**63 - 1, "cache_read_input_tokens": 1, "output_tokens": 1}),
+])
+def test_oversized_usage_preserves_answer_and_unknown_accounting(path, usage):
+    async def scenario():
+        payload = {"content": "answer", "usage": usage}
+        cfg = config(prices={
+            "openai:frontier": {"input_per_million": 1, "output_per_million": 2},
+            "anthropic:claude-frontier": {"input_per_million": 1, "output_per_million": 2},
+        })
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))) as upstream:
+            app = create_app(cfg, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post(path, json={"messages": []}, headers={"authorization": "Bearer tenant-token-a"})
+                assert response.status_code == 200
+                assert response.json() == payload
+                assert response.headers["x-tine-ledger"] == "recorded"
+                record = ledger.get("a", response.headers["x-tine-request-id"])
+                assert record["input_tokens"] is None
+                assert record["cost_usd"] is None
+                assert record["success"] is None
+    run(scenario())
+
+
+def test_invalid_unicode_request_is_rejected_before_calling_provider():
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json={"choices": []})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(), ledger=Ledger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                for text in ["\ud800", "\udfff"]:
+                    response = await client.post(
+                        "/v1/chat/completions", content=json.dumps({"messages": [{"role": "user", "content": text}]}),
+                        headers={"authorization": "Bearer tenant-token-a", "content-type": "application/json"},
+                    )
+                    assert response.status_code == 400
+                valid = await client.post(
+                    "/v1/chat/completions", json={"messages": [{"role": "user", "content": "Hello 🌍"}]},
+                    headers={"authorization": "Bearer tenant-token-a"},
+                )
+                assert valid.status_code == 200
+        assert len(calls) == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("header", [b"anthropic-version", b"anthropic-beta"])
+def test_invalid_protocol_header_returns_client_error(header):
+    def provider(request):
+        pytest.fail("Invalid protocol header reached provider")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(), ledger=Ledger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post("/v1/messages", json={"messages": []},
+                                             headers=[(b"x-api-key", b"tenant-token-a"), (header, b"\xff")])
+                assert response.status_code == 400
     run(scenario())

@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tine.artifacts import atomic_write_text
 
 CANONICAL_COLUMNS = [
     "tenant", "task_id", "prompt", "task_type", "model", "success", "cost_usd",
@@ -164,13 +165,13 @@ def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     """Write validated canonical CSV or JSONL without changing unknown labels."""
     frame = validate_outcomes(frame)
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".csv":
-        frame.to_csv(path, index=False)
+        contents = frame.to_csv(index=False)
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
-        path.write_text("".join(outcome_json_lines(frame)), encoding="utf-8")
+        contents = "".join(outcome_json_lines(frame))
     else:
         raise ValueError("Output must be .csv, .jsonl, or .ndjson")
+    atomic_write_text(path, contents)
 
 
 def _record_timestamp(path: Path):

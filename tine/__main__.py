@@ -46,14 +46,12 @@ def main(argv=None):
     server.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     if args.command in {"run", "demo"}:
-        from tine.data import read_outcomes, synthetic_fixture, write_outcomes
+        from tine.data import read_outcomes, synthetic_fixture
         from tine.pipeline import run_experiment
 
         if args.command == "demo":
             frame = synthetic_fixture(n_tasks=args.tasks, seed=args.seed)
             frontier = "frontier"
-            args.output.mkdir(parents=True, exist_ok=True)
-            write_outcomes(frame, args.output / "synthetic-outcomes.jsonl")
         else:
             frame, frontier = read_outcomes(args.input), args.frontier
         summary = run_experiment(frame, frontier, args.output, epsilon=args.epsilon,

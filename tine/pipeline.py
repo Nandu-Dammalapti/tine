@@ -23,7 +23,8 @@ import numpy as np
 import pandas as pd
 
 from tine.calibration import calibrate, evaluate, minimum_risk_tasks
-from tine.data import outcome_json_lines, validate_outcomes
+from tine.artifacts import experiment_output
+from tine.data import outcome_json_lines, validate_outcomes, write_outcomes
 from tine.routing import METHODS, Router, route_indices
 
 SPLITS = ("train", "score_calibration", "risk_calibration", "test")
@@ -124,8 +125,11 @@ def load_embeddings(path: str | Path, tasks: pd.DataFrame) -> dict:
         ids = blob["task_ids"].astype(str)
         hashes = blob["prompt_hashes"].astype(str)
         vectors = blob["embeddings"]
-        if vectors.ndim != 2 or not np.isfinite(vectors).all() or vectors.shape[1] == 0:
-            raise ValueError("Embeddings must be a finite, nonempty 2D numeric array")
+        if any(values.ndim != 1 for values in (tenants, ids, hashes)):
+            raise ValueError("Embedding metadata must contain one-dimensional arrays")
+        if (vectors.ndim != 2 or vectors.dtype.kind not in "iuf"
+                or not np.isfinite(vectors).all() or vectors.shape[1] == 0):
+            raise ValueError("Embeddings must be a finite, nonempty 2D real numeric array")
         if not (len(tenants) == len(ids) == len(hashes) == len(vectors)):
             raise ValueError("Embedding metadata lengths differ")
         lookup, digest = {}, {}
@@ -162,6 +166,22 @@ def _json(value):
 
 def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42,
                    embeddings=None, thresholds=None, synthetic=False):
+    frame = validate_outcomes(frame)
+    save_synthetic_outcomes = synthetic
+    synthetic = bool(synthetic or any(
+        column in frame and frame[column].eq("synthetic").any()
+        for column in ("cost_source", "success_label_source")
+    ))
+    with experiment_output(output) as staged:
+        if save_synthetic_outcomes:
+            write_outcomes(frame, staged / "synthetic-outcomes.jsonl")
+        return _run_experiment(frame, frontier, staged, epsilon=epsilon, delta=delta,
+                               seed=seed, embeddings=embeddings, thresholds=thresholds,
+                               synthetic=synthetic)
+
+
+def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
+                    embeddings, thresholds, synthetic):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     thresholds = DEFAULT_THRESHOLDS if thresholds is None else list(thresholds)
@@ -171,7 +191,11 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     group_count = tasks[["tenant", "task_type"]].drop_duplicates().shape[0]
     family_size = group_count * len(METHODS)
     all_metrics, group_metrics, calibrations, decisions, curves = [], [], [], [], []
-    split_rows = frame.merge(tasks[["tenant", "task_id", "split"]], on=["tenant", "task_id"])
+    # An upstream split is provenance; training uses our independently assigned
+    # partitions. Keep the original frame intact for its dataset fingerprint.
+    split_rows = frame.drop(columns="split", errors="ignore").merge(
+        tasks[["tenant", "task_id", "split"]], on=["tenant", "task_id"], validate="many_to_one"
+    )
     for tenant, tenant_tasks in tasks.groupby("tenant", sort=True):
         partitions = {name: tenant_tasks.loc[tenant_tasks.split == name].copy() for name in SPLITS}
         rows = split_rows.loc[split_rows.tenant == tenant]
@@ -260,7 +284,7 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     metrics_frame.to_csv(output / "metrics.csv", index=False)
     pd.DataFrame(group_metrics).to_csv(output / "group-metrics.csv", index=False)
     _plot(output, all_metrics, synthetic, curve_frame)
-    report = ["# Tine offline report", "", "SYNTHETIC FIXTURE — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
+    report = ["# Tine offline report", "", "Contains SYNTHETIC outcomes — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
               f"Complete tasks: {len(tasks)}. Excluded incomplete/pending tasks: {len(excluded)}.",
               f"Frontier: `{frontier}`. Epsilon: {epsilon}. Delta: {delta}.", "",
               "See metrics.csv, calibration.json, decisions.csv, and cost-quality.png.", "",
@@ -273,20 +297,22 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
 
 def _plot(output, metrics, synthetic, curve_frame):
     fig, ax = plt.subplots(figsize=(8, 5))
-    for (tenant, method), curve in curve_frame.groupby(["tenant", "method"]):
-        ax.plot(curve.mean_cost_usd, curve.accuracy, alpha=0.5,
-                label=f"{tenant}/{method} thresholds (test diagnostics)")
-    for metric in metrics:
-        # Use raw observed task cost and accuracy without manipulating epsilon.
-        cost = metric.get("mean_cost_usd", metric.get("mean_cost"))
-        accuracy = metric.get("accuracy")
-        if cost is not None and accuracy is not None:
-            ax.scatter(cost, accuracy)
-            ax.annotate(f'{metric["tenant"]}/{metric["method"]}', (cost, accuracy), fontsize=8)
-    ax.set(xlabel="Observed mean cost per task (USD)", ylabel="Held-out success rate",
-           title="Synthetic pipeline check" if synthetic else "Offline cost-quality comparison")
-    if not curve_frame.empty:
-        ax.legend(fontsize=7)
-    fig.tight_layout()
-    fig.savefig(output / "cost-quality.png", dpi=140)
-    plt.close(fig)
+    try:
+        for (tenant, method), curve in curve_frame.groupby(["tenant", "method"]):
+            ax.plot(curve.mean_cost_usd, curve.accuracy, alpha=0.5,
+                    label=f"{tenant}/{method} thresholds (test diagnostics)")
+        for metric in metrics:
+            # Use raw observed task cost and accuracy without manipulating epsilon.
+            cost = metric.get("mean_cost_usd", metric.get("mean_cost"))
+            accuracy = metric.get("accuracy")
+            if cost is not None and accuracy is not None:
+                ax.scatter(cost, accuracy)
+                ax.annotate(f'{metric["tenant"]}/{metric["method"]}', (cost, accuracy), fontsize=8)
+        ax.set(xlabel="Observed mean cost per task (USD)", ylabel="Held-out success rate",
+               title="Synthetic pipeline check" if synthetic else "Offline cost-quality comparison")
+        if not curve_frame.empty:
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(output / "cost-quality.png", dpi=140)
+    finally:
+        plt.close(fig)

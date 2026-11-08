@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 
-from .ledger import Ledger
+from .ledger import MAX_TOKEN_COUNT, Ledger
 
 
 @dataclass(repr=False)
@@ -134,7 +134,7 @@ def _usage(provider: str, payload: dict[str, Any]) -> dict[str, int | None]:
         }
     return {
         key: value
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_TOKEN_COUNT
         else None
         for key, value in values.items()
     }
@@ -236,7 +236,9 @@ def create_app(
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise HTTPException(status_code=400, detail="A messages array is required")
         try:
-            json.dumps(body, allow_nan=False)
+            json.dumps(body, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            raise HTTPException(status_code=400, detail="JSON strings must be valid Unicode") from None
         except ValueError:
             raise HTTPException(status_code=400, detail="JSON numbers must be finite") from None
         if "stream" in body and not isinstance(body["stream"], bool):
@@ -263,6 +265,11 @@ def create_app(
             headers["anthropic-version"] = request.headers.get("anthropic-version", "2023-06-01")
             if "anthropic-beta" in request.headers:
                 headers["anthropic-beta"] = request.headers["anthropic-beta"]
+            try:
+                headers["anthropic-version"].encode("ascii")
+                headers.get("anthropic-beta", "").encode("ascii")
+            except UnicodeEncodeError:
+                raise HTTPException(status_code=400, detail="Provider protocol headers must contain ASCII text") from None
             path = "/v1/messages"
         url = _upstream_url(getattr(config, f"{provider}_base_url"), path)
         # Only non-secret settings that affect request semantics enter the key.
@@ -274,6 +281,10 @@ def create_app(
         if config.verified_cache and not stream:
             try:
                 cached = store.cached(identity, provider, body, cache_context=cache_context)
+                if cached is not None:
+                    # Older ledger entries may contain JSON strings that cannot
+                    # be rendered as UTF-8 by the cache response serializer.
+                    json.dumps(cached["response_body"], allow_nan=False, ensure_ascii=False).encode("utf-8")
             except Exception:
                 cached = None
             if cached is not None:
@@ -354,7 +365,10 @@ def create_app(
         await response.aclose()
         try:
             payload = json.loads(raw)
-        except (ValueError, UnicodeDecodeError):
+            json.dumps(payload, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        except (ValueError, UnicodeError):
+            # Preserve upstream bytes and the request record, but never cache
+            # malformed JSON values or derive accounting from them.
             payload = None
         tokens = _usage(provider, payload) if isinstance(payload, dict) else {
             "input_tokens": None, "output_tokens": None, "cached_tokens": None,

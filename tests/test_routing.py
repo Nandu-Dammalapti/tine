@@ -135,6 +135,7 @@ def test_fixed_embeddings_are_used_without_tfidf():
 @pytest.mark.parametrize("lookup", [
     {}, {("a", "1"): [np.nan]}, {("a", "1"): [[1, 2]]},
     {("a", "1"): [1], ("a", "2"): [1, 2]},
+    {("a", "1"): np.array([1+2j, 3+4j])},
 ])
 def test_invalid_embeddings(lookup):
     with pytest.raises(ValueError):

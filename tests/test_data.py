@@ -145,6 +145,34 @@ def test_nullable_numpy_measurements_keep_unknowns_and_reject_booleans():
         validate_outcomes(frame)
 
 
+@pytest.mark.parametrize("suffix", [".csv", ".jsonl"])
+def test_failed_outcome_encoding_preserves_existing_file(tmp_path, suffix):
+    path = tmp_path / ("outcomes" + suffix)
+    frame = synthetic_fixture(2)
+    write_outcomes(frame, path)
+    previous = path.read_bytes()
+    frame["prompt"] = "invalid\ud800"
+    with pytest.raises(UnicodeEncodeError):
+        write_outcomes(frame, path)
+    assert path.read_bytes() == previous
+
+
+def test_failed_outcome_publication_preserves_existing_file(tmp_path, monkeypatch):
+    path = tmp_path / "outcomes.jsonl"
+    frame = synthetic_fixture(2)
+    write_outcomes(frame, path)
+    previous = path.read_bytes()
+
+    def fail_replace(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr("tine.artifacts.os.replace", fail_replace)
+    with pytest.raises(OSError, match="disk failure"):
+        write_outcomes(synthetic_fixture(3), path)
+    assert path.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def _result_file(root, *, score=1, cost=0.01, dataset="humaneval", model="small", run="20260101_000000"):
     path = root / dataset / "test" / model / f"{run}.json"
     path.parent.mkdir(parents=True, exist_ok=True)

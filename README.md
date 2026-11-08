@@ -53,6 +53,8 @@ python -m tine demo --output artifacts/demo --tasks 2000
 
 This trains the CPU baselines on explicitly synthetic data, selects thresholds on held-out calibration rows, evaluates a separate test set, and writes `report.md`, `metrics.csv`, `calibration.json`, `splits.csv`, `decisions.csv`, `curves.csv`, and `cost-quality.png`. Costs used for routing are estimated from training rows; observed test costs are used only to evaluate decisions.
 
+Experiment outputs are generated in a temporary sibling directory and published together when the run succeeds. Reruns preserve the previous results on generation failure and keep unrelated files such as user notes. A hidden sibling `.tine.lock` file coordinates writers targeting the same directory on Linux and macOS. Choose a dedicated output directory outside the current working directory's ancestor chain. Output directories and generated artifact paths must be regular directories/files. If publication rollback fails, the error identifies the preserved recovery directory. Demo runs also publish their source outcome snapshot with the reports. Canonical CSV/JSONL exports use atomic file replacement to preserve existing data when encoding or writing fails. Reports recognize synthetic provenance even when those outcomes are reloaded through `tine run` or mixed with recorded data.
+
 For real data, import existing graded outcomes rather than regenerating answers:
 
 ```bash
