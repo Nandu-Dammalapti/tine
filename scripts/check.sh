@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
 export TINE_DEV_DIR="${TINE_DEV_DIR:-$repo_root/.tine-dev}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$TINE_DEV_DIR/cache}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$TINE_DEV_DIR/matplotlib}"
@@ -13,8 +14,7 @@ if [[ ! -x "$tine_python" ]]; then
   exit 1
 fi
 UV_CACHE_DIR="$TINE_DEV_DIR/uv-cache" uv pip check --python "$tine_python"
-"$TINE_DEV_DIR/venv/bin/ruff" check --isolated --no-cache "$repo_root/scripts/smoke.py"
-"$TINE_DEV_DIR/venv/bin/ruff" check --no-cache "$repo_root/tine" "$repo_root/tests"
+"$TINE_DEV_DIR/venv/bin/ruff" check --isolated --no-cache "$repo_root/tine" "$repo_root/scripts" "$repo_root/tests"
 "$tine_python" -u "$repo_root/scripts/smoke.py"
-cd "$repo_root"
-"$tine_python" -m pytest -q -p no:cacheprovider
+"$tine_python" -m pytest "$repo_root/tests" -q
+"$tine_python" -m uvicorn --version

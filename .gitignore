@@ -24,6 +24,3 @@ node_modules/
 build/
 dist/
 .DS_Store
-
-# Prompt embeddings (derived from prompts)
-*.npz

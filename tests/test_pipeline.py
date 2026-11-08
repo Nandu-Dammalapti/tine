@@ -1,70 +1,99 @@
 import json
 
 import numpy as np
+import pandas as pd
+import pytest
 
-from tine.__main__ import main
-from tine.baselines import AvengersProRouter, KNNRouter, oracle_choices
-from tine.data import RoutingTable, make_synthetic_results
-from tine.evaluate import routing_metrics
-from tine.pipeline import run_experiment
-from tine.predictors import make_predictor
+from tine.data import synthetic_fixture
+from tine.pipeline import complete_tasks, load_embeddings, preflight, prompt_hash, run_experiment, split_tasks
 
 
-def test_oracle_is_cheapest_success():
-    success = np.array([[0, 1, 1], [0, 0, 0]])
-    cost = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
-    assert oracle_choices(success, cost).tolist() == [1, 0]
+def test_duplicate_prompts_stay_in_same_partition():
+    tasks = pd.DataFrame({"tenant": ["a"] * 20, "task_id": [str(i) for i in range(20)],
+                          "prompt": [f"question {i % 10}" for i in range(20)], "task_type": "coding"})
+    split = split_tasks(tasks)
+    assert set(split.split) == {"train", "score_calibration", "risk_calibration", "test"}
+    assert split.groupby("prompt").split.nunique().eq(1).all()
+    pd.testing.assert_frame_equal(split, split_tasks(tasks))
 
 
-def test_predictors_return_probabilities():
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(120, 5))
-    Y = (rng.random((120, 3)) < 0.5).astype(float)
-    Y[0, 0] = np.nan  # pending outcome is skipped
-    for name in ("knn", "logreg", "gbt"):
-        P = make_predictor(name).fit(X, Y).predict_proba(X[:7])
-        assert P.shape == (7, 3) and np.all((P >= 0) & (P <= 1))
+def test_incomplete_outcome_is_excluded_not_filled():
+    frame = synthetic_fixture(n_tasks=30)
+    missing_id = frame.iloc[0].task_id
+    frame = frame.drop(frame.index[0])
+    result, tasks, excluded = complete_tasks(frame, "frontier")
+    assert missing_id not in tasks.task_id.to_list()
+    assert missing_id not in result.task_id.to_list()
+    assert len(excluded) == 1
 
 
-def test_baseline_routers_choose_valid_models():
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(200, 4))
-    success = (rng.random((200, 3)) < 0.7).astype(float)
-    cost = np.tile([1.0, 2.0, 5.0], (200, 1))
-    for router, param in ((KNNRouter(), 0.5), (AvengersProRouter(n_clusters=5), 0.5)):
-        prepared = router.fit(X, success, cost).prepare(X[:10])
-        choices = router.choose(prepared, param)
-        assert choices.shape == (10,) and choices.min() >= 0 and choices.max() <= 2
+def test_duplicate_tasks_cannot_inflate_calibration_sample_size():
+    frame = synthetic_fixture(n_tasks=30)
+    copy = frame.loc[frame.task_id == "synthetic-0"].copy()
+    copy["task_id"] = "copy-0"
+    _, tasks, excluded = complete_tasks(pd.concat([frame, copy], ignore_index=True), "frontier")
+    assert len(tasks) == 30
+    assert len(excluded) == 1
+    assert excluded[0]["reason"] == "duplicate_prompt"
 
 
-def test_metrics_against_frontier():
-    success = np.array([[1, 1], [0, 1]])
-    cost = np.array([[1.0, 4.0], [1.0, 4.0]])
-    m = routing_metrics(np.array([0, 0]), success, cost, frontier=1)
-    assert m["savings_pct"] == 75.0
-    assert m["quality_loss"] == 0.5 and m["regret_rate"] == 0.5
+def test_embeddings_are_bound_to_prompts_and_no_pickle(tmp_path):
+    tasks = pd.DataFrame([{"tenant": "a", "task_id": "x", "prompt": "hello"}])
+    path = tmp_path / "features.npz"
+    np.savez(path, tenants=["a"], task_ids=["x"], prompt_hashes=[prompt_hash("hello")], embeddings=[[1.0, 2.0]])
+    lookup = load_embeddings(path, tasks)
+    assert np.allclose(lookup[("a", "x")], [1, 2])
+    tasks.loc[0, "prompt"] = "changed"
+    with pytest.raises(ValueError, match="stale"):
+        load_embeddings(path, tasks)
 
 
-def test_end_to_end_on_synthetic(tmp_path):
-    table = RoutingTable.from_results(make_synthetic_results(n_tasks=1500, seed=3))
-    summary = run_experiment(table, epsilon=0.05, delta=0.1, min_samples=100, out_dir=tmp_path)
-    assert summary["frontier"] == "frontier"
-    assert set(summary["thresholds"]) == {"*"}
-    assert (tmp_path / "cost_quality.png").stat().st_size > 1000
-    saved = json.loads((tmp_path / "summary.json").read_text())
-    assert saved["tasks"]["calibration"] == 300
-    assert summary["router_latency_ms"]["p50"] < 50
+def test_full_experiment_reports_fallback_and_no_split_leakage(tmp_path):
+    frame = synthetic_fixture(n_tasks=60, seed=12)
+    result = run_experiment(frame, "frontier", tmp_path, synthetic=True)
+    assert result["synthetic"] is True
+    assert result["complete_tasks"] == 60
+    assert {item["method"] for item in result["metrics"]} == {"frontier", "random", "oracle", "logistic", "knn", "cluster"}
+    calibration = json.loads((tmp_path / "calibration.json").read_text())
+    assert all(item["force_frontier"] for item in calibration)
+    readiness = preflight(frame, "frontier")
+    assert readiness["minimum_risk_tasks_at_zero_degradations"] == 354
+    assert readiness["comparisons"] == len(calibration) * calibration[0]["thresholds_tested"]
+    assert readiness["groups"][0]["risk_calibration"] == calibration[0]["n"]
+    assert readiness["groups"][0]["enough_risk_tasks_at_zero_degradations"] is False
+    choices = pd.read_csv(tmp_path / "decisions.csv")
+    assert choices.loc[choices.method.isin(["logistic", "knn", "cluster"]), "model"].eq("frontier").all()
+    splits = pd.read_csv(tmp_path / "splits.csv")
+    assert splits.groupby("prompt_hash").split.nunique().eq(1).all()
+    assert (tmp_path / "cost-quality.png").read_bytes().startswith(b"\x89PNG")
+    assert "SYNTHETIC" in (tmp_path / "report.md").read_text()
 
 
-def test_precomputed_embeddings_are_used_and_aligned(tmp_path):
-    table = RoutingTable.from_results(make_synthetic_results(n_tasks=600, seed=4))
-    embeddings = np.random.default_rng(0).normal(size=(len(table), 8))
-    summary = run_experiment(table, embeddings=embeddings, embedding_source="random test",
-                             min_samples=100, epsilon=0.05, delta=0.1)
-    assert summary["embedding_source"] == "random test"
-    assert summary["router_latency_ms"]["includes_embedding"] is False
+
+def test_dataset_fingerprint_distinguishes_small_costs(tmp_path):
+    frame = synthetic_fixture(n_tasks=16)
+    frame.loc[0, "cost_usd"] = 1e-11
+    first = run_experiment(frame, "frontier", tmp_path / "first", thresholds=[0.5])
+    frame.loc[0, "cost_usd"] = 2e-11
+    second = run_experiment(frame, "frontier", tmp_path / "second", thresholds=[0.5])
+    assert first["dataset_sha256"] != second["dataset_sha256"]
 
 
-def test_cli_demo(tmp_path, capsys):
-    assert main(["demo", "--n-tasks", "800", "--min-samples", "100", "--out", str(tmp_path)]) == 0
-    assert "Gacrux (certified)" in capsys.readouterr().out
+def test_empty_threshold_grid_writes_frontier_fallback_report(tmp_path):
+    frame = synthetic_fixture(n_tasks=60, seed=12)
+    run_experiment(frame, "frontier", tmp_path, thresholds=[], synthetic=True)
+
+    calibration = json.loads((tmp_path / "calibration.json").read_text())
+    assert all(item["force_frontier"] and item["thresholds_tested"] == 0 for item in calibration)
+    choices = pd.read_csv(tmp_path / "decisions.csv")
+    assert choices.loc[choices.method.isin(["logistic", "knn", "cluster"]), "model"].eq("frontier").all()
+    curves = pd.read_csv(tmp_path / "curves.csv")
+    assert curves.empty
+    assert {"tenant", "method", "tau", "mean_cost_usd", "accuracy"} <= set(curves.columns)
+    assert (tmp_path / "cost-quality.png").is_file()
+
+
+def test_insufficient_unique_prompts_refused():
+    tasks = pd.DataFrame({"tenant": "x", "task_id": [str(i) for i in range(7)], "prompt": [str(i) for i in range(7)]})
+    with pytest.raises(ValueError, match="at least 8"):
+        split_tasks(tasks)

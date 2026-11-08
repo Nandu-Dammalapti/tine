@@ -3,24 +3,22 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tine"
+name = "tine-router"
 version = "0.1.0"
-description = "Gacrux router v1: cheapest model that clears a certified quality bar"
-requires-python = ">=3.10"
-# Exact versions for local work live in requirements-dev.lock. These are loose so
-# Colab can import the package without replacing its preinstalled libraries.
-dependencies = ["numpy", "pandas", "scipy", "scikit-learn", "matplotlib"]
+description = "Outcome-based AI routing experiments and development proxy"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.26,<3", "pandas>=2.2,<4", "scipy>=1.12,<2",
+  "scikit-learn>=1.5,<2", "matplotlib>=3.8,<4",
+  "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "httpx>=0.27,<1",
+]
 
-[project.optional-dependencies]
-colab-embed = ["sentence-transformers"]
-colab-generate = ["vllm"]
+[project.scripts]
+tine = "tine.__main__:main"
 
-[tool.setuptools]
-packages = ["tine"]
-
-[tool.ruff]
-line-length = 100
+[tool.setuptools.packages.find]
+include = ["tine*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+addopts = "-ra"

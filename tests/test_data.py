@@ -4,104 +4,173 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tine.data import RoutingTable, load_llmrouterbench, make_synthetic_results, split_indices
-from tine.features import TfidfEmbedder, load_embeddings, save_embeddings
-from tine.schema import RESULT_COLUMNS, validate_results
+from tine.data import (
+    import_llmrouterbench,
+    read_outcomes,
+    synthetic_fixture,
+    validate_outcomes,
+    write_outcomes,
+)
 
 
-def _row(**overrides):
-    row = dict(tenant="t1", task_id="a", prompt="p", task_type="coding", model="m1",
-               success=1, cost_usd=0.01, input_tokens=10, output_tokens=5, cached_tokens=0,
-               latency_ms=1.0, timestamp="2026-11-06")
-    row.update(overrides)
-    return row
+def test_fixture_is_reproducible_and_has_complete_model_outcomes():
+    frame = synthetic_fixture(50, seed=7)
+    pd.testing.assert_frame_equal(frame, synthetic_fixture(50, seed=7))
+    assert len(frame) == 150
+    assert frame.groupby("task_id")["model"].nunique().eq(3).all()
+    assert set(frame["cost_source"]) == {"synthetic"}
 
 
-def test_pending_outcome_is_unknown_not_failure():
-    frame = pd.DataFrame([_row(success="pending"), _row(model="m2", success=False)])
-    out = validate_results(frame)
-    assert np.isnan(out["success"].iloc[0])
-    assert out["success"].iloc[1] == 0.0
+@pytest.mark.parametrize("suffix", [".csv", ".jsonl"])
+def test_roundtrip_keeps_unknown_outcomes_and_false_labels(tmp_path, suffix):
+    frame = synthetic_fixture(4)
+    frame.loc[0, "success"] = None
+    frame.loc[1, "success"] = False
+    path = tmp_path / ("outcomes" + suffix)
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    assert pd.isna(loaded.loc[0, "success"])
+    assert loaded.loc[1, "success"] is False
+    with pytest.raises(ValueError, match="Pending"):
+        read_outcomes(path, require_known=True)
 
 
-def test_success_values_read_from_text():
-    frame = pd.DataFrame([_row(model=f"m{i}", success=v)
-                          for i, v in enumerate(["1.0", "0", "TRUE", "failure", " ", True])])
-    np.testing.assert_array_equal(validate_results(frame)["success"].to_numpy(),
-                                  [1, 0, 1, 0, np.nan, 1])
+@pytest.mark.parametrize("suffix", [".csv", ".jsonl", ".ndjson"])
+def test_roundtrip_preserves_recorded_costs_and_measurements(tmp_path, suffix):
+    frame = synthetic_fixture(2)
+    frame["cost_usd"] = [1.234567890123456e-8, 1.234567890123456e-11, 1.234567890123456e-18] * 2
+    frame["latency_ms"] = [0.1234567890123456, np.nan, 12345.67890123456] * 2
+    frame["input_tokens"] = [123456789012345, 456, 789] * 2
+    path = tmp_path / ("outcomes" + suffix)
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    np.testing.assert_array_equal(loaded.cost_usd, frame.cost_usd)
+    np.testing.assert_array_equal(loaded.latency_ms, frame.latency_ms)
+    np.testing.assert_array_equal(loaded.input_tokens, frame.input_tokens)
+
+
+@pytest.mark.parametrize("text", ["NA", "N/A", "null", "NULL", "NaN", "None", "001", "123", "true", 'Explain "λ",\nthen return 1'])
+def test_csv_roundtrip_preserves_text_fields(tmp_path, text):
+    frame = synthetic_fixture(1).iloc[[0]].copy()
+    text_columns = ["tenant", "task_id", "prompt", "task_type", "model"]
+    for column in text_columns:
+        frame[column] = text
+    frame["success"] = None
+    frame["input_tokens"] = np.nan
+    frame["timestamp"] = None
+    path = tmp_path / "outcomes.csv"
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    assert loaded[text_columns].iloc[0].tolist() == [text] * len(text_columns)
+    assert loaded[["success", "input_tokens", "timestamp"]].isna().all().all()
+
+
+def test_jsonl_roundtrip_preserves_timestamps_and_nullable_provenance(tmp_path):
+    frame = synthetic_fixture(1).iloc[[0]].copy()
+    timestamp = pd.Timestamp("2026-11-07T09:00:00.123456+00:00")
+    frame["timestamp"] = timestamp
+    frame["source_metadata"] = [{
+        "score": np.float64(0.1234567890123456),
+        "attempts": np.int64(2),
+        "checks": [np.bool_(True), None, np.nan, pd.NA],
+        "measurements": np.array([0.1234567890123456, np.nan]),
+    }]
+    path = tmp_path / "outcomes.jsonl"
+    write_outcomes(frame, path)
+    loaded = read_outcomes(path)
+    assert pd.Timestamp(loaded.loc[0, "timestamp"]) == timestamp
+    assert loaded.loc[0, "source_metadata"] == {
+        "score": 0.1234567890123456, "attempts": 2,
+        "checks": [True, None, None, None],
+        "measurements": [0.1234567890123456, None],
+    }
+    assert "NaN" not in path.read_text()
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".ndjson"])
+def test_json_lines_preserve_unicode_separators_inside_records(tmp_path, suffix):
+    frame = synthetic_fixture(1)
+    text = "First line\u2028second line\u2029next paragraph\u0085last line"
+    frame["prompt"] = text
+    frame["source_metadata"] = [{"note": text} for _ in range(len(frame))]
+    path = tmp_path / ("outcomes" + suffix)
+    write_outcomes(frame, path)
+
+    loaded = read_outcomes(path)
+
+    assert loaded["prompt"].tolist() == [text] * len(frame)
+    assert loaded["source_metadata"].tolist() == frame["source_metadata"].tolist()
+
+
+@pytest.mark.parametrize("column,value", [
+    ("cost_usd", -1), ("cost_usd", np.inf), ("cost_usd", np.nan),
+    ("input_tokens", 1.5), ("cached_tokens", 10000), ("latency_ms", -1),
+    ("success", "ungraded"), ("success", 0.5), ("prompt", ""),
+])
+def test_invalid_measurements_are_rejected(column, value):
+    frame = synthetic_fixture(2)
+    frame[column] = frame[column].astype(object)
+    frame.loc[0, column] = value
     with pytest.raises(ValueError):
-        validate_results(pd.DataFrame([_row(success="0.5")]))
+        validate_outcomes(frame)
 
 
-def test_rejects_missing_columns_and_duplicates():
-    with pytest.raises(ValueError, match="Missing"):
-        validate_results(pd.DataFrame([{"tenant": "t1"}]))
-    with pytest.raises(ValueError, match="One row per"):
-        validate_results(pd.DataFrame([_row(), _row()]))
+def test_duplicate_model_outcome_and_conflicting_prompts_are_rejected():
+    frame = synthetic_fixture(2)
+    with pytest.raises(ValueError, match="Duplicate"):
+        validate_outcomes(pd.concat([frame, frame.iloc[[0]]]))
+    frame.loc[0, "prompt"] = "different request"
+    with pytest.raises(ValueError, match="Conflicting prompt"):
+        validate_outcomes(frame)
 
 
-def test_table_is_single_tenant():
-    frame = pd.DataFrame([_row(), _row(tenant="t2")])
-    with pytest.raises(ValueError, match="several tenants"):
-        RoutingTable.from_results(frame)
-    table = RoutingTable.from_results(frame, tenant="t2")
-    assert table.tenant == "t2" and len(table) == 1
+def _result_file(root, *, score=1, cost=0.01, dataset="humaneval", model="small", run="20260101_000000"):
+    path = root / dataset / "test" / model / f"{run}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "dataset_name": dataset, "split": "test", "model_name": model,
+        "cost": 99.0,
+        "records": [{"index": 0, "origin_query": "Implement add(a, b)", "prompt": "model-specific wrapper",
+                     "score": score, "cost": cost, "prompt_tokens": 12, "completion_tokens": 8}],
+    }
+    path.write_text(json.dumps(payload))
+    return path
 
 
-def test_table_pivot_and_complete():
-    frame = pd.DataFrame([
-        _row(task_id="a", model="m1", success=1),
-        _row(task_id="a", model="m2", success=0),
-        _row(task_id="b", model="m1", success="pending"),
-        _row(task_id="b", model="m2", success=1),
-    ])
-    table = RoutingTable.from_results(frame)
-    assert table.models == ["m1", "m2"]
-    assert table.success.shape == (2, 2)
-    complete = table.complete()
-    assert list(complete.task_ids) == ["a"]
+def test_upstream_adapter_preserves_costs_and_alignment_without_inventing_measurements(tmp_path):
+    _result_file(tmp_path, model="small")
+    _result_file(tmp_path, model="large", cost=0.02)
+    _result_file(tmp_path, dataset="mbpp", model="large", cost=0.03)
+    frame = import_llmrouterbench(tmp_path)
+    assert set(frame["task_id"]) == {"humaneval:test:0", "mbpp:test:0"}
+    assert frame["prompt"].eq("Implement add(a, b)").all()
+    assert sorted(frame["cost_usd"]) == [0.01, 0.02, 0.03]
+    assert frame["cached_tokens"].isna().all()
+    assert frame["latency_ms"].isna().all()
+    assert frame["source_sha256"].str.len().eq(64).all()
 
 
-def test_split_is_disjoint_and_stratified():
-    types = np.array(["x"] * 100 + ["y"] * 50)
-    train, cal, test = split_indices(types, seed=1)
-    assert len(set(train) | set(cal) | set(test)) == 150
-    assert not set(train) & set(cal) and not set(cal) & set(test)
-    assert (types[cal] == "y").sum() == 10
+def test_fractional_score_needs_explicit_label_policy(tmp_path):
+    path = _result_file(tmp_path, score=0.8)
+    with pytest.raises(ValueError, match="success must"):
+        import_llmrouterbench(path)
+    frame = import_llmrouterbench(path, score_threshold=0.9)
+    assert frame.loc[0, "success"] is False
+    assert frame.loc[0, "source_score"] == 0.8
 
 
-def test_synthetic_has_schema():
-    frame = make_synthetic_results(n_tasks=20)
-    assert tuple(frame.columns) == RESULT_COLUMNS
-    assert len(frame) == 20 * 4
+def test_null_label_is_pending_and_missing_cost_never_uses_aggregate(tmp_path):
+    path = _result_file(tmp_path, score=None)
+    assert import_llmrouterbench(path)["success"].isna().all()
+    _result_file(tmp_path, score=1, cost=None)
+    with pytest.raises(ValueError, match="per-record cost"):
+        import_llmrouterbench(path)
 
 
-def test_llmrouterbench_layout(tmp_path):
-    for model, scores in {"small": [1.0, 0.0], "big": [1.0, 1.0]}.items():
-        folder = tmp_path / "humaneval" / "test" / model
-        folder.mkdir(parents=True)
-        records = [{"index": i, "prompt": f"q{i}", "origin_query": f"q{i}", "score": s,
-                    "prompt_tokens": 10, "completion_tokens": 20, "cost": 0.001 * (i + 1)}
-                   for i, s in enumerate(scores)]
-        (folder / "20250101.json").write_text(json.dumps({"records": [{"score": 0.0}]}))
-        (folder / "20250201.json").write_text(json.dumps({"performance": 1, "records": records}))
-    frame = load_llmrouterbench(tmp_path)
-    table = RoutingTable.from_results(frame)
-    assert table.models == ["big", "small"]
-    assert list(table.task_ids) == ["humaneval/test/0", "humaneval/test/1"]
-    np.testing.assert_array_equal(table.success, [[1, 1], [1, 0]])  # newest run wins
-
-
-def test_embeddings_roundtrip_in_requested_order(tmp_path):
-    path = tmp_path / "e.npz"
-    save_embeddings(path, ["a", "b", "c"], np.eye(3), "test-model")
-    vectors = load_embeddings(path, ["c", "a"])
-    np.testing.assert_allclose(vectors, [[0, 0, 1], [1, 0, 0]])
-    with pytest.raises(ValueError, match="no embedding"):
-        load_embeddings(path, ["zzz"])
-
-
-def test_tfidf_embedder_unit_vectors():
-    prompts = np.array(["fix the python bug", "solve this integral", "rewrite the email"] * 5)
-    X = TfidfEmbedder(n_components=4).fit(prompts).transform(prompts)
-    np.testing.assert_allclose(np.linalg.norm(X, axis=1), 1.0, atol=1e-5)
+def test_multiple_runs_require_explicit_latest_selection(tmp_path):
+    _result_file(tmp_path, score=0)
+    _result_file(tmp_path, score=1, run="20260201_000000")
+    with pytest.raises(ValueError, match="Multiple recorded runs"):
+        import_llmrouterbench(tmp_path)
+    frame = import_llmrouterbench(tmp_path, run_selection="latest")
+    assert len(frame) == 1 and frame.loc[0, "success"] is True
