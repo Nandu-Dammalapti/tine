@@ -28,6 +28,17 @@ def main(argv=None):
         importer.add_argument(f"--{option}")
     importer.add_argument("--score-threshold", type=float)
     importer.add_argument("--run-selection", choices=("error", "latest"), default="error")
+    cascade = commands.add_parser("cascade", help="Evaluate try-cheap-first escalation chains")
+    cascade.add_argument("--input", type=Path, required=True)
+    cascade.add_argument("--frontier", required=True)
+    cascade.add_argument("--output", type=Path, required=True)
+    cascade.add_argument("--epsilon", type=float, nargs="+", default=[0.02, 0.01, 0.005])
+    cascade.add_argument("--catch", type=float, nargs="+", default=[1.0, 0.95, 0.9],
+                         help="Assumed share of wrong answers the check catches")
+    cascade.add_argument("--seeds", type=int, default=10)
+    cascade.add_argument("--checks", type=Path, help="Measured check results CSV (task_id, model, passed)")
+    cascade.add_argument("--delta", type=float, default=0.05)
+    cascade.add_argument("--max-length", type=int, default=3)
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
     combine.add_argument("--output", type=Path, required=True)
@@ -77,6 +88,19 @@ def main(argv=None):
                                      score_threshold=args.score_threshold, run_selection=args.run_selection)
         print(json.dumps({"rows": len(frame), "tasks": len(frame[["tenant", "task_id"]].drop_duplicates()),
                           "models": sorted(frame.model.unique()), "output": str(args.output)}, indent=2))
+    elif args.command == "cascade":
+        from tine.cascade import run_cascade_experiment
+        from tine.data import read_outcomes
+
+        import pandas as pd
+
+        checks = pd.read_csv(args.checks) if args.checks else None
+        result = run_cascade_experiment(read_outcomes(args.input), args.frontier, args.output,
+                                        epsilons=args.epsilon, catches=args.catch, checks=checks,
+                                        delta=args.delta, seeds=range(args.seeds),
+                                        max_length=args.max_length)
+        print(json.dumps(result["summary"], indent=2, default=float))
+        print(f"Report: {args.output / 'report.md'}")
     elif args.command == "combine-outcomes":
         from tine.data import combine_outcomes, read_outcomes, write_outcomes
 

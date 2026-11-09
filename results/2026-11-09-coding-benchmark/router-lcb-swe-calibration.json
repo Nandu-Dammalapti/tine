@@ -1,0 +1,29 @@
+[
+  {
+    "method": "logistic",
+    "tau": null,
+    "n": 311,
+    "reason": "no_certified_threshold",
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "thresholds_tested": 1
+  },
+  {
+    "method": "knn",
+    "tau": null,
+    "n": 311,
+    "reason": "no_certified_threshold",
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "thresholds_tested": 1
+  },
+  {
+    "method": "cluster",
+    "tau": 0.9,
+    "n": 311,
+    "reason": "certified_threshold",
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "thresholds_tested": 4
+  }
+]
