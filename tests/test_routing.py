@@ -48,6 +48,14 @@ def test_invalid_decision_inputs(scores, costs, tau, index):
         route_indices(scores, costs, tau, index)
 
 
+@pytest.mark.parametrize("field", ["scores", "costs"])
+@pytest.mark.parametrize("bad", [np.array([[0.9 + 4j, 1]]), [[False, 1.0]], np.array([[0.9 + 4j, 1]], dtype=object)])
+def test_route_rejects_numeric_inputs_that_would_change_during_conversion(field, bad):
+    values = {"scores": [[0.9, 1.0]], "costs": [[1.0, 10.0]], field: bad}
+    with pytest.raises(ValueError, match=field):
+        route_indices(**values, tau=0.8, frontier_index=1)
+
+
 @pytest.mark.parametrize("method", ["logistic", "knn", "cluster"])
 def test_scores_are_probabilities_and_frontier_is_calibrated(fitted, method):
     result = fitted.predict_scores(tasks(outcomes("test")), method)
@@ -75,6 +83,14 @@ def test_fit_rejects_boolean_costs(partition, value):
     frames = {"train": outcomes("train"), "score_calibration": outcomes("score")}
     frames[partition]["cost_usd"] = frames[partition]["cost_usd"].astype(object)
     frames[partition].loc[0, "cost_usd"] = value
+    with pytest.raises(ValueError, match="cost_usd"):
+        Router("frontier").fit(**frames)
+
+
+@pytest.mark.parametrize("partition", ["train", "score_calibration"])
+def test_fit_rejects_complex_costs(partition):
+    frames = {"train": outcomes("train"), "score_calibration": outcomes("score")}
+    frames[partition]["cost_usd"] = frames[partition]["cost_usd"].astype(complex) + 2j
     with pytest.raises(ValueError, match="cost_usd"):
         Router("frontier").fit(**frames)
 

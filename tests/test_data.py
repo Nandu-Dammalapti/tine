@@ -145,6 +145,14 @@ def test_nullable_numpy_measurements_keep_unknowns_and_reject_booleans():
         validate_outcomes(frame)
 
 
+@pytest.mark.parametrize("column", ["cost_usd", "input_tokens", "output_tokens", "cached_tokens", "latency_ms"])
+def test_complex_measurements_are_not_silently_converted_to_real(column):
+    frame = synthetic_fixture(2)
+    frame[column] = frame[column].astype(complex) + 2j
+    with pytest.raises(ValueError, match=column):
+        validate_outcomes(frame)
+
+
 @pytest.mark.parametrize("suffix", [".csv", ".jsonl"])
 def test_failed_outcome_encoding_preserves_existing_file(tmp_path, suffix):
     path = tmp_path / ("outcomes" + suffix)

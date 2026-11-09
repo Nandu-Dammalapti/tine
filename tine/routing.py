@@ -20,6 +20,8 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 from threadpoolctl import threadpool_limits
 
+from tine.numeric import real_array
+
 
 TASK_COLUMNS = ["tenant", "task_id", "prompt", "task_type"]
 METHODS = ("logistic", "knn", "cluster")
@@ -58,12 +60,7 @@ def _validate_outcomes(frame: pd.DataFrame) -> pd.DataFrame:
         and value in (0, 1)
     ).all():
         raise ValueError("Known success labels must be Boolean or zero/one")
-    if result["cost_usd"].map(lambda value: isinstance(value, (bool, np.bool_))).any():
-        raise ValueError("cost_usd must contain numeric measurements; booleans are invalid")
-    try:
-        costs = result["cost_usd"].to_numpy(dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("cost_usd must be numeric") from exc
+    costs = real_array(result["cost_usd"], "cost_usd")
     if not np.isfinite(costs).all() or (costs < 0).any():
         raise ValueError("cost_usd must be finite and nonnegative")
     result["cost_usd"] = costs
@@ -84,8 +81,8 @@ def route_indices(
     does not exclude a cheaper model whose score is exactly one. Cost ties are
     resolved by column order. Predictions and costs must be finite and valid.
     """
-    scores = np.asarray(scores, dtype=float)
-    costs = np.asarray(costs, dtype=float)
+    scores = real_array(scores, "scores")
+    costs = real_array(costs, "costs")
     if scores.ndim != 2 or scores.shape != costs.shape or scores.shape[1] == 0:
         raise ValueError("scores and costs must be matching task-by-model matrices")
     if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():

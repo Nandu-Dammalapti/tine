@@ -68,6 +68,8 @@ python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME 
 
 `EXACT_MODEL_NAME` is your predeclared baseline from the printed model names. Canonical CSV/JSONL rows contain tenant, task ID, prompt, task type, model, a known/pending success label, and recorded per-task cost. Optional token counts, latency, and timestamps remain unknown when absent. Missing outcomes are never silently treated as failures; incomplete tasks and duplicate prompts are excluded and recorded. Import does not execute model-generated code.
 
+Measurements, routing scores, and cost matrices must contain real numbers. Boolean and complex-valued measurements are rejected before conversion, including direct Python calls to routing, calibration, and evaluation. Success labels remain Boolean or pending.
+
 The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
 
 ## Prepare original coding tasks

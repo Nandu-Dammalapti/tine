@@ -24,6 +24,7 @@ import numpy as np
 from scipy.stats import beta
 
 from tine.routing import route_indices
+from tine.numeric import real_array
 
 
 def _integer(value: object, name: str, minimum: int = 0) -> int:
@@ -87,7 +88,7 @@ def _matrices(outcomes, costs, frontier_index):
         raise ValueError("outcomes must have shape (tasks, models) with at least one model")
     if outcomes.dtype != np.dtype(bool):
         raise ValueError("outcomes must contain known boolean success labels")
-    costs = np.asarray(costs, dtype=float)
+    costs = real_array(costs, "costs")
     if costs.shape != outcomes.shape or not np.isfinite(costs).all() or (costs < 0).any():
         raise ValueError("costs must match outcomes and be finite and nonnegative")
     frontier_index = _integer(frontier_index, "frontier_index")
@@ -127,7 +128,7 @@ def calibrate(
     outcomes, estimated_costs, frontier_index = _matrices(
         outcomes, estimated_costs, frontier_index
     )
-    scores = np.asarray(scores, dtype=float)
+    scores = real_array(scores, "scores")
     if (
         scores.shape != outcomes.shape
         or not np.isfinite(scores).all()
