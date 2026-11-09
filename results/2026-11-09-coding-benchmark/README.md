@@ -46,7 +46,7 @@ model in turn and escalates when its answer fails the check.
 
 - `catch` = share of wrong answers the check catches. Benchmark labels come from
   hidden tests, so `catch = 1.0` is an optimistic upper bound; 0.95 and 0.90 are
-  simulated per wrong answer. Real catch rates are not measured yet (see Next).
+  simulated per wrong answer. Section 3 measures real public-sample checks.
 - `uncertified` = cheapest chain with degradation <= epsilon on the choose part.
   `certified` = additionally passes a one-sided Clopper-Pearson bound <= epsilon on
   the certify part (chains tested in a fixed order, stop at first failure).
@@ -74,16 +74,49 @@ Takeaways:
 - Average calls per task: 1.7 (`lcb`) to 2.2 (`lcb-swe`), so failed attempts add latency.
 - Costs are recorded per-task benchmark costs; running the checks is not costed.
 
+## 3. Measured public-sample checks (LiveCodeBench)
+
+`sample-check-rates-lcb.csv`, `cascade-lcb-measured-summary.csv`.
+
+`scripts/lcb_sample_checks.py` ran every recorded answer of the 28 `lcb` models
+(29,540 answers) against the problem's public samples: stdin problems as real
+programs, LeetCode-style problems through the method. Each answer ran as the
+`nobody` user with an empty environment, no network (`unshare -n`), CPU, memory
+and file-size limits and a 2-second limit per sample.
+
+- Coverage: samples parsed for 99.8% of answers (2 of 1,055 problems have none;
+  those count as "passed", nothing caught).
+- False rejects: 0.2% of right answers fail their samples (1 of 911 for gpt-5).
+- Catch rate (share of wrong answers that fail the samples) is **low for the strong
+  cheap models**: qwen3-235b-a22b-2507 38%, qwen3-235b-a22b-thinking 52%,
+  intern-s1-new 68%, deepseek-v3.1-terminus 70%, qwen3-235b-a22b-thinking-2507 74%,
+  gpt-5 31%. Weak models' wrong answers are easy to catch (88-100%), but those
+  models are rarely right.
+- Overall catch rate 79% across all models, dominated by weak models.
+- Moving from a 4-second to a 2-second per-sample limit changed 4 of 1,055 gpt-5 verdicts.
+
+Cascade with these measured checks (`tine cascade --checks`, 10 seeds, gpt-5 frontier):
+
+| epsilon | uncertified: saved / runs over epsilon | certified: saved |
+| --- | --- | --- |
+| 0.02 | 0% (no chain fits) | 0% |
+| 0.01 | 0% (no chain fits) | 0% |
+| 0.05 | 51% / 4 of 10 (accuracy 85.0% vs 87.1%) | 0% |
+
+**Conclusion:** public samples are far too weak a check. The 38-42% certified
+savings in section 2 need checks that catch about 95% or more of wrong answers;
+real visible tests catch 38-74% for the models worth trying first.
+
 ## Next
 
-1. Measure real check quality: `scripts/lcb_sample_checks.py` runs each model's
-   recorded LiveCodeBench answer against the problem's public sample tests (609 stdin
-   problems, 444 LeetCode-style). It executes model-generated code: run it only in an
-   isolated environment. It uses `unshare -n` (no network) and resource limits; not yet
-   run. Feed its CSV to `tine cascade --checks`.
-2. Run the official Avengers-Pro code on the same pools for a head-to-head
+1. Stronger checks: combine the sample check with the router's predictor (try a cheap
+   model only when it is predicted likely right *and* its answer passes the samples),
+   differential testing between models on generated inputs, or a judge model.
+   Measure each the same way (catch rate, false-reject rate, certified savings).
+2. Customer test suites and CI are usually stronger than benchmark public samples;
+   measure their catch rate in shadow mode before relying on escalation.
+3. Run the official Avengers-Pro code on the same pools for a head-to-head
    (our `cluster` method is only an Avengers-style heuristic).
-3. Use the predictor to choose a chain per kind of task, or to skip straight to gpt-5.
 
 ## Reproduce
 
@@ -97,4 +130,7 @@ python -m tine combine-outcomes --input DATA/outcomes-livecodebench.jsonl --outp
 python -m tine combine-outcomes --input DATA/outcomes-livecodebench.jsonl DATA/outcomes-swe-bench.jsonl --output DATA/lcb-swe.jsonl --task-type coding --exclude-model openrouter
 python -m tine run --input DATA/lcb.jsonl --frontier gpt-5 --output RUNS/router-lcb
 python -m tine cascade --input DATA/lcb.jsonl --frontier gpt-5 --output RUNS/cascade-lcb
+# Executes model-written code: Linux, run as root so it can drop to `nobody`, isolated machine only.
+python scripts/lcb_sample_checks.py --bench-dir BENCH/extracted/bench-release/livecodebench --output RUNS/lcb-checks.csv --models <the 28 lcb models> --workers 4
+python -m tine cascade --input DATA/lcb.jsonl --frontier gpt-5 --checks RUNS/lcb-checks.csv --epsilon 0.02 0.01 0.05 --output RUNS/cascade-lcb-measured
 ```
