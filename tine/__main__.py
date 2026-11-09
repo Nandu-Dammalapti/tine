@@ -28,6 +28,13 @@ def main(argv=None):
         importer.add_argument(f"--{option}")
     importer.add_argument("--score-threshold", type=float)
     importer.add_argument("--run-selection", choices=("error", "latest"), default="error")
+    combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
+    combine.add_argument("--input", type=Path, nargs="+", required=True)
+    combine.add_argument("--output", type=Path, required=True)
+    combine.add_argument("--task-type", help="Relabel every task to this one group, e.g. coding")
+    combine.add_argument("--exclude-model", action="append", default=[])
+    combine.add_argument("--keep-unpriced-models", action="store_true",
+                         help="Keep models whose recorded cost is zero on every row")
     coding = commands.add_parser("import-coding-tasks", help="Prepare original coding prompts and checks")
     coding.add_argument("--dataset", required=True, choices=("humaneval", "mbpp"))
     coding.add_argument("--input", type=Path, required=True)
@@ -68,6 +75,17 @@ def main(argv=None):
                                      score_threshold=args.score_threshold, run_selection=args.run_selection)
         print(json.dumps({"rows": len(frame), "tasks": len(frame[["tenant", "task_id"]].drop_duplicates()),
                           "models": sorted(frame.model.unique()), "output": str(args.output)}, indent=2))
+    elif args.command == "combine-outcomes":
+        from tine.data import combine_outcomes, read_outcomes, write_outcomes
+
+        if any(path.resolve() == args.output.resolve() for path in args.input):
+            parser.error("Output must differ from every input")
+        frame, report = combine_outcomes([read_outcomes(path) for path in args.input],
+                                         task_type=args.task_type,
+                                         exclude_models=args.exclude_model,
+                                         keep_unpriced_models=args.keep_unpriced_models)
+        write_outcomes(frame, args.output)
+        print(json.dumps({**report, "output": str(args.output)}, indent=2))
     elif args.command == "import-coding-tasks":
         from tine.coding_tasks import load_coding_tasks, write_coding_tasks
 

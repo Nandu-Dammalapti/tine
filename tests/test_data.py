@@ -223,3 +223,38 @@ def test_multiple_runs_require_explicit_latest_selection(tmp_path):
         import_llmrouterbench(tmp_path)
     frame = import_llmrouterbench(tmp_path, run_selection="latest")
     assert len(frame) == 1 and frame.loc[0, "success"] is True
+
+
+def _outcomes(dataset, models, n_tasks, cost=0.01):
+    return pd.DataFrame([
+        {"tenant": "benchmark", "task_id": f"{dataset}:test:{i}", "prompt": f"{dataset} task {i}",
+         "task_type": dataset, "model": model, "success": (i + j) % 2 == 0,
+         "cost_usd": 0.0 if model == "unpriced" else cost}
+        for i in range(n_tasks) for j, model in enumerate(models)
+    ])
+
+
+def test_combine_outcomes_pools_groups_and_drops_unusable_models(tmp_path):
+    from tine.__main__ import main
+    from tine.data import combine_outcomes
+
+    first = _outcomes("humaneval", ["big", "small", "unpriced", "only-here"], 3)
+    second = _outcomes("mbpp", ["big", "small", "unpriced"], 2)
+    frame, report = combine_outcomes([first, second], task_type="coding")
+    assert set(frame.task_type) == {"coding"}
+    assert set(frame.source_task_type) == {"humaneval", "mbpp"}
+    assert report["tasks_by_source"] == {"humaneval": 3, "mbpp": 2}
+    assert report["models_kept"] == ["big", "small"]
+    assert report["models_dropped"] == {"only-here": "missing_from_some_inputs",
+                                        "unpriced": "cost_not_recorded_all_zero"}
+    kept, _ = combine_outcomes([first, second], keep_unpriced_models=True, exclude_models=["small"])
+    assert sorted(kept.model.unique()) == ["big", "unpriced"]
+    assert set(kept.task_type) == {"humaneval", "mbpp"}
+
+    paths = []
+    for name, part in (("a.jsonl", first), ("b.jsonl", second)):
+        write_outcomes(part, tmp_path / name)
+        paths.append(str(tmp_path / name))
+    main(["combine-outcomes", "--input", *paths, "--output", str(tmp_path / "c.jsonl"),
+          "--task-type", "coding"])
+    assert len(read_outcomes(tmp_path / "c.jsonl")) == 5 * 2

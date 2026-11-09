@@ -24,9 +24,10 @@ def test_lowest_threshold_and_multiple_comparisons():
     result = calibrate(scores, costs, outcomes, 1, [0.8, 0.1, 0.5], family_size=4)
     assert result["tau"] == 0.1
     assert result["force_frontier"] is False
-    assert result["corrected_alpha"] == pytest.approx(0.05 / 12)
-    assert result["upper_bound"] == pytest.approx(clopper_pearson_upper(0, 1000, 0.05 / 12))
-    assert len(result["candidates"]) == 3
+    assert result["corrected_alpha"] == pytest.approx(0.05 / 4)  # family only, not grid size
+    assert result["upper_bound"] == pytest.approx(clopper_pearson_upper(0, 1000, 0.05 / 4))
+    assert [c["tau"] for c in result["candidates"]] == [0.8, 0.5, 0.1]  # cautious first
+    assert result["thresholds_tested"] == 3
 
 
 def test_small_calibration_forces_frontier_even_at_score_one():
@@ -128,3 +129,41 @@ def test_invalid_choice_indices_rejected():
     for choices in [[0.0, 0.0, 0.0], [0, -1, 0], [0, 2, 0], [0, 0]]:
         with pytest.raises(ValueError, match="choice_indices"):
             evaluate(choices, outcomes, costs, 1)
+
+
+def test_fixed_sequence_stops_at_first_failure():
+    # Three models: 0 cheapest (safe), 1 mid (degrades 20%), 2 frontier.
+    n = 1000
+    scores = np.tile([0.6, 0.9, 0.0], (n, 1))
+    costs = np.tile([0.1, 0.5, 1.0], (n, 1))
+    outcomes = np.ones((n, 3), dtype=bool)
+    outcomes[: n // 5, 1] = False
+    result = calibrate(scores, costs, outcomes, 2, [1.0, 0.9, 0.5])
+    # 1.0 passes (all frontier); 0.9 routes to the risky mid model and fails;
+    # 0.5 would pass (cheapest model is safe) but is never tested.
+    assert result["tau"] == 1.0
+    assert [c["tested"] for c in result["candidates"]] == [True, True, False]
+    assert [c["certified"] for c in result["candidates"]] == [True, False, False]
+    assert result["candidates"][2]["upper_bound"] <= 0.02  # diagnostic only
+    assert result["thresholds_tested"] == 2
+
+
+def test_fixed_sequence_failure_rate_stays_below_delta():
+    """Across many calibration draws, the chosen threshold's true degradation rate
+    exceeds epsilon at most about delta of the time, with a 50-threshold grid and
+    no division of delta across thresholds."""
+    epsilon, delta, n, fail_rate = 0.05, 0.1, 300, 0.12
+    grid = np.round(np.linspace(1.0, 0.02, 50), 2)
+    rng = np.random.default_rng(0)
+    costs = np.tile([0.1, 1.0], (n, 1))
+    violations, trials = 0, 400
+    for _ in range(trials):
+        score = rng.random(n)
+        scores = np.column_stack([score, np.zeros(n)])
+        outcomes = np.ones((n, 2), dtype=bool)
+        outcomes[:, 0] = rng.random(n) >= fail_rate
+        result = calibrate(scores, costs, outcomes, 1, grid, epsilon, delta)
+        # The cheap model is used when score >= tau; its true degradation rate:
+        if result["tau"] is not None and fail_rate * (1 - result["tau"]) > epsilon:
+            violations += 1
+    assert violations / trials <= delta + 0.03

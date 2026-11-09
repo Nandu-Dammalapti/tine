@@ -1,9 +1,15 @@
 """Held-out routing calibration with a simultaneous conservative risk bound.
 
 The measured Bernoulli event is ``frontier succeeded AND chosen model failed``.
-Its probability upper-bounds net accuracy loss against the frontier. A fixed
-threshold grid receives a Bonferroni correction across thresholds and the
-caller-declared family of tenant/task-type/method policies. Calibration requires
+Its probability upper-bounds net accuracy loss against the frontier.
+
+Thresholds are tested by fixed-sequence testing (Learn-then-Test, Angelopoulos
+et al. 2021): from the most cautious threshold to the most aggressive, each is
+tested at the same level and testing stops at the first failure. Because the
+order is fixed before seeing data, this controls the chance of certifying any
+unsafe threshold at that level without dividing it across thresholds. A
+Bonferroni correction still covers the caller-declared family of
+tenant/task-type/method policies. Calibration requires
 independent, identically distributed held-out tasks from the deployment group;
 it is not a guarantee under distribution shift or dependent/reused tasks.
 """
@@ -56,7 +62,11 @@ def clopper_pearson_upper(k: int, n: int, alpha: float) -> float:
 
 
 def minimum_risk_tasks(epsilon: float, delta: float, comparisons: int) -> int | None:
-    """Smallest nonempty calibration set that can pass with zero degradations."""
+    """Smallest nonempty calibration set that can pass with zero degradations.
+
+    ``comparisons`` is the Bonferroni family (groups x methods); fixed-sequence
+    testing means the threshold grid size does not enter.
+    """
     epsilon = _probability(epsilon, "epsilon")
     delta = _probability(delta, "delta", open_interval=True)
     comparisons = _integer(comparisons, "comparisons", minimum=1)
@@ -101,8 +111,11 @@ def calibrate(
     ``scores`` and ``estimated_costs`` must be fixed independently of the risk
     calibration outcomes. ``thresholds`` must be a predeclared finite grid.
     ``family_size`` counts all groups and model-selection methods covered by the
-    requested confidence statement, even if some yield no data. The internally
-    applied per-comparison error rate is ``delta / (grid_size * family_size)``.
+    requested confidence statement, even if some yield no data. Each threshold is
+    tested at ``delta / family_size``, from highest to lowest, stopping at the
+    first one whose upper bound exceeds epsilon (fixed-sequence testing). Later
+    thresholds are still evaluated for diagnostics but marked untested and can
+    never be selected.
 
     The conservative degradation bound can certify an expected accuracy loss
     at most epsilon under the stated sampling assumptions. It does not certify
@@ -122,8 +135,9 @@ def calibrate(
         or (scores > 1).any()
     ):
         raise ValueError("scores must match outcomes and contain finite probabilities")
-    grid = sorted({_probability(value, "threshold") for value in thresholds})
-    alpha = delta / (len(grid) * family_size) if grid else None
+    # Most cautious first: the order is fixed before any calibration outcome is seen.
+    grid = sorted({_probability(value, "threshold") for value in thresholds}, reverse=True)
+    alpha = delta / family_size if grid else None
     if alpha is not None and alpha == 0:
         raise ValueError("corrected alpha underflows; reduce the hypothesis family")
     n = outcomes.shape[0]
@@ -135,10 +149,12 @@ def calibrate(
         "upper_bound": 0.0,
         "epsilon": epsilon,
         "delta": delta,
-        "thresholds_tested": len(grid),
+        "thresholds_in_grid": len(grid),
+        "thresholds_tested": 0,
         "family_size": family_size,
         "corrected_alpha": alpha,
-        "bound": "one-sided Clopper-Pearson with Bonferroni correction",
+        "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); "
+                 "Bonferroni across groups and methods",
         "loss": "frontier_success_and_selected_failure",
         "reason": "empty_calibration" if not n else "no_certified_threshold",
         "candidates": [],
@@ -149,22 +165,26 @@ def calibrate(
         return result
 
     rows = np.arange(n)
+    still_testing = True
     for tau in grid:
         selected = route_indices(scores, estimated_costs, tau, frontier_index)
         degradations = int(np.count_nonzero(outcomes[:, frontier_index] & ~outcomes[rows, selected]))
         upper = clopper_pearson_upper(degradations, n, alpha)
+        passed = still_testing and upper <= epsilon
         result["candidates"].append(
             {
                 "tau": tau,
                 "degradations": degradations,
                 "upper_bound": upper,
                 "nonfrontier_count": int(np.count_nonzero(selected != frontier_index)),
-                "certified": upper <= epsilon,
+                "tested": still_testing,
+                "certified": passed,
             }
         )
-        # Evaluate the full declared grid for diagnostics. The confidence
-        # correction covers all candidates, regardless of this selection.
-        if upper <= epsilon and result["force_frontier"]:
+        if still_testing:
+            result["thresholds_tested"] += 1
+        if passed:
+            # Each pass moves the choice to a lower (more aggressive) threshold.
             result.update(
                 tau=tau,
                 force_frontier=False,
@@ -172,6 +192,8 @@ def calibrate(
                 upper_bound=upper,
                 reason="certified_threshold",
             )
+        else:
+            still_testing = False  # first failure ends the sequence
     return result
 
 
