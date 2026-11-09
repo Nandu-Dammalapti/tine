@@ -1,11 +1,12 @@
 import asyncio
 import json
+from decimal import Decimal
 
 import httpx
 import pytest
 
 from tine.ledger import Ledger
-from tine.proxy import ProxyConfig, create_app
+from tine.proxy import ProxyConfig, _cost, create_app
 
 
 def config(**changes):
@@ -22,6 +23,67 @@ def config(**changes):
 
 def run(coroutine):
     return asyncio.run(coroutine)
+
+
+@pytest.mark.parametrize("changes,field", [
+    ({"tenant_keys": ["token"]}, "TINE_TENANT_KEYS"),
+    ({"allowed_models": "cheap"}, "TINE_ALLOWED_MODELS"),
+    ({"allowed_models": {"openai": "cheap-v2"}}, "TINE_ALLOWED_MODELS"),
+    ({"allowed_models": {"openai": {"cheap": True}}}, "TINE_ALLOWED_MODELS"),
+    ({"allowed_models": {"openai": [None]}}, "TINE_ALLOWED_MODELS"),
+    ({"allowed_models": {"openai": [""]}}, "TINE_ALLOWED_MODELS"),
+    ({"allowed_models": {"unknown": ["cheap"]}}, "TINE_ALLOWED_MODELS"),
+    ({"prices": []}, "prices"),
+    ({"prices": {"openai:frontier": []}}, "prices"),
+    ({"prices": {"openai:frontier": {"input_per_million": 10**400}}}, "prices"),
+    ({"timeout_seconds": True}, "timeout_seconds"),
+    ({"timeout_seconds": "30"}, "timeout_seconds"),
+    ({"timeout_seconds": 10**400}, "timeout_seconds"),
+    ({"verified_cache": "false"}, "verified_cache"),
+    ({"openai_base_url": "https://example.com:invalid"}, "base URLs"),
+    ({"openai_base_url": "https://example.com:99999"}, "base URLs"),
+    ({"openai_base_url": None}, "base URLs"),
+])
+def test_invalid_configuration_fails_before_opening_ledger(changes, field, monkeypatch):
+    def unexpected_ledger(*args, **kwargs):
+        pytest.fail("Invalid configuration opened a ledger")
+
+    monkeypatch.setattr("tine.proxy.Ledger", unexpected_ledger)
+    with pytest.raises(ValueError, match=field):
+        create_app(config(**changes))
+
+
+def test_valid_allowlist_requires_an_exact_model_name():
+    seen = []
+
+    def provider(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(200, json={"choices": []})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(allowed_models={"openai": ["cheap-v2"]}), ledger=Ledger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                for name in ("cheap", "cheap-v2"):
+                    response = await client.post(
+                        "/v1/chat/completions", json={"model": name, "messages": []},
+                        headers={"authorization": "Bearer tenant-token-a"},
+                    )
+                    assert response.status_code == 200
+        assert seen == ["frontier", "cheap-v2"]
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("rate,tokens", [(1e308, 3), (10**308, 3), (1e-320, 10**18)])
+def test_representable_usage_cost_survives_intermediate_overflow_and_underflow(rate, tokens):
+    cfg = config(prices={"openai:frontier": {"input_per_million": rate, "output_per_million": rate}})
+    cfg.validate()
+    result = _cost(cfg, "openai", "frontier", {
+        "input_tokens": tokens, "output_tokens": tokens, "cached_tokens": 0, "cache_write_tokens": 0,
+    })
+    expected = float(Decimal.from_float(float(rate)) * Decimal(tokens) * 2 / Decimal(1_000_000))
+    assert result == pytest.approx(expected, rel=1e-12, abs=0)
 
 
 @pytest.mark.parametrize("raw", [

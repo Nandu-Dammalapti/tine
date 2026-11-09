@@ -26,6 +26,15 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from .ledger import MAX_TOKEN_COUNT, Ledger
 
 
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 @dataclass(repr=False)
 class ProxyConfig:
     tenant_keys: dict[str, str] = field(default_factory=dict)
@@ -65,7 +74,7 @@ class ProxyConfig:
         )
 
     def validate(self) -> None:
-        if not self.tenant_keys or any(
+        if not isinstance(self.tenant_keys, dict) or not self.tenant_keys or any(
             not isinstance(key, str)
             or not key
             or not isinstance(tenant, str)
@@ -73,10 +82,26 @@ class ProxyConfig:
             for key, tenant in self.tenant_keys.items()
         ):
             raise ValueError("Configure nonempty TINE_TENANT_KEYS before starting the proxy")
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+        if not _finite_number(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        if not isinstance(self.verified_cache, bool):
+            raise ValueError("verified_cache must be a boolean")
+        if not isinstance(self.allowed_models, dict) or any(
+            provider not in {"openai", "anthropic"}
+            or not isinstance(models, list)
+            or any(not isinstance(model, str) or not model.strip() for model in models)
+            for provider, models in self.allowed_models.items()
+        ):
+            raise ValueError("TINE_ALLOWED_MODELS must map provider names to lists of nonempty model names")
         for base in (self.openai_base_url, self.anthropic_base_url):
-            parsed = urlsplit(base)
+            try:
+                if not isinstance(base, str):
+                    raise ValueError
+                parsed = urlsplit(base)
+                # Access validates nonnumeric and out-of-range port strings.
+                parsed.port
+            except ValueError:
+                raise ValueError("Provider base URLs must be valid HTTP(S) URLs without credentials") from None
             if (
                 parsed.scheme not in {"http", "https"}
                 or not parsed.netloc
@@ -86,14 +111,18 @@ class ProxyConfig:
                 or parsed.fragment
             ):
                 raise ValueError("Provider base URLs must be HTTP(S) URLs without credentials")
+        if not isinstance(self.prices, dict):
+            raise ValueError("Model prices must map model names to USD rate objects")
         for rates in self.prices.values():
+            if not isinstance(rates, dict):
+                raise ValueError("Model prices must map model names to USD rate objects")
             for key, value in rates.items():
                 if key not in {
                     "input_per_million",
                     "output_per_million",
                     "cached_input_per_million",
                     "cache_write_per_million",
-                } or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                } or not _finite_number(value) or value < 0:
                     raise ValueError("Model prices must be explicit finite nonnegative USD rates")
 
 
@@ -155,12 +184,14 @@ def _cost(config: ProxyConfig, provider: str, model: str, tokens: dict) -> float
         return None
     if written and "cache_write_per_million" not in rates:
         return None
+    # Scale the bounded token counts first. An unscaled numerator can overflow
+    # even when the final dollar amount is representable.
     cost = (
-        ordinary * rates["input_per_million"]
-        + tokens["output_tokens"] * rates["output_per_million"]
-        + cached * rates.get("cached_input_per_million", 0)
-        + written * rates.get("cache_write_per_million", 0)
-    ) / 1_000_000
+        (ordinary / 1_000_000) * rates["input_per_million"]
+        + (tokens["output_tokens"] / 1_000_000) * rates["output_per_million"]
+        + (cached / 1_000_000) * rates.get("cached_input_per_million", 0)
+        + (written / 1_000_000) * rates.get("cache_write_per_million", 0)
+    )
     return cost if math.isfinite(cost) else None
 
 
