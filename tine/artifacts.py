@@ -12,6 +12,7 @@ RUN_FILES = frozenset({
     "summary.json", "calibration.json", "excluded.json", "splits.csv",
     "decisions.csv", "curves.csv", "metrics.csv", "group-metrics.csv",
     "cost-quality.png", "report.md", "synthetic-outcomes.jsonl",
+    "routing-latency.json",
 })
 
 

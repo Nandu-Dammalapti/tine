@@ -14,6 +14,8 @@ def main(argv=None):
         run.add_argument("--epsilon", type=float, default=0.02)
         run.add_argument("--delta", type=float, default=0.05)
         run.add_argument("--seed", type=int, default=42)
+        run.add_argument("--latency-samples", type=int, default=0,
+                         help="Measure warm per-request CPU routing on up to N test tasks per tenant/method (0 disables)")
         if name == "run":
             run.add_argument("--input", type=Path, required=True)
             run.add_argument("--frontier", required=True, help="Predeclared frontier baseline, not selected on test labels")
@@ -64,7 +66,7 @@ def main(argv=None):
         summary = run_experiment(frame, frontier, args.output, epsilon=args.epsilon,
                                  delta=args.delta, seed=args.seed,
                                  embeddings=getattr(args, "embeddings", None),
-                                 synthetic=args.command == "demo")
+                                 synthetic=args.command == "demo", latency_samples=args.latency_samples)
         print(json.dumps(summary, indent=2, allow_nan=False))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "import-llmrouterbench":
