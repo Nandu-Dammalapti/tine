@@ -36,6 +36,8 @@ def main(argv=None):
     cascade.add_argument("--catch", type=float, nargs="+", default=[1.0, 0.95, 0.9],
                          help="Assumed share of wrong answers the check catches")
     cascade.add_argument("--seeds", type=int, default=10)
+    cascade.add_argument("--checks", type=Path, help="Measured check results CSV (task_id, model, passed)")
+    cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
@@ -90,9 +92,13 @@ def main(argv=None):
         from tine.cascade import run_cascade_experiment
         from tine.data import read_outcomes
 
+        import pandas as pd
+
+        checks = pd.read_csv(args.checks) if args.checks else None
         result = run_cascade_experiment(read_outcomes(args.input), args.frontier, args.output,
-                                        epsilons=args.epsilon, catches=args.catch,
-                                        seeds=range(args.seeds), max_length=args.max_length)
+                                        epsilons=args.epsilon, catches=args.catch, checks=checks,
+                                        delta=args.delta, seeds=range(args.seeds),
+                                        max_length=args.max_length)
         print(json.dumps(result["summary"], indent=2, default=float))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "combine-outcomes":

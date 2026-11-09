@@ -3,7 +3,8 @@ import pandas as pd
 import pytest
 
 from tine.__main__ import main
-from tine.cascade import candidate_chains, chain_metrics, run_cascade_experiment, select_chain
+from tine.cascade import (candidate_chains, certify_chain, chain_metrics, run_cascade_experiment,
+                          select_chain, simulated_passes)
 from tine.data import synthetic_fixture
 
 # Columns: 0 cheap, 1 mid, 2 frontier.
@@ -55,10 +56,13 @@ def test_experiment_writes_held_out_summary(tmp_path):
     result = run_cascade_experiment(frame, "frontier", tmp_path, seeds=range(3),
                                     epsilons=(0.02,), catches=(1.0, 0.9))
     summary = pd.read_csv(tmp_path / "cascade-summary.csv")
-    assert len(summary) == 2 and result["complete_tasks"] == 200
+    assert len(summary) == 4 and result["complete_tasks"] == 200  # 2 catches x 2 methods
+    assert set(summary.method) == {"uncertified", "certified"}
     runs = pd.read_csv(tmp_path / "cascade-runs.csv")
-    assert len(runs) == 6 and runs.chain.str.endswith("> frontier").all()
+    assert len(runs) == 12 and runs.chain.str.endswith("frontier").all()
     assert (runs.loc[runs["catch"] == 1.0, "degradation_rate"] == 0).all()
+    certified = runs[(runs.method == "certified") & (runs.chain != "frontier")]
+    assert (certified.certified_bound <= 0.02).all()
     assert "hidden tests" in (tmp_path / "report.md").read_text()
 
 
@@ -68,3 +72,44 @@ def test_cli(tmp_path, capsys):
     main(["cascade", "--input", str(tmp_path / "o.jsonl"), "--frontier", "frontier",
           "--output", str(tmp_path / "out"), "--seeds", "2", "--epsilon", "0.02", "--catch", "1.0"])
     assert "Report:" in capsys.readouterr().out
+
+
+def test_observed_checks_drive_escalation():
+    # cheap model's wrong answer on task 1 passes the check -> ships wrong.
+    passes = OUTCOMES.copy()
+    passes[1, 0] = True
+    m = chain_metrics([0], OUTCOMES, COSTS, 2, passes=passes)
+    assert m["degradation_rate"] == 0.25
+    assert m["accuracy"] == 0.5  # task0 right; task1 shipped wrong; task2 escalated right; task3 none
+    assert m["frontier_call_rate"] == 0.5
+
+
+def test_simulated_passes_never_reject_right_answers():
+    rng = np.random.default_rng(0)
+    passes = simulated_passes(np.ones((50, 2), dtype=bool), 0.9, rng)
+    assert passes.all()
+    wrong = simulated_passes(np.zeros((5000, 1), dtype=bool), 0.9, rng)
+    assert 0.07 < wrong.mean() < 0.13
+
+
+def test_certification_falls_back_when_certify_part_disagrees():
+    n = 400
+    good = np.ones((n, 3), dtype=bool)
+    costs = np.tile([1.0, 2.0, 10.0], (n, 1))
+    bad = good.copy()
+    bad[: n // 10, 0] = False  # cheap model wrong on 10% of the certify part
+    passes_bad = bad.copy()
+    passes_bad[:, 0] = True    # and the check misses it
+    choose = (good, costs, good)
+    chain, bound = certify_chain([[0]], choose, (bad, costs, passes_bad), 2, epsilon=0.02, delta=0.05)
+    assert chain == [] and bound is None
+    chain, bound = certify_chain([[0]], choose, choose, 2, epsilon=0.02, delta=0.05)
+    assert chain == [0] and bound <= 0.02
+
+
+def test_measured_checks_input(tmp_path):
+    frame = synthetic_fixture(n_tasks=150, seed=7)
+    checks = frame[["task_id", "model"]].assign(passed=frame.success.astype(bool))
+    result = run_cascade_experiment(frame, "frontier", tmp_path, checks=checks, seeds=range(2),
+                                    epsilons=(0.02,))
+    assert {row["catch"] for row in result["summary"]} == {"measured"}
