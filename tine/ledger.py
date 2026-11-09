@@ -63,6 +63,8 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         with self._db:
             self._db.execute("PRAGMA journal_mode=WAL")
+            # Serialize schema upgrades across processes, including column checks.
+            self._db.execute("BEGIN IMMEDIATE")
             self._db.execute(
                 """CREATE TABLE IF NOT EXISTS requests (
                     request_id TEXT PRIMARY KEY,
@@ -85,6 +87,7 @@ class Ledger:
                     baseline_cost_usd REAL,
                     latency_ms REAL,
                     outcome_updated_at TEXT,
+                    outcome_sequence INTEGER NOT NULL DEFAULT 0,
                     success INTEGER CHECK(success IN (0, 1) OR success IS NULL)
                 )"""
             )
@@ -101,6 +104,22 @@ class Ledger:
                     "UPDATE requests SET outcome_updated_at=created_at "
                     "WHERE success IS NOT NULL"
                 )
+            if "outcome_sequence" not in columns:
+                self._db.execute("ALTER TABLE requests ADD COLUMN outcome_sequence INTEGER NOT NULL DEFAULT 0")
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS ledger_state "
+                "(id INTEGER PRIMARY KEY CHECK(id=1), outcome_sequence INTEGER NOT NULL)"
+            )
+            self._db.execute("INSERT OR IGNORE INTO ledger_state VALUES(1, 0)")
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS cache_outcome_order ON requests"
+                "(tenant, fingerprint, outcome_sequence DESC, outcome_updated_at DESC, created_at DESC)"
+            )
+
+    def _next_outcome_sequence(self) -> int:
+        """Allocate under the same write transaction as its associated outcome."""
+        self._db.execute("UPDATE ledger_state SET outcome_sequence=outcome_sequence+1 WHERE id=1")
+        return self._db.execute("SELECT outcome_sequence FROM ledger_state WHERE id=1").fetchone()[0]
 
     def close(self) -> None:
         with self._lock:
@@ -175,11 +194,14 @@ class Ledger:
             "baseline_cost_usd": baseline_cost_usd,
             "latency_ms": latency_ms,
             "outcome_updated_at": now if success is not None else None,
+            "outcome_sequence": 0,
             "success": None if success is None else int(success),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
         with self._lock, self._db:
+            if success is not None:
+                values["outcome_sequence"] = self._next_outcome_sequence()
             self._db.execute(
                 f"INSERT INTO requests ({columns}) VALUES ({placeholders})", values
             )
@@ -233,6 +255,12 @@ class Ledger:
                 "WHERE tenant=? AND request_id=?",
                 values,
             )
+            if cursor.rowcount:
+                sequence = self._next_outcome_sequence()
+                self._db.execute(
+                    "UPDATE requests SET outcome_sequence=? WHERE tenant=? AND request_id=?",
+                    (sequence, tenant, request_id),
+                )
         return cursor.rowcount == 1
 
     def cached(
@@ -241,14 +269,17 @@ class Ledger:
         """Use the latest resolved outcome; later failures invalidate old success.
 
         An unresolved newer request is not evidence that a previously verified
-        answer failed. Explicit late outcome reversals are ordered by update time.
+        answer failed. A database sequence orders resolved outcomes independently
+        of wall-clock changes. Legacy entries retain timestamp ordering until
+        newer sequenced evidence arrives.
         Context-aware lookups require a matching context-aware fingerprint.
         """
         with self._lock:
             row = self._db.execute(
                 """SELECT * FROM requests
                    WHERE tenant=? AND fingerprint=? AND success IS NOT NULL
-                   ORDER BY outcome_updated_at DESC, created_at DESC LIMIT 1""",
+                   ORDER BY outcome_sequence DESC, outcome_updated_at DESC,
+                            created_at DESC, rowid DESC LIMIT 1""",
                 (tenant, request_fingerprint(provider, body, cache_context=cache_context)),
             ).fetchone()
         if (
