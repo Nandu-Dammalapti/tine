@@ -10,6 +10,10 @@ The CPU workflow is implemented: validated outcome import, logistic/kNN/cluster 
 
 The initial setup-only scope in AGENTS.md is superseded by the user's request for this CPU implementation. No LLM weights, benchmark archive, paid API calls, or Colab GPU jobs have been run here. Synthetic fixtures are integration checks, not measured benchmark or customer savings.
 
+## Results
+
+Latest offline benchmark findings and how to reproduce them: [results/2026-11-09-coding-benchmark](results/2026-11-09-coding-benchmark/README.md).
+
 ## Setup
 
 Prerequisites: Python 3.12 with `venv`, [uv](https://docs.astral.sh/uv/getting-started/installation/), Bash, and Git. The existing cloud environment also provides Node.js/npm and build tools; these are optional for the current Python workflow.
