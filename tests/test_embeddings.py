@@ -81,3 +81,27 @@ def test_zero_vectors_are_still_rejected(tmp_path):
     with pytest.raises(ValueError, match="non-finite"):
         embedding.embed_tasks(synthetic_fixture(n_tasks=3), tmp_path / "zero.npz", revision="e" * 40,
                               encoder=ZeroEncoder())
+
+
+def test_issue_view_extracts_one_issue_block_or_keeps_the_prompt():
+    assert embedding.issue_view("Intro\n<issue>\nBug here\n</issue>\n<code>x</code>") == "Bug here"
+    for whole in ["plain task", "<issue> </issue> code", "<issue>a</issue><issue>b</issue>"]:
+        assert embedding.issue_view(whole) == whole
+
+
+def test_issue_view_is_encoded_but_full_prompt_is_hashed(tmp_path):
+    tasks = embedding.prepare_tasks(synthetic_fixture(n_tasks=3))
+    tasks["prompt"] = [f"Intro <issue>{'x' * (index + 1)}</issue> " + "code " * 50 for index in range(3)]
+    tasks["prompt_hash"] = tasks["prompt"].map(embedding.prompt_hash)
+    output = tmp_path / "issue.npz"
+    metadata = embedding.embed_tasks(tasks, output, revision="a" * 40, encoder=FakeEncoder(),
+                                     prompt_view="issue")
+    assert metadata["prompt_view"] == "issue"
+    lookup = load_embeddings(output, tasks)  # bound to the full prompts
+    lengths = [vector[0] / vector[1] for vector in lookup.values()]
+    assert np.allclose(sorted(lengths), [1, 2, 3], rtol=1e-4)
+    with pytest.raises(ValueError, match="mismatch"):
+        embedding.embed_tasks(tasks, output, revision="a" * 40, encoder=FakeEncoder())
+    with pytest.raises(ValueError, match="prompt_view"):
+        embedding.embed_tasks(tasks, tmp_path / "other.npz", revision="a" * 40,
+                              encoder=FakeEncoder(), prompt_view="code")
