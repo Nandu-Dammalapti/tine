@@ -14,6 +14,8 @@ def main(argv=None):
         run.add_argument("--epsilon", type=float, default=0.02)
         run.add_argument("--delta", type=float, default=0.05)
         run.add_argument("--seed", type=int, default=42)
+        run.add_argument("--latency-samples", type=int, default=0,
+                         help="Measure warm per-request CPU routing on up to N test tasks per tenant/method (0 disables)")
         if name == "run":
             run.add_argument("--input", type=Path, required=True)
             run.add_argument("--frontier", required=True, help="Predeclared frontier baseline, not selected on test labels")
@@ -64,20 +66,18 @@ def main(argv=None):
     server.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     if args.command in {"run", "demo"}:
-        from tine.data import read_outcomes, synthetic_fixture, write_outcomes
+        from tine.data import read_outcomes, synthetic_fixture
         from tine.pipeline import run_experiment
 
         if args.command == "demo":
             frame = synthetic_fixture(n_tasks=args.tasks, seed=args.seed)
             frontier = "frontier"
-            args.output.mkdir(parents=True, exist_ok=True)
-            write_outcomes(frame, args.output / "synthetic-outcomes.jsonl")
         else:
             frame, frontier = read_outcomes(args.input), args.frontier
         summary = run_experiment(frame, frontier, args.output, epsilon=args.epsilon,
                                  delta=args.delta, seed=args.seed,
                                  embeddings=getattr(args, "embeddings", None),
-                                 synthetic=args.command == "demo")
+                                 synthetic=args.command == "demo", latency_samples=args.latency_samples)
         print(json.dumps(summary, indent=2, allow_nan=False))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "import-llmrouterbench":
@@ -90,11 +90,10 @@ def main(argv=None):
                           "models": sorted(frame.model.unique()), "output": str(args.output)}, indent=2))
     elif args.command == "cascade":
         from tine.cascade import run_cascade_experiment
+        from tine.checks import read_checks
         from tine.data import read_outcomes
 
-        import pandas as pd
-
-        checks = pd.read_csv(args.checks) if args.checks else None
+        checks = read_checks(args.checks) if args.checks else None
         result = run_cascade_experiment(read_outcomes(args.input), args.frontier, args.output,
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),

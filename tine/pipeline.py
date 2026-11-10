@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 from importlib.metadata import version
 import json
+import os
+import platform
 import time
 from pathlib import Path
 
@@ -23,8 +25,10 @@ import numpy as np
 import pandas as pd
 
 from tine.calibration import calibrate, evaluate, minimum_risk_tasks
-from tine.data import outcome_json_lines, validate_outcomes
+from tine.artifacts import experiment_output
+from tine.data import outcome_json_lines, validate_outcomes, write_outcomes
 from tine.routing import METHODS, Router, route_indices
+from tine.latency import LATENCY_SCOPE, benchmark_routing
 
 SPLITS = ("train", "score_calibration", "risk_calibration", "test")
 DEFAULT_THRESHOLDS = tuple(np.linspace(0, 1, 21))
@@ -120,21 +124,27 @@ def preflight(frame, frontier, *, epsilon=0.02, delta=0.05, seed=42):
 
 def load_embeddings(path: str | Path, tasks: pd.DataFrame) -> dict:
     """Load data-only NPZ; bind every vector to tenant/task and prompt digest."""
+    required = {(str(row.tenant), str(row.task_id)) for row in tasks.itertuples()}
     with np.load(path, allow_pickle=False) as blob:
         tenants = blob["tenants"].astype(str)
         ids = blob["task_ids"].astype(str)
         hashes = blob["prompt_hashes"].astype(str)
         vectors = blob["embeddings"]
-        if vectors.ndim != 2 or not np.isfinite(vectors).all() or vectors.shape[1] == 0:
-            raise ValueError("Embeddings must be a finite, nonempty 2D numeric array")
+        if any(values.ndim != 1 for values in (tenants, ids, hashes)):
+            raise ValueError("Embedding metadata must contain one-dimensional arrays")
+        if (vectors.ndim != 2 or vectors.dtype.kind not in "iuf"
+                or not np.isfinite(vectors).all() or vectors.shape[1] == 0):
+            raise ValueError("Embeddings must be a finite, nonempty 2D real numeric array")
         if not (len(tenants) == len(ids) == len(hashes) == len(vectors)):
             raise ValueError("Embedding metadata lengths differ")
-        lookup, digest = {}, {}
+        lookup, digest, seen = {}, {}, set()
         for tenant, task_id, sha, vector in zip(tenants, ids, hashes, vectors, strict=True):
             key = (tenant, task_id)
-            if key in lookup:
+            if key in seen:
                 raise ValueError(f"Duplicate embedding key {key}")
-            lookup[key], digest[key] = vector.copy(), sha
+            seen.add(key)
+            if key in required:
+                lookup[key], digest[key] = vector.copy(), sha
     for row in tasks.itertuples():
         key = (str(row.tenant), str(row.task_id))
         if key not in lookup or digest[key] != prompt_hash(row.prompt):
@@ -151,6 +161,22 @@ def matrix(frame, tasks, models, column, *, boolean=False):
     return values.to_numpy(dtype=bool if boolean else float)
 
 
+def embedding_fingerprint(lookup, tasks):
+    """Identify the validated feature values used by this experiment.
+
+    Canonical task ordering and little-endian float64 values make the digest
+    independent of archive compression, row order, and unused feature rows.
+    Values use the same floating-point representation as the CPU router.
+    """
+    digest = hashlib.sha256(b"tine-embedding-features-v1\n")
+    for row in tasks.sort_values(["tenant", "task_id"]).itertuples():
+        vector = np.asarray(lookup[(row.tenant, row.task_id)], dtype="<f8")
+        identity = [row.tenant, row.task_id, prompt_hash(row.prompt), vector.size]
+        digest.update(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+        digest.update(vector.tobytes(order="C"))
+    return digest.hexdigest()
+
+
 def _json(value):
     if isinstance(value, dict):
         return {str(key): _json(item) for key, item in value.items()}
@@ -162,21 +188,49 @@ def _json(value):
 
 
 def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42,
-                   embeddings=None, thresholds=None, synthetic=False):
+                   embeddings=None, thresholds=None, synthetic=False, latency_samples=0):
+    if isinstance(latency_samples, bool) or not isinstance(latency_samples, int) or latency_samples < 0:
+        raise ValueError("latency_samples must be a nonnegative integer")
+    frame = validate_outcomes(frame)
+    save_synthetic_outcomes = synthetic
+    synthetic = bool(synthetic or any(
+        column in frame and frame[column].eq("synthetic").any()
+        for column in ("cost_source", "success_label_source")
+    ))
+    with experiment_output(output) as staged:
+        if save_synthetic_outcomes:
+            write_outcomes(frame, staged / "synthetic-outcomes.jsonl")
+        return _run_experiment(frame, frontier, staged, epsilon=epsilon, delta=delta,
+                               seed=seed, embeddings=embeddings, thresholds=thresholds,
+                               synthetic=synthetic, latency_samples=latency_samples)
+
+
+def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
+                    embeddings, thresholds, synthetic, latency_samples):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     thresholds = DEFAULT_THRESHOLDS if thresholds is None else list(thresholds)
     frame, tasks, excluded = complete_tasks(frame, frontier)
     tasks = split_tasks(tasks, seed)
     lookup = load_embeddings(embeddings, tasks) if embeddings else None
+    embedding_sha256 = embedding_fingerprint(lookup, tasks) if lookup else None
     group_count = tasks[["tenant", "task_type"]].drop_duplicates().shape[0]
     family_size = group_count * len(METHODS)
     all_metrics, group_metrics, calibrations, decisions, curves = [], [], [], [], []
-    split_rows = frame.merge(tasks[["tenant", "task_id", "split"]], on=["tenant", "task_id"])
+    latency_results = []
+    # An upstream split is provenance; training uses our independently assigned
+    # partitions. Keep the original frame intact for its dataset fingerprint.
+    split_rows = frame.drop(columns="split", errors="ignore").merge(
+        tasks[["tenant", "task_id", "split"]], on=["tenant", "task_id"], validate="many_to_one"
+    )
     for tenant, tenant_tasks in tasks.groupby("tenant", sort=True):
         partitions = {name: tenant_tasks.loc[tenant_tasks.split == name].copy() for name in SPLITS}
         rows = split_rows.loc[split_rows.tenant == tenant]
-        router = Router(frontier, seed=seed, embedding_lookup=lookup).fit(
+        # Router copies its inputs. Avoid copying every tenant's vectors for
+        # each fit, and never pass another tenant's features to this instance.
+        tenant_lookup = ({(tenant, row.task_id): lookup[(tenant, row.task_id)]
+                          for row in tenant_tasks.itertuples()} if lookup is not None else None)
+        router = Router(frontier, seed=seed, embedding_lookup=tenant_lookup).fit(
             rows.loc[rows.split == "train"], rows.loc[rows.split == "score_calibration"])
         models = router.model_names
         frontier_index = models.index(frontier)
@@ -192,6 +246,7 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
         oracle[~test_outcomes.any(axis=1)] = frontier_index
         choices["oracle"] = oracle
         method_timings = {}
+        request_timings = {}
         # Independent test labels/costs are never used in policy selection.
         for method in METHODS:
             risk_scores = router.predict_scores(risk_tasks, method=method)
@@ -199,6 +254,7 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
             test_scores = router.predict_scores(test_tasks, method=method)
             method_timings[method] = (time.perf_counter() - started) / len(test_tasks) * 1000
             chosen = np.full(len(test_tasks), frontier_index)
+            policies = {}
             for task_type in sorted(tenant_tasks.task_type.unique()):
                 risk_mask = (risk_tasks.task_type == task_type).to_numpy()
                 test_mask = (test_tasks.task_type == task_type).to_numpy()
@@ -207,20 +263,30 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
                                    thresholds, epsilon, delta, family_size)
                 calibrations.append({"tenant": tenant, "task_type": task_type,
                                      "method": method, **result})
+                policies[task_type] = result
                 if test_mask.any():
                     chosen[test_mask] = route_indices(
                         test_scores[test_mask], test_costs[test_mask],
                         1.0 if result["tau"] is None else result["tau"], frontier_index,
                         force_frontier=result["force_frontier"])
             choices[method] = chosen
+            if latency_samples:
+                measured = benchmark_routing(router, test_tasks, policies, method,
+                                             samples=latency_samples, seed=seed)
+                latency_results.append(measured)
+                request_timings[method] = measured
             for tau in thresholds:
                 policy = route_indices(test_scores, test_costs, tau, frontier_index)
                 curves.append({"tenant": tenant, "method": method, "tau": tau,
                                **evaluate(policy, test_outcomes, observed_costs, frontier_index)})
         for method, policy in choices.items():
             metrics = evaluate(policy, test_outcomes, observed_costs, frontier_index)
+            timing = request_timings.get(method, {})
             all_metrics.append({"tenant": tenant, "method": method,
-                                "batch_prediction_ms_per_task": method_timings.get(method), **metrics})
+                                "batch_prediction_ms_per_task": method_timings.get(method),
+                                "routing_latency_samples": timing.get("samples", 0),
+                                "routing_p50_ms": timing.get("p50_ms"),
+                                "routing_p99_ms": timing.get("p99_ms"), **metrics})
             for task_type in sorted(test_tasks.task_type.unique()):
                 mask = (test_tasks.task_type == task_type).to_numpy()
                 group_metrics.append({"tenant": tenant, "task_type": task_type, "method": method,
@@ -239,14 +305,25 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     summary = {"schema_version": 1, "synthetic": synthetic, "seed": seed,
                "frontier": frontier, "epsilon": epsilon, "delta": delta,
                "feature_source": "supplied_embeddings" if lookup else "train_only_tfidf",
+               "embedding_sha256": embedding_sha256,
+               "embedding_fingerprint_format": "tine-embedding-features-v1" if lookup else None,
                "dataset_sha256": provenance.hexdigest(), "complete_tasks": len(tasks),
                "excluded_tasks": len(excluded), "family_size": family_size,
+               "latency_samples_requested": latency_samples,
                "metrics": all_metrics, "group_metrics": group_metrics,
                "split_counts": tasks.groupby(["tenant", "split"]).size().reset_index(name="tasks").to_dict(orient="records"),
                "software_versions": {name: version(name) for name in ("numpy", "pandas", "scipy", "scikit-learn", "matplotlib")},
                "scope": "Offline benchmark only; no production or distribution-shift guarantee.",
                "baseline_note": "cluster is an Avengers-style heuristic, not a reproduction of Avengers-Pro; oracle uses hindsight.",
-               "latency_note": "batch prediction time divided by tasks; excludes network and is not p50/p99 request latency."}
+               "latency_note": LATENCY_SCOPE if latency_samples else "Only batch prediction time divided by tasks was measured; per-request p50/p99 were not measured."}
+    if latency_samples:
+        latency_report = {
+            "schema_version": 1, "synthetic": synthetic, "scope": LATENCY_SCOPE,
+            "environment": {"system": platform.system(), "machine": platform.machine(),
+                            "python": platform.python_version(), "logical_cpus": os.cpu_count()},
+            "results": latency_results,
+        }
+        (output / "routing-latency.json").write_text(json.dumps(_json(latency_report), indent=2, allow_nan=False) + "\n")
     (output / "summary.json").write_text(json.dumps(_json(summary), indent=2, allow_nan=False) + "\n")
     (output / "calibration.json").write_text(json.dumps(_json(calibrations), indent=2, allow_nan=False) + "\n")
     (output / "excluded.json").write_text(json.dumps(_json(excluded), indent=2) + "\n")
@@ -255,39 +332,46 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
     metrics_frame = pd.DataFrame(all_metrics)
     curve_frame = pd.DataFrame(curves)
     if curve_frame.empty:
-        curve_frame = metrics_frame.iloc[:0].drop(columns="batch_prediction_ms_per_task")
+        curve_frame = metrics_frame.iloc[:0].drop(columns=[
+            "batch_prediction_ms_per_task", "routing_latency_samples", "routing_p50_ms", "routing_p99_ms",
+        ])
         curve_frame.insert(2, "tau", pd.Series(dtype=float))
     curve_frame.to_csv(output / "curves.csv", index=False)
     metrics_frame.to_csv(output / "metrics.csv", index=False)
     pd.DataFrame(group_metrics).to_csv(output / "group-metrics.csv", index=False)
     _plot(output, all_metrics, synthetic, curve_frame)
-    report = ["# Tine offline report", "", "SYNTHETIC FIXTURE — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
+    report = ["# Tine offline report", "", "Contains SYNTHETIC outcomes — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
               f"Complete tasks: {len(tasks)}. Excluded incomplete/pending tasks: {len(excluded)}.",
               f"Frontier: `{frontier}`. Epsilon: {epsilon}. Delta: {delta}.", "",
               "See metrics.csv, calibration.json, decisions.csv, and cost-quality.png.", "",
               "Calibration bounds the event 'frontier succeeded and routed answer failed' per tenant/task type, testing thresholds in a fixed sequence from cautious to aggressive (stopping at the first failure) and with a Bonferroni correction across all methods/groups. It requires independently sampled (IID), representative tasks within each group and independent training/calibration/test splits. Exact duplicate prompts are deduplicated by a label-independent task ID ordering; semantic duplicates and upstream contamination require a separate audit.", "",
               "Threshold curves use test outcomes for reporting only. Do not select a new policy on this test set. Unknown/missing outcomes are excluded, which may bias results; exclusions are recorded. Costs are recorded per completed task and must include all retries in the source data. No model output was generated by this experiment.", "",
               summary["baseline_note"], "", summary["latency_note"], ""]
+    if latency_samples:
+        report += ["Per-request latency samples and hardware details: routing-latency.json. "
+                   "The p50/p99 columns in metrics.csv describe this bounded sample.", ""]
     (output / "report.md").write_text("\n".join(report))
     return _json(summary)
 
 
 def _plot(output, metrics, synthetic, curve_frame):
     fig, ax = plt.subplots(figsize=(8, 5))
-    for (tenant, method), curve in curve_frame.groupby(["tenant", "method"]):
-        ax.plot(curve.mean_cost_usd, curve.accuracy, alpha=0.5,
-                label=f"{tenant}/{method} thresholds (test diagnostics)")
-    for metric in metrics:
-        # Use raw observed task cost and accuracy without manipulating epsilon.
-        cost = metric.get("mean_cost_usd", metric.get("mean_cost"))
-        accuracy = metric.get("accuracy")
-        if cost is not None and accuracy is not None:
-            ax.scatter(cost, accuracy)
-            ax.annotate(f'{metric["tenant"]}/{metric["method"]}', (cost, accuracy), fontsize=8)
-    ax.set(xlabel="Observed mean cost per task (USD)", ylabel="Held-out success rate",
-           title="Synthetic pipeline check" if synthetic else "Offline cost-quality comparison")
-    if not curve_frame.empty:
-        ax.legend(fontsize=7)
-    fig.tight_layout()
-    fig.savefig(output / "cost-quality.png", dpi=140)
-    plt.close(fig)
+    try:
+        for (tenant, method), curve in curve_frame.groupby(["tenant", "method"]):
+            ax.plot(curve.mean_cost_usd, curve.accuracy, alpha=0.5,
+                    label=f"{tenant}/{method} thresholds (test diagnostics)")
+        for metric in metrics:
+            # Use raw observed task cost and accuracy without manipulating epsilon.
+            cost = metric.get("mean_cost_usd", metric.get("mean_cost"))
+            accuracy = metric.get("accuracy")
+            if cost is not None and accuracy is not None:
+                ax.scatter(cost, accuracy)
+                ax.annotate(f'{metric["tenant"]}/{metric["method"]}', (cost, accuracy), fontsize=8)
+        ax.set(xlabel="Observed mean cost per task (USD)", ylabel="Held-out success rate",
+               title="Synthetic pipeline check" if synthetic else "Offline cost-quality comparison")
+        if not curve_frame.empty:
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(output / "cost-quality.png", dpi=140)
+    finally:
+        plt.close(fig)

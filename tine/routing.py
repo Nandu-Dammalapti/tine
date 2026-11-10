@@ -9,6 +9,8 @@ scores alone never establish a quality guarantee.
 
 from __future__ import annotations
 
+from numbers import Real
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -20,12 +22,16 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 from threadpoolctl import threadpool_limits
 
+from tine.numeric import real_array
+
 
 TASK_COLUMNS = ["tenant", "task_id", "prompt", "task_type"]
 METHODS = ("logistic", "knn", "cluster")
 
 
 def _validate_tasks(frame: pd.DataFrame, *, unique: bool = True) -> pd.DataFrame:
+    if not isinstance(frame, pd.DataFrame) or not frame.columns.is_unique:
+        raise ValueError("Tasks must be a DataFrame with unique column names")
     missing = set(TASK_COLUMNS) - set(frame.columns)
     if missing:
         raise ValueError(f"Missing task columns: {sorted(missing)}")
@@ -58,10 +64,7 @@ def _validate_outcomes(frame: pd.DataFrame) -> pd.DataFrame:
         and value in (0, 1)
     ).all():
         raise ValueError("Known success labels must be Boolean or zero/one")
-    try:
-        costs = result["cost_usd"].to_numpy(dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("cost_usd must be numeric") from exc
+    costs = real_array(result["cost_usd"], "cost_usd")
     if not np.isfinite(costs).all() or (costs < 0).any():
         raise ValueError("cost_usd must be finite and nonnegative")
     result["cost_usd"] = costs
@@ -82,8 +85,8 @@ def route_indices(
     does not exclude a cheaper model whose score is exactly one. Cost ties are
     resolved by column order. Predictions and costs must be finite and valid.
     """
-    scores = np.asarray(scores, dtype=float)
-    costs = np.asarray(costs, dtype=float)
+    scores = real_array(scores, "scores")
+    costs = real_array(costs, "costs")
     if scores.ndim != 2 or scores.shape != costs.shape or scores.shape[1] == 0:
         raise ValueError("scores and costs must be matching task-by-model matrices")
     if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
@@ -94,8 +97,10 @@ def route_indices(
         raise ValueError("frontier_index must be an integer column index")
     if not 0 <= frontier_index < scores.shape[1]:
         raise ValueError("frontier_index is out of bounds")
-    if not np.isfinite(tau) or not 0 <= tau <= 1:
+    if isinstance(tau, (bool, np.bool_)) or not isinstance(tau, Real) or not 0 <= tau <= 1:
         raise ValueError("tau must be between zero and one")
+    if not isinstance(force_frontier, (bool, np.bool_)):
+        raise ValueError("force_frontier must be a boolean")
     if force_frontier:
         return np.full(scores.shape[0], frontier_index, dtype=int)
     eligible = scores >= tau
@@ -140,7 +145,7 @@ class Router:
             for key, value in embedding_lookup.items():
                 if not isinstance(key, tuple) or len(key) != 2 or not all(isinstance(k, str) for k in key):
                     raise ValueError("Embedding keys must be (tenant, task_id) string tuples")
-                vector = np.array(value, dtype=float, copy=True)
+                vector = real_array(value, "Embedding vectors").copy()
                 if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
                     raise ValueError("Embedding vectors must be finite, nonempty one-dimensional arrays")
                 if dimension is None:

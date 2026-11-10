@@ -124,6 +124,103 @@ def test_duplicate_model_outcome_and_conflicting_prompts_are_rejected():
         validate_outcomes(frame)
 
 
+@pytest.mark.parametrize("prefix", ["", "\ufeff\n \n"])
+@pytest.mark.parametrize("column", ["tenant", "success", "cost_usd", "prompt"])
+def test_duplicate_columns_fail_before_csv_parsing_or_export(tmp_path, column, prefix):
+    frame = synthetic_fixture(1)
+    duplicate = pd.concat([frame, frame[[column]]], axis=1)
+    source = tmp_path / "ambiguous.csv"
+    source.write_text(prefix + duplicate.to_csv(index=False))
+    with pytest.raises(ValueError, match="unique column"):
+        read_outcomes(source)
+    with pytest.raises(ValueError, match="unique column"):
+        validate_outcomes(duplicate)
+    target = tmp_path / "previous.jsonl"
+    target.write_text("preserve previous output")
+    with pytest.raises(ValueError, match="unique column"):
+        write_outcomes(duplicate, target)
+    assert target.read_text() == "preserve previous output"
+
+
+@pytest.mark.parametrize("suffix", [".json", ".jsonl", ".ndjson"])
+def test_duplicate_json_labels_are_not_silently_overwritten(tmp_path, suffix):
+    record = synthetic_fixture(1).iloc[0].to_dict()
+    raw = json.dumps(record)
+    raw = raw[:-1] + ', "success": false}'
+    path = tmp_path / ("ambiguous" + suffix)
+    path.write_text("[" + raw + "]" if suffix == ".json" else raw + "\n")
+    with pytest.raises(ValueError, match="Duplicate JSON"):
+        read_outcomes(path)
+
+
+def test_upstream_duplicate_score_keeps_existing_output(tmp_path):
+    source = tmp_path / "results.json"
+    source.write_text('{"dataset_name":"coding","split":"test","model_name":"cheap",'
+                      '"records":[{"index":1,"prompt":"Add one", "score":0,"score":1,"cost":0.01}]}')
+    target = tmp_path / "outcomes.jsonl"
+    target.write_text("preserve previous output")
+    with pytest.raises(ValueError, match="Duplicate JSON"):
+        import_llmrouterbench(source, target)
+    assert target.read_text() == "preserve previous output"
+
+
+@pytest.mark.parametrize("column", ["cost_usd", "input_tokens", "output_tokens", "cached_tokens", "latency_ms"])
+@pytest.mark.parametrize("value", [False, True])
+def test_import_rejects_boolean_measurements(tmp_path, column, value):
+    records = synthetic_fixture(2).to_dict(orient="records")
+    records[0][column] = value
+    path = tmp_path / "outcomes.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+    with pytest.raises(ValueError, match=column):
+        read_outcomes(path)
+
+
+def test_nullable_numpy_measurements_keep_unknowns_and_reject_booleans():
+    frame = synthetic_fixture(2)
+    frame["input_tokens"] = pd.Series([pd.NA, 100, 100, 100, 100, 100], dtype="Int64")
+    assert pd.isna(validate_outcomes(frame).loc[0, "input_tokens"])
+    frame["input_tokens"] = frame["input_tokens"].astype(object)
+    frame.loc[1, "input_tokens"] = np.bool_(False)
+    with pytest.raises(ValueError, match="input_tokens"):
+        validate_outcomes(frame)
+
+
+@pytest.mark.parametrize("column", ["cost_usd", "input_tokens", "output_tokens", "cached_tokens", "latency_ms"])
+def test_complex_measurements_are_not_silently_converted_to_real(column):
+    frame = synthetic_fixture(2)
+    frame[column] = frame[column].astype(complex) + 2j
+    with pytest.raises(ValueError, match=column):
+        validate_outcomes(frame)
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".jsonl"])
+def test_failed_outcome_encoding_preserves_existing_file(tmp_path, suffix):
+    path = tmp_path / ("outcomes" + suffix)
+    frame = synthetic_fixture(2)
+    write_outcomes(frame, path)
+    previous = path.read_bytes()
+    frame["prompt"] = "invalid\ud800"
+    with pytest.raises(UnicodeEncodeError):
+        write_outcomes(frame, path)
+    assert path.read_bytes() == previous
+
+
+def test_failed_outcome_publication_preserves_existing_file(tmp_path, monkeypatch):
+    path = tmp_path / "outcomes.jsonl"
+    frame = synthetic_fixture(2)
+    write_outcomes(frame, path)
+    previous = path.read_bytes()
+
+    def fail_replace(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr("tine.artifacts.os.replace", fail_replace)
+    with pytest.raises(OSError, match="disk failure"):
+        write_outcomes(synthetic_fixture(3), path)
+    assert path.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def _result_file(root, *, score=1, cost=0.01, dataset="humaneval", model="small", run="20260101_000000"):
     path = root / dataset / "test" / model / f"{run}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
