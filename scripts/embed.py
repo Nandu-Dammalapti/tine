@@ -56,6 +56,22 @@ def prepare_tasks(outcomes: pd.DataFrame, limit: int | None = None) -> pd.DataFr
     return tasks
 
 
+def issue_view(prompt: str) -> str:
+    """The text of a prompt's single ``<issue>`` block, otherwise the whole prompt.
+
+    SWE-bench prompts are an issue followed by tens of thousands of characters of
+    repository code, so truncation leaves mostly boilerplate and code. A prompt
+    without exactly one issue block (for example LiveCodeBench) is kept whole.
+    """
+    blocks = re.findall(r"<issue>(.*?)</issue>", prompt, flags=re.DOTALL)
+    if len(blocks) != 1 or not blocks[0].strip():
+        return prompt
+    return blocks[0].strip()
+
+
+PROMPT_VIEWS = {"full": None, "issue": issue_view}
+
+
 def _fingerprint(tasks: pd.DataFrame) -> str:
     payload = tasks[["tenant", "task_id", "prompt_hash"]].values.tolist()
     return hashlib.sha256(
@@ -120,11 +136,14 @@ def embed_tasks(
     max_seq_length: int = 256,
     cache_dir: str | None = None,
     encoder: Any = None,
+    prompt_view: str = "full",
 ) -> dict[str, Any]:
     """Encode batches with atomic checkpoints; injectable encoder enables CPU tests.
 
     Resume requires matching ordered task keys and prompt hashes, model revision,
-    batch size, and truncation. GPU/CPU device may differ after a disconnect.
+    batch size, truncation, and prompt view. GPU/CPU device may differ after a
+    disconnect. ``prompt_view="issue"`` encodes ``issue_view`` of each prompt; the
+    stored hash is still that of the full prompt, which is what the router checks.
     Never run concurrent writers against the same output/checkpoint directory.
     """
     if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
@@ -133,6 +152,9 @@ def embed_tasks(
         raise ValueError("batch_size and max_seq_length must be positive")
     if device not in {"cpu", "cuda", "mps"}:
         raise ValueError("device must be cpu, cuda, or mps")
+    if prompt_view not in PROMPT_VIEWS:
+        raise ValueError(f"prompt_view must be one of {sorted(PROMPT_VIEWS)}")
+    view = PROMPT_VIEWS[prompt_view]
     tasks = prepare_tasks(tasks)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +171,11 @@ def embed_tasks(
         "normalize_embeddings": True,
         "prompt_handling": "Full prompt hashed; encoder truncates at max_seq_length tokens",
     }
+    if view is not None:
+        metadata["prompt_handling"] = (
+            f"Full prompt hashed; {prompt_view} view encoded and truncated at max_seq_length tokens")
+        metadata["prompt_view"] = prompt_view
+
     manifest_path = checkpoint_dir / "manifest.json"
     if manifest_path.exists():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -184,7 +211,8 @@ def embed_tasks(
                 encoder.max_seq_length = max_seq_length
             vectors = _checked_vectors(
                 _normalized(encoder.encode(
-                    tasks["prompt"].iloc[start:end].tolist(),
+                    [text if view is None else view(text)
+                     for text in tasks["prompt"].iloc[start:end]],
                     batch_size=batch_size,
                     show_progress_bar=False,
                     normalize_embeddings=False,
@@ -228,6 +256,8 @@ def main() -> None:
     parser.add_argument("--device", choices=["cpu", "cuda", "mps"], default="cpu")
     parser.add_argument("--cache-dir")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--prompt-view", choices=sorted(PROMPT_VIEWS), default="full",
+                        help="issue: encode only a prompt's <issue> block when it has one")
     args = parser.parse_args()
     tasks = prepare_tasks(read_outcomes(args.input), args.limit)
     embed_tasks(
@@ -239,6 +269,7 @@ def main() -> None:
         device=args.device,
         max_seq_length=args.max_seq_length,
         cache_dir=args.cache_dir,
+        prompt_view=args.prompt_view,
     )
 
 
