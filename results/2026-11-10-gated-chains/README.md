@@ -61,12 +61,37 @@ Mean held-out savings vs gpt-5 over 10 seeds, certified picks
 it to rescue weak checks at coding-level epsilon. This matches the 2026-11-09 finding
 that the predictors cannot tell from the prompt which tasks a cheaper model solves.
 
+## Qwen3 embeddings for the gate
+
+Added later on 2026-11-10 (`gated-lcb-qwen3-*-summary.csv`). The same runs with the
+gate predictor fed Qwen3-Embedding-0.6B vectors (1,024-d, revision
+`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, full prompt, 2,048 tokens, computed
+locally) through `--gate-embeddings`, in place of TF-IDF. Same seeds and parts, so the
+plain-chain column is identical.
+
+| catch | epsilon | plain chain | TF-IDF gate: logistic / knn / cluster | Qwen3 gate: logistic / knn / cluster |
+| --- | --- | --- | --- | --- |
+| 0.95 | 0.02 | 5.0% | 8.1% / 13.7% / 9.7% | 12.3% / 8.8% / 5.2% |
+| per-model | 0.02 | 0% | 1.4% / 1.1% / 0.1% | 1.4% / 1.2% / 0.9% |
+| 0.90 | 0.05 | 26.6% | 26.6% / 22.1% / 19.3% | 27.5% / 30.3% / 31.4% |
+| per-model | 0.05 | 3.2% | 18.1% / 15.2% / 12.6% | 11.0% / 16.1% / 14.0% |
+
+A stronger encoder does not make the gate better: the differences go both ways and
+are within the spread between predictors. Runs over epsilon: none at epsilon 0.02;
+at epsilon 0.05, 2 of 10 for the Qwen3 cluster gate and 1 of 10 for the Qwen3
+logistic gate on `per-model`, and 1 of 10 for the Qwen3 knn gate at catch 0.90. This
+matches the router result in the 2026-11-09 folder: Qwen3 embeddings did not help
+there either. The 8B encoder was not tried for the gate.
+
+Reproduce: add `--gate-embeddings EMB/lcb-qwen3-0.6b-2048.npz` to the command below
+(the embedding command is in [avengers-pro](../2026-11-10-avengers-pro/README.md)).
+
 ## Next
 
 1. Rerun with per-answer check results (`--checks`) from `scripts/lcb_sample_checks.py`
    instead of simulated per-model rates.
-2. Rerun the gate with sentence embeddings (`--gate-embeddings`) once the `lcb` /
-   `lcb-swe` embedding files exist.
+2. The gate with Qwen3 0.6B embeddings is done (above). `lcb-swe` with the issue-only
+   view is still to run.
 3. Stronger checks remain the main lever: differential testing between models, or a
    judge model, measured the same way.
 
