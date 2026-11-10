@@ -14,6 +14,8 @@ The initial setup-only scope in AGENTS.md is superseded by the user's request fo
 
 Latest offline benchmark findings and how to reproduce them: [results/2026-11-09-coding-benchmark](results/2026-11-09-coding-benchmark/README.md).
 Predictor-gated escalation chains: [results/2026-11-10-gated-chains](results/2026-11-10-gated-chains/README.md).
+Index of all results: [results/README.md](results/README.md). Outside research: [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md).
+Avengers-Pro head-to-head: [results/2026-11-10-avengers-pro](results/2026-11-10-avengers-pro/README.md) and [docs/AVENGERS_PRO.md](docs/AVENGERS_PRO.md).
 Response check for escalation chains: [results/2026-11-10-response-check](results/2026-11-10-response-check/README.md).
 
 ## Setup
