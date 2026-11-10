@@ -84,6 +84,26 @@ Mean held-out savings vs gpt-5 over 10 seeds, certified picks
 The AUC here (0.78-0.92) is partly the classifier telling long SWE-bench prompts from
 short LiveCodeBench ones, so it overstates the signal within one kind of task.
 
+## Other task types
+
+The response check as the only check (`--catch 0`) on four non-coding datasets from
+the same benchmark, frontier `gpt-5` (`response-<dataset>-summary.csv`). These tasks
+have no tests to run, so nothing else is available as a check.
+
+| dataset | complete tasks | held-out AUC range | certified savings at epsilon 0.02 | at 0.05 |
+| --- | --- | --- | --- | --- |
+| MMLU-Pro (multiple choice) | 3,000 | 0.58-0.77 | 3.4% (1 of 10 runs over) | 19.4% |
+| ARC-AGI v1 | 400 | 0.60-0.99 | 0% | 0.7% (1 of 10 runs over) |
+| GPQA | 198 | 0.48-0.84 | 0% | 0% |
+| tau2 (agent tasks) | 167 | 0.49-0.65 | 0% | 0% |
+
+- Response size says less about correctness on multiple-choice questions than on
+  coding, but with 1,200 certify tasks MMLU-Pro still certifies 19.4% at epsilon 0.05,
+  1.2 points below gpt-5's accuracy (86.3% vs 87.5%).
+- On ARC-AGI the score separates well for some models, but gpt-5 is far more accurate
+  than every cheaper model (52% vs 25% for the best cheap one), so little can be accepted.
+- GPQA and tau2 are too small to certify anything, and on tau2 the signal is weak.
+
 ## Limits
 
 - Runs over epsilon are expected in up to 5% of runs per setting (delta = 0.05) and
@@ -111,4 +131,13 @@ python -m tine cascade --input DATA/lcb.jsonl --frontier gpt-5 --response-check 
   --epsilon 0.02 0.01 0.05 --output RUNS/response-lcb
 python -m tine cascade --input DATA/lcb-swe.jsonl --frontier gpt-5 --response-check \
   --catch 0 0.9 0.95 1.0 --epsilon 0.02 0.01 0.05 --output RUNS/response-lcb-swe
+```
+
+For another dataset, for example MMLU-Pro (`arc-agi` split `v1`, `gpqa` and `tau2` split `test`):
+
+```bash
+python -m tine import-llmrouterbench --input BENCH/extracted/bench-release/mmlupro --output DATA/outcomes-mmlupro.jsonl --dataset mmlupro --split test_3000 --run-selection latest
+python -m tine combine-outcomes --input DATA/outcomes-mmlupro.jsonl --output DATA/mmlupro.jsonl --task-type mmlupro --exclude-model openrouter
+python -m tine cascade --input DATA/mmlupro.jsonl --frontier gpt-5 --response-check --catch 0 \
+  --epsilon 0.02 0.01 0.05 --output RUNS/response-mmlupro
 ```

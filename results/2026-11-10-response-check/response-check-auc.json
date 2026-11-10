@@ -61,5 +61,119 @@
       "qwen3-235b-a22b-2507": 0.8403,
       "qwen3-235b-a22b-thinking-2507": 0.8823
     }
+  },
+  "mmlupro": {
+    "complete_tasks": 3000,
+    "fractions": [
+      0.2,
+      0.1,
+      0.15,
+      0.4,
+      0.15
+    ],
+    "held_out_auc_mean": {
+      "claude-sonnet-4": 0.6067,
+      "deepseek-r1-0528": 0.6486,
+      "deepseek-v3-0324": 0.5826,
+      "deepseek-v3.1-terminus": 0.5942,
+      "gemini-2.5-flash": 0.6844,
+      "gemini-2.5-pro": 0.6912,
+      "glm-4.6": 0.7722,
+      "gpt-5-chat": 0.6076,
+      "intern-s1": 0.7386,
+      "intern-s1-new": 0.6939,
+      "kimi-k2-0905": 0.6443,
+      "qwen3-235b-a22b-2507": 0.5828,
+      "qwen3-235b-a22b-thinking-2507": 0.7182
+    }
+  },
+  "arc-agi": {
+    "complete_tasks": 400,
+    "fractions": [
+      0.2,
+      0.1,
+      0.15,
+      0.4,
+      0.15
+    ],
+    "held_out_auc_mean": {
+      "claude-sonnet-4": 0.6237,
+      "deepseek-r1-0528": 0.8454,
+      "deepseek-v3-0324": 0.6602,
+      "deepseek-v3.1-terminus": 0.682,
+      "gemini-2.5-flash": 0.6378,
+      "gemini-2.5-pro": 0.8521,
+      "glm-4.6": 0.9035,
+      "gpt-5-chat": 0.6008,
+      "intern-s1": 0.8693,
+      "intern-s1-new": 0.7664,
+      "kimi-k2-0905": 0.7281,
+      "qwen3-235b-a22b-2507": 0.769,
+      "qwen3-235b-a22b-no-thinking": 0.61,
+      "qwen3-235b-a22b-thinking": 0.7908,
+      "qwen3-235b-a22b-thinking-2507": 0.9887
+    }
+  },
+  "gpqa": {
+    "complete_tasks": 198,
+    "fractions": [
+      0.2,
+      0.1,
+      0.15,
+      0.4,
+      0.15
+    ],
+    "held_out_auc_mean": {
+      "DeepHermes-3-Llama-3-8B-Preview": 0.5844,
+      "DeepSeek-R1-0528-Qwen3-8B": 0.6667,
+      "DeepSeek-R1-Distill-Qwen-7B": 0.8374,
+      "Fin-R1": 0.733,
+      "Intern-S1-mini": 0.8027,
+      "Llama-3.1-8B-Instruct": 0.5903,
+      "Llama-3.1-8B-UltraMedical": 0.5508,
+      "Llama-3.1-Nemotron-Nano-8B-v1": 0.5833,
+      "NVIDIA-Nemotron-Nano-9B-v2": 0.6376,
+      "Qwen3-8B": 0.6383,
+      "claude-sonnet-4": 0.5224,
+      "deepseek-r1-0528": 0.6218,
+      "deepseek-v3-0324": 0.5233,
+      "deepseek-v3.1-terminus": 0.6492,
+      "gemini-2.5-flash": 0.7176,
+      "gemini-2.5-pro": 0.7001,
+      "gemma-2-9b-it": 0.4844,
+      "glm-4.6": 0.7901,
+      "gpt-4.1": 0.5424,
+      "gpt-5-chat": 0.5098,
+      "intern-s1": 0.745,
+      "intern-s1-new": 0.7299,
+      "kimi-k2-0905": 0.5047,
+      "qwen3-235b-a22b-2507": 0.5398,
+      "qwen3-235b-a22b-no-thinking": 0.5711,
+      "qwen3-235b-a22b-thinking": 0.7097,
+      "qwen3-235b-a22b-thinking-2507": 0.6216
+    }
+  },
+  "tau2": {
+    "complete_tasks": 167,
+    "fractions": [
+      0.2,
+      0.1,
+      0.15,
+      0.4,
+      0.15
+    ],
+    "held_out_auc_mean": {
+      "claude-sonnet-4": 0.5138,
+      "deepseek-r1-0528": 0.5615,
+      "deepseek-v3-0324": 0.5856,
+      "deepseek-v3.1-terminus": 0.6054,
+      "gemini-2.5-flash": 0.4958,
+      "gemini-2.5-pro": 0.4888,
+      "glm-4.6": 0.5662,
+      "intern-s1": 0.5216,
+      "kimi-k2-0905": 0.6279,
+      "qwen3-235b-a22b-2507": 0.5491,
+      "qwen3-235b-a22b-thinking-2507": 0.6481
+    }
   }
 }
