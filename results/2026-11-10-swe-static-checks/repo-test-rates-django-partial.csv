@@ -1,0 +1,9 @@
+model,answers,right,wrong,wrong_caught_static,wrong_caught_static_or_tests,right_rejected,accepted,accepted_right,catch_rate_static,catch_rate_static_and_tests,false_reject_rate,accuracy_when_accepted
+claude-opus-4.1,132,62,70,31,45,0,87,62,0.4429,0.6429,0.0,0.7126
+claude-sonnet-4,132,48,84,39,54,1,77,47,0.4643,0.6429,0.0208,0.6104
+deepseek-r1-0528,134,42,92,43,61,0,73,42,0.4674,0.663,0.0,0.5753
+deepseek-v3-0324,133,39,94,26,51,0,82,39,0.2766,0.5426,0.0,0.4756
+deepseek-v3.1-terminus,133,35,98,47,62,1,70,34,0.4796,0.6327,0.0286,0.4857
+glm-4.6,133,30,103,64,77,1,55,29,0.6214,0.7476,0.0333,0.5273
+kimi-k2-0905,134,33,101,62,70,1,63,32,0.6139,0.6931,0.0303,0.5079
+qwen3-235b-a22b-2507,134,22,112,60,73,0,61,22,0.5357,0.6518,0.0,0.3607
