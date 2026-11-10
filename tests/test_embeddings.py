@@ -51,3 +51,33 @@ def test_embedding_resume_rejects_different_input_and_revision(tmp_path):
     tasks.loc[0, "prompt"] += " changed"
     with pytest.raises(ValueError, match="mismatch"):
         embedding.embed_tasks(tasks, output, revision="b" * 40, encoder=FakeEncoder())
+
+
+class HalfPrecisionEncoder:
+    """Mimics a bfloat16 encoder: unnormalized, low-precision output."""
+
+    def encode(self, prompts, **kwargs):
+        assert kwargs["normalize_embeddings"] is False
+        vectors = np.array([[3.0 * len(prompt), 4.0, 0.001] for prompt in prompts], dtype=np.float16)
+        return vectors
+
+
+def test_half_precision_encoders_are_normalized_in_float32(tmp_path):
+    tasks = synthetic_fixture(n_tasks=5)
+    output = tmp_path / "half.npz"
+    embedding.embed_tasks(tasks, output, revision="d" * 40, batch_size=2, encoder=HalfPrecisionEncoder())
+    with np.load(output, allow_pickle=False) as saved:
+        vectors = saved["embeddings"]
+    assert vectors.dtype == np.float32
+    np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-6)
+
+
+class ZeroEncoder:
+    def encode(self, prompts, **kwargs):
+        return np.zeros((len(prompts), 3))
+
+
+def test_zero_vectors_are_still_rejected(tmp_path):
+    with pytest.raises(ValueError, match="non-finite"):
+        embedding.embed_tasks(synthetic_fixture(n_tasks=3), tmp_path / "zero.npz", revision="e" * 40,
+                              encoder=ZeroEncoder())

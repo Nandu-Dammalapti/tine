@@ -33,6 +33,16 @@ The commands at the bottom regenerate everything.
   saved about 6% at <= 2% loss.
 - Sentence-transformer embeddings (all-MiniLM-L6-v2, 256-token truncation) did worse
   than TF-IDF: all three methods failed calibration at the first threshold.
+- Stronger encoders do not change this. Qwen3-Embedding-0.6B and -8B (the 8B is the
+  encoder the Avengers-Pro paper names), 2,048-token context, computed on Colab and
+  run through `tine run --embeddings` on `lcb` and `lcb-swe` (seed 42, main 9f384d9):
+  0% savings in all four runs. Only `cluster` certified a threshold (3 of 4 runs) and
+  it routed no test task. Reported by the Colab session on 2026-11-10; the embedding
+  files are on Drive, not in Git, and were not re-run here.
+- Prompt length matters for any text features: LiveCodeBench prompts average 1,408
+  characters, SWE-bench prompts 69,562 (median 46,616): a short `<issue>` block, then
+  repository files and an example patch. Truncated encoders mostly see the start of
+  the issue; issue-only features (extract `<issue>...</issue>`) are untested.
 - Calibration uses fixed-sequence testing over thresholds (PR #5): one group with
   three methods needs >= 203 risk-calibration tasks at zero degradations; `lcb`
   has 211, `lcb-swe` 311.
