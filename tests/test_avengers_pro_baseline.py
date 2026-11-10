@@ -144,12 +144,19 @@ def test_baseline_scores_official_choices_without_an_embedding_service(tmp_path,
     summary = json.loads((tmp_path / "out" / "avengers-summary.json").read_text())
     assert summary["official_code"]["commit"] == "abc123" and summary["picked"]["frontier_only_runs"] == 3
     assert result["complete_tasks"] == 200 and len(result["curve"]) == 2
+    both = baseline.run_baseline(frame, "frontier", vectors, fake_official, tmp_path / "two",
+                                 weights=(0.0, 1.0), seeds=range(2), clusters=4, top_k=2, epsilon=[0.02, 0.9])
+    picks = pd.read_csv(tmp_path / "two" / "avengers-picks.csv")
+    assert picks.groupby("epsilon").size().to_dict() == {0.02: 2, 0.9: 2}
+    # A 90% limit accepts the cheapest model, which the 2% limit refused.
+    assert (picks[picks.epsilon == 0.9].picked_weight == 0.0).all() and picks[picks.epsilon == 0.02].picked_weight.isna().all()
+    assert set(both["picked_by_epsilon"]) == {"0.02", "0.9"} and both["picked"] == both["picked_by_epsilon"]["0.02"]
 
 
 def test_baseline_rejects_bad_settings_and_missing_code(tmp_path, fake_official):
     frame = synthetic_fixture(n_tasks=50, seed=4)
     vectors = embeddings_file(frame, tmp_path / "vectors.npz")
-    for bad in [{"weights": ()}, {"weights": (1.5,)}, {"seeds": ()}, {"epsilon": 2}]:
+    for bad in [{"weights": ()}, {"weights": (1.5,)}, {"seeds": ()}, {"epsilon": 2}, {"epsilon": []}]:
         with pytest.raises(ValueError):
             baseline.run_baseline(frame, "frontier", vectors, fake_official, tmp_path / "out", **bad)
     with pytest.raises(FileNotFoundError):

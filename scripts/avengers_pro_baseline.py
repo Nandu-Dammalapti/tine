@@ -78,6 +78,14 @@ def load_official(avengers_dir: Path):
     return SuppliedEmbeddingRouter, official_config.SimpleClusterConfig
 
 
+def summarize_picks(picks: pd.DataFrame) -> dict:
+    return {"savings_mean": float(picks.savings.mean()), "accuracy_mean": float(picks.accuracy.mean()),
+            "frontier_accuracy": float(picks.frontier_accuracy.mean()),
+            "degradation_max": float(picks.degradation_rate.max()),
+            "over_epsilon_runs": int(picks.over_epsilon.sum()),
+            "frontier_only_runs": int(picks.picked_weight.isna().sum())}
+
+
 def run_baseline(frame, frontier: str, embeddings, avengers_dir, output, *, weights=DEFAULT_WEIGHTS,
                  seeds=range(10), clusters: int = 60, top_k: int = 4, beta: float = 9.0,
                  epsilon: float = 0.02, avengers_commit: str | None = None) -> dict:
@@ -85,8 +93,10 @@ def run_baseline(frame, frontier: str, embeddings, avengers_dir, output, *, weig
     seeds = [int(seed) for seed in seeds]
     if not weights or not seeds or any(not 0 <= weight <= 1 for weight in weights):
         raise ValueError("Require seeds and performance weights between zero and one")
-    if not 0 <= epsilon <= 1:
+    epsilons = [float(value) for value in (epsilon if isinstance(epsilon, (list, tuple)) else [epsilon])]
+    if not epsilons or any(not 0 <= value <= 1 for value in epsilons):
         raise ValueError("epsilon must be between zero and one")
+    epsilon = epsilons[0]  # the curve counts runs over the first limit
     frame, tasks, excluded = complete_tasks(frame, frontier)
     if tasks.tenant.nunique() != 1:
         raise ValueError("Run the baseline on one tenant at a time")
@@ -130,20 +140,23 @@ def run_baseline(frame, frontier: str, embeddings, avengers_dir, output, *, weig
             # The official split does not depend on the weight, so halves line up.
             rows = by_weight[weights[0]][0]
             half = np.random.default_rng(seed).permutation(len(rows)) < len(rows) // 2
-            best, best_savings = None, 0.0
-            for weight in weights:
-                chosen = by_weight[weight][1]
-                metrics = evaluate(chosen[half], outcomes[rows[half]], costs[rows[half]], frontier_index)
-                if metrics["degradation_rate"] <= epsilon and metrics["savings_fraction"] > best_savings:
-                    best, best_savings = weight, metrics["savings_fraction"]
-            chosen = (by_weight[best][1] if best is not None
-                      else np.full(len(rows), frontier_index))
-            metrics = evaluate(chosen[~half], outcomes[rows[~half]], costs[rows[~half]], frontier_index)
-            picks.append({"seed": seed, "picked_weight": best, "eval_tasks": int((~half).sum()),
-                          "savings": metrics["savings_fraction"], "accuracy": metrics["accuracy"],
-                          "frontier_accuracy": metrics["frontier_accuracy"],
-                          "degradation_rate": metrics["degradation_rate"],
-                          "over_epsilon": bool(metrics["degradation_rate"] > epsilon)})
+            on_half = {weight: evaluate(by_weight[weight][1][half], outcomes[rows[half]],
+                                        costs[rows[half]], frontier_index) for weight in weights}
+            for limit in epsilons:
+                best, best_savings = None, 0.0
+                for weight in weights:
+                    metrics = on_half[weight]
+                    if metrics["degradation_rate"] <= limit and metrics["savings_fraction"] > best_savings:
+                        best, best_savings = weight, metrics["savings_fraction"]
+                chosen = (by_weight[best][1] if best is not None
+                          else np.full(len(rows), frontier_index))
+                metrics = evaluate(chosen[~half], outcomes[rows[~half]], costs[rows[~half]], frontier_index)
+                picks.append({"epsilon": limit, "seed": seed, "picked_weight": best,
+                              "eval_tasks": int((~half).sum()),
+                              "savings": metrics["savings_fraction"], "accuracy": metrics["accuracy"],
+                              "frontier_accuracy": metrics["frontier_accuracy"],
+                              "degradation_rate": metrics["degradation_rate"],
+                              "over_epsilon": bool(metrics["degradation_rate"] > limit)})
     logging.disable(logging.NOTSET)
     runs, picks = pd.DataFrame(runs), pd.DataFrame(picks)
     curve = (runs.assign(over=runs.degradation_rate > epsilon).groupby("performance_weight")
@@ -160,11 +173,9 @@ def run_baseline(frame, frontier: str, embeddings, avengers_dir, output, *, weig
                           "n_clusters": clusters, "top_k": top_k, "beta": beta, "train_ratio": 0.7,
                           "replaced": "Embedding client only; vectors supplied from an NPZ."},
         "embedding_sha256": embedding_fingerprint(lookup, tasks),
-        "picked": {"savings_mean": float(picks.savings.mean()), "accuracy_mean": float(picks.accuracy.mean()),
-                   "frontier_accuracy": float(picks.frontier_accuracy.mean()),
-                   "degradation_max": float(picks.degradation_rate.max()),
-                   "over_epsilon_runs": int(picks.over_epsilon.sum()),
-                   "frontier_only_runs": int(picks.picked_weight.isna().sum())},
+        "picked": summarize_picks(picks[picks.epsilon == epsilon]),
+        "picked_by_epsilon": {str(limit): summarize_picks(picks[picks.epsilon == limit])
+                              for limit in epsilons},
         "scope": "Uncertified: Avengers-Pro gives no bound on quality loss. The picked weight is chosen "
                  "on half of the official test split and scored on the other half.",
         "curve": curve.to_dict(orient="records"),
@@ -192,13 +203,15 @@ def main(argv=None) -> None:
     parser.add_argument("--clusters", type=int, default=60, help="Paper: 60")
     parser.add_argument("--top-k", type=int, default=4, help="Nearest clusters; paper: 4")
     parser.add_argument("--beta", type=float, default=9.0)
-    parser.add_argument("--epsilon", type=float, default=0.02)
+    parser.add_argument("--epsilon", type=float, nargs="+", default=[0.02],
+                        help="quality limits for the held-out pick; the curve counts runs over the first")
     args = parser.parse_args(argv)
     result = run_baseline(read_outcomes(args.input), args.frontier, args.embeddings, args.avengers_dir,
                           args.output, weights=args.weights, seeds=range(args.seeds),
                           clusters=args.clusters, top_k=args.top_k, beta=args.beta,
                           epsilon=args.epsilon, avengers_commit=args.avengers_commit)
-    print(json.dumps({"picked": result["picked"], "curve": result["curve"]}, indent=2, default=float))
+    print(json.dumps({"picked_by_epsilon": result["picked_by_epsilon"], "curve": result["curve"]},
+                     indent=2, default=float))
     print(f"Summary: {args.output / 'avengers-summary.json'}")
 
 
