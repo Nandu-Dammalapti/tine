@@ -96,6 +96,19 @@ def _checked_vectors(vectors: Any, rows: int, dimension: int | None = None) -> n
     return vectors
 
 
+def _normalized(vectors: Any) -> np.ndarray:
+    """Normalize in float32. Half-precision encoders (e.g. Qwen3-Embedding loads as
+    bfloat16) return normalized vectors whose norms drift by ~1e-3, so we ask for
+    raw vectors and normalize after casting. Zero or non-finite rows become NaN,
+    which _checked_vectors rejects."""
+    vectors = np.asarray(vectors, dtype=np.float32)
+    if vectors.ndim != 2:
+        return vectors
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    usable = np.isfinite(norms) & (norms > 0)
+    return np.divide(vectors, norms, out=np.full_like(vectors, np.nan), where=usable)
+
+
 def embed_tasks(
     tasks: pd.DataFrame,
     output: Path,
@@ -170,13 +183,13 @@ def embed_tasks(
                 )
                 encoder.max_seq_length = max_seq_length
             vectors = _checked_vectors(
-                encoder.encode(
+                _normalized(encoder.encode(
                     tasks["prompt"].iloc[start:end].tolist(),
                     batch_size=batch_size,
                     show_progress_bar=False,
-                    normalize_embeddings=True,
+                    normalize_embeddings=False,
                     convert_to_numpy=True,
-                ),
+                )),
                 end - start,
                 dimension,
             )

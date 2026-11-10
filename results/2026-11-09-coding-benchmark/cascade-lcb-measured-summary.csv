@@ -1,0 +1,7 @@
+catch,epsilon,method,savings_mean,savings_min,savings_max,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs,frontier_call_rate,mean_calls,most_common_chain
+measured,0.02,uncertified,0.0,0.0,0.0,0.87066,0.87066,0.0,0.0,0,10,1.0,1.0,gpt-5
+measured,0.02,certified,0.0,0.0,0.0,0.87066,0.87066,0.0,0.0,0,10,1.0,1.0,gpt-5
+measured,0.01,uncertified,0.0,0.0,0.0,0.87066,0.87066,0.0,0.0,0,10,1.0,1.0,gpt-5
+measured,0.01,certified,0.0,0.0,0.0,0.87066,0.87066,0.0,0.0,0,10,1.0,1.0,gpt-5
+measured,0.05,uncertified,0.5085,0.43642,0.6323,0.84953,0.87066,0.05055,0.09036,4,0,0.14795,1.1891,intern-s1-new > gpt-5
+measured,0.05,certified,0.0,0.0,0.0,0.87066,0.87066,0.0,0.0,0,10,1.0,1.0,gpt-5
