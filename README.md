@@ -80,6 +80,8 @@ When supplying embeddings, `summary.json` records `embedding_sha256` alongside t
 
 The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
 
+Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on existing outcomes. See [measured check evidence](docs/CHECKS.md) for the `--checks` schema, tenant isolation, missing-check behavior, and the limits of simulated check results. Cascade reports publish together and retain synthetic labels; reported costs exclude running the checks.
+
 ## Prepare original coding tasks
 
 Use the task-only loader when preparing inputs for later model generation and grading. It preserves original splits and check code as text and omits reference solutions. Keep its output separate from graded model outcomes. MBPP here refers to the sanitized subset.

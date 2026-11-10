@@ -90,11 +90,10 @@ def main(argv=None):
                           "models": sorted(frame.model.unique()), "output": str(args.output)}, indent=2))
     elif args.command == "cascade":
         from tine.cascade import run_cascade_experiment
+        from tine.checks import read_checks
         from tine.data import read_outcomes
 
-        import pandas as pd
-
-        checks = pd.read_csv(args.checks) if args.checks else None
+        checks = read_checks(args.checks) if args.checks else None
         result = run_cascade_experiment(read_outcomes(args.input), args.frontier, args.output,
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),
