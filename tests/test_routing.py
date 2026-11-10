@@ -48,6 +48,26 @@ def test_invalid_decision_inputs(scores, costs, tau, index):
         route_indices(scores, costs, tau, index)
 
 
+@pytest.mark.parametrize("tau", [True, np.bool_(False), 0.5 + 0j, np.array([0.5]), "0.5"])
+def test_decision_threshold_requires_a_real_scalar(tau):
+    with pytest.raises(ValueError, match="tau"):
+        route_indices([[0.9, 1.0]], [[1.0, 10.0]], tau, 1)
+
+
+@pytest.mark.parametrize("force", ["false", "true", 0, 1, None])
+def test_fallback_switch_requires_boolean(force):
+    with pytest.raises(ValueError, match="force_frontier"):
+        route_indices([[0.9, 1.0]], [[1.0, 10.0]], 0.8, 1, force_frontier=force)
+
+
+@pytest.mark.parametrize("column", ["prompt", "success", "cost_usd"])
+def test_fit_rejects_duplicate_columns(column):
+    train = outcomes("train")
+    train = pd.concat([train, train[[column]]], axis=1)
+    with pytest.raises(ValueError, match="unique column"):
+        Router("frontier").fit(train, outcomes("score"))
+
+
 @pytest.mark.parametrize("field", ["scores", "costs"])
 @pytest.mark.parametrize("bad", [np.array([[0.9 + 4j, 1]]), [[False, 1.0]], np.array([[0.9 + 4j, 1]], dtype=object)])
 def test_route_rejects_numeric_inputs_that_would_change_during_conversion(field, bad):
@@ -152,6 +172,8 @@ def test_fixed_embeddings_are_used_without_tfidf():
     {}, {("a", "1"): [np.nan]}, {("a", "1"): [[1, 2]]},
     {("a", "1"): [1], ("a", "2"): [1, 2]},
     {("a", "1"): np.array([1+2j, 3+4j])},
+    {("a", "1"): [True, 0.5]},
+    {("a", "1"): np.array([False, True])},
 ])
 def test_invalid_embeddings(lookup):
     with pytest.raises(ValueError):

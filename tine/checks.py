@@ -1,20 +1,15 @@
 """Validate measured check evidence before using it to simulate escalation."""
 
-import csv
-
 import numpy as np
 import pandas as pd
 
-from tine.data import _success
+from tine.data import _success, _unique_csv_header
 
 
 def read_checks(path):
     """Preserve literal task/model IDs and distinguish empty checks from failures."""
     with open(path, encoding="utf-8-sig", newline="") as stream:
-        header = next(csv.reader(stream), [])
-        if len(header) != len(set(header)):
-            raise ValueError("checks must be a table with unique columns")
-        stream.seek(0)
+        _unique_csv_header(stream)
         return pd.read_csv(stream, dtype=str, keep_default_na=False)
 
 

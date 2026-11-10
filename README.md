@@ -76,6 +76,8 @@ python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME 
 
 Measurements, routing scores, and cost matrices must contain real numbers. Boolean and complex-valued measurements are rejected before conversion, including direct Python calls to routing, calibration, and evaluation. Success labels remain Boolean or pending.
 
+Outcome tables require unique column names. CSV imports reject duplicate headers before parsing, and JSON/JSONL imports reject duplicate object fields instead of silently choosing one value. Direct router calls also reject ambiguous thresholds, non-Boolean fallback switches, and Boolean embedding values.
+
 When supplying embeddings, `summary.json` records `embedding_sha256` alongside the outcome dataset fingerprint. It identifies the validated float64 feature values and task/prompt identities used in the experiment. Reordering or recompressing an embedding archive, or including unused rows, leaves this fingerprint unchanged; changing used vectors changes it. This identifies feature data, not the embedding model's training history.
 
 The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.

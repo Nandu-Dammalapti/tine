@@ -30,9 +30,10 @@ def test_checks_are_scoped_by_tenant_before_alignment():
     assert report["identity_scope"] == "tenant/task/model"
 
 
-def test_check_csv_rejects_duplicate_headers_before_pandas_renames_them(tmp_path):
+@pytest.mark.parametrize("prefix", ["", "\ufeff\n \n"])
+def test_check_csv_rejects_duplicate_headers_before_pandas_renames_them(tmp_path, prefix):
     path = tmp_path / "checks.csv"
-    path.write_text("task_id,model,passed,passed\nNA,cheap,true,false\n")
+    path.write_text(prefix + "task_id,model,passed,passed\nNA,cheap,true,false\n")
     with pytest.raises(ValueError, match="unique columns"):
         read_checks(path)
 
