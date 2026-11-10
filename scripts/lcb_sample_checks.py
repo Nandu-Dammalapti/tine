@@ -7,8 +7,9 @@ often they reject a right one). No model is called: the code is the answer each
 model already produced in LLMRouterBench.
 
 The code is untrusted. Each (model, task) runs in its own temporary directory in a
-separate `python -I` process with no network (`unshare -n`), CPU, memory and file
-size limits, and a wall-clock timeout. Linux only.
+separate `python -I` process as the unprivileged `nobody` user (`setpriv`), with an
+empty environment, no network (`unshare -n`), CPU, memory and file size limits, and a
+wall-clock timeout. Linux only; must start as root to switch user.
 
 Output CSV: task_id, model, mode, n_samples, passed, reason.
 """
@@ -20,14 +21,19 @@ import ast
 import concurrent.futures as futures
 import csv
 import json
+import math
+import os
 import re
+import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-SAMPLE_SECONDS = 4
+SAMPLE_SECONDS = 2  # samples are tiny; correct answers finish far sooner
 MEMORY_BYTES = 4 * 1024 ** 3
+WORK_ROOT = Path("/tmp/tine-checks")
+SYSTEM_PYTHON = shutil.which("python3", path="/usr/bin:/bin") or "/usr/bin/python3"
+CLEAN_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"}
 
 PREAMBLE = """\
 import sys, math, re, string, heapq, bisect, itertools, functools, collections, operator
@@ -38,6 +44,7 @@ from functools import *
 from heapq import *
 from bisect import *
 from math import *
+from builtins import *  # undo shadowing, e.g. math.pow over the 3-argument pow
 sys.setrecursionlimit(10 ** 6)
 """
 
@@ -105,6 +112,8 @@ for sample in spec["samples"]:
     finally:
         signal.alarm(0)
     results.append(ok)
+    if not ok:
+        break  # one failed sample already rejects the answer
 print(json.dumps(results))
 '''
 
@@ -115,23 +124,24 @@ def _clean(text: str) -> str:
 
 def stdin_samples(query: str):
     """Sample Input k / Sample Output k blocks. Blank lines inside inputs are a
-    formatting artifact and are dropped; an output ends at its first blank line
-    (explanations follow)."""
+    formatting artifact and are dropped. One blank line follows each output header;
+    the output then runs to the next blank line (explanations follow), so a second
+    blank line straight away means the expected output is empty."""
     query = _clean(query)
     samples = []
     for match in re.finditer(r"Sample Input (\d+):?\n(.*?)Sample Output \1:?\n", query, re.S):
         start = match.end()
         following = re.search(r"Sample Input \d+:?\n", query[start:])
         block = query[start:start + following.start()] if following else query[start:]
-        lines = block.lstrip("\n").split("\n")
+        if block.startswith("\n"):
+            block = block[1:]
         output = []
-        for line in lines:
+        for line in block.split("\n"):
             if not line.strip():
                 break
             output.append(line)
         inp = "\n".join(line for line in match.group(2).split("\n") if line.strip()) + "\n"
-        if output:
-            samples.append({"input": inp, "output": "\n".join(output)})
+        samples.append({"input": inp, "output": "\n".join(output)})
     return samples
 
 
@@ -164,19 +174,69 @@ def functional_samples(query: str, prompt: str):
     return method.group(1), samples
 
 
-def check_answer(code: str, mode: str, samples, method: str | None = None) -> list[bool] | None:
-    """Run one answer against its samples in an isolated process. None = harness failure."""
-    spec = {"preamble": PREAMBLE, "code": code, "mode": mode, "samples": samples,
+def tokens_match(got: str, want: str) -> bool:
+    """Whitespace-token comparison; case-insensitive; numbers within 1e-6."""
+    g, w = got.split(), want.split()
+    if len(g) != len(w):
+        return False
+    for x, y in zip(g, w):
+        if x.lower() == y.lower():
+            continue
+        try:
+            if not math.isclose(float(x), float(y), rel_tol=1e-6, abs_tol=1e-6):
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _sandbox(script: str, seconds: int) -> list[str]:
+    return ["unshare", "-n", "prlimit", f"--as={MEMORY_BYTES}", f"--cpu={seconds}",
+            "--fsize=10000000", "setpriv", "--reuid=65534", "--regid=65534", "--clear-groups",
+            SYSTEM_PYTHON, "-I", script]
+
+
+def _workdir(files: dict[str, str]):
+    WORK_ROOT.mkdir(mode=0o711, exist_ok=True)
+    work = tempfile.TemporaryDirectory(prefix="tine-check-", dir=WORK_ROOT)
+    for name, text in files.items():
+        Path(work.name, name).write_text(text)
+        Path(work.name, name).chmod(0o644)
+    os.chmod(work.name, 0o777)  # the unprivileged user may write scratch files here
+    return work
+
+
+def check_answer(code: str, mode: str, samples, method: str | None = None) -> list[bool]:
+    """Run one answer against its samples in isolated processes.
+
+    stdin problems run the answer as a real program, one process per sample, with
+    the sample on standard input. Function problems call the method in a harness.
+    """
+    if mode == "stdin":
+        results = []
+        with _workdir({"answer.py": PREAMBLE + code}) as work:
+            for sample in samples:
+                try:
+                    done = subprocess.run(_sandbox("answer.py", SAMPLE_SECONDS + 1), cwd=work,
+                                          input=sample["input"], capture_output=True, text=True,
+                                          env=CLEAN_ENV, timeout=SAMPLE_SECONDS + 3)
+                    results.append(done.returncode == 0 and tokens_match(done.stdout, sample["output"]))
+                except (subprocess.TimeoutExpired, UnicodeDecodeError):
+                    results.append(False)
+                if not results[-1]:
+                    break  # one failed sample already rejects the answer
+        return results
+    return _check_functional(code, samples, method)
+
+
+def _check_functional(code: str, samples, method: str | None) -> list[bool]:
+    spec = {"preamble": PREAMBLE, "code": code, "mode": "functional", "samples": samples,
             "method": method, "seconds": SAMPLE_SECONDS}
-    with tempfile.TemporaryDirectory(prefix="tine-check-") as work:
-        Path(work, "spec.json").write_text(json.dumps(spec))
-        Path(work, "harness.py").write_text(HARNESS)
-        command = ["unshare", "-n", "prlimit", f"--as={MEMORY_BYTES}",
-                   f"--cpu={SAMPLE_SECONDS * len(samples) + 5}", "--fsize=10000000",
-                   sys.executable, "-I", "harness.py"]
+    with _workdir({"spec.json": json.dumps(spec), "harness.py": HARNESS}) as work:
+        command = _sandbox("harness.py", SAMPLE_SECONDS * len(samples) + 5)
         try:
             done = subprocess.run(command, cwd=work, capture_output=True, text=True,
-                                  timeout=SAMPLE_SECONDS * len(samples) + 10)
+                                  env=CLEAN_ENV, timeout=SAMPLE_SECONDS * len(samples) + 10)
         except subprocess.TimeoutExpired:
             return [False] * len(samples)
         lines = done.stdout.strip().splitlines()
