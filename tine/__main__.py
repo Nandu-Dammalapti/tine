@@ -47,6 +47,13 @@ def main(argv=None):
                          help="Also try chains gated by this router predictor")
     cascade.add_argument("--gate-embeddings", type=Path,
                          help="NPZ of fixed prompt embeddings for the gate predictor (default: TF-IDF)")
+    cascade.add_argument("--response-check", action="store_true",
+                         help="Also try chains that accept an answer by its response size")
+    cascade.add_argument("--response-threshold", type=float, nargs="+",
+                         help="Response-score thresholds to try")
+    cascade.add_argument("--fit-fractions", type=float, nargs=5,
+                         metavar=("TRAIN", "SCORE", "CHOOSE", "CERTIFY", "TEST"),
+                         help="Task shares when a gate or response check is fitted")
     cascade.add_argument("--gate-threshold", type=float, nargs="+",
                          help="Predicted-success thresholds to try for the gate")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
@@ -114,8 +121,12 @@ def main(argv=None):
                                         delta=args.delta, seeds=range(args.seeds),
                                         max_length=args.max_length, gate_method=args.gate,
                                         catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
+                                        response_check=args.response_check,
+                                        fit_fractions=args.fit_fractions,
                                         **({"gate_thresholds": args.gate_threshold}
-                                           if args.gate_threshold else {}))
+                                           if args.gate_threshold else {}),
+                                        **({"response_thresholds": args.response_threshold}
+                                           if args.response_threshold else {}))
         print(json.dumps(result["summary"], indent=2, default=float))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "combine-outcomes":

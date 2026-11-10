@@ -11,8 +11,9 @@ repeated over several seeds, so reported numbers are held-out. No model calls.
 
 A chain can also be gated by the router's predictor: a cheaper model is tried only
 on tasks where its predicted success is at least ``tau``, so fewer wrong answers
-reach the check at all. The predictor is fitted on tasks kept apart from the
-choose / certify / test parts.
+reach the check at all. A response check (``tine.acceptance``) instead accepts a
+cheaper model's answer only when its response size makes a right answer likely
+enough. Both are fitted on tasks kept apart from the choose / certify / test parts.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from itertools import permutations
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_auc_score
 
+from tine.acceptance import RESPONSE_COLUMNS, ResponseCheck
 from tine.calibration import _integer, _matrices, _probability, clopper_pearson_upper
 from tine.artifacts import experiment_output
 from tine.checks import prepare_checks
@@ -30,6 +33,11 @@ from tine.pipeline import complete_tasks, embedding_fingerprint, load_embeddings
 from tine.routing import METHODS, TASK_COLUMNS, Router
 
 DEFAULT_GATE_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9)
+DEFAULT_RESPONSE_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
+# train / score-calibration / choose / certify / test. A gate predictor needs more
+# training tasks than the four-feature response check, which leaves more to certify on.
+GATE_FRACTIONS = (0.35, 0.1, 0.2, 0.2, 0.15)
+RESPONSE_FRACTIONS = (0.2, 0.1, 0.15, 0.4, 0.15)
 
 
 def gate(scores, tau):
@@ -43,6 +51,14 @@ def gate(scores, tau):
     if scores.ndim != 2 or not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
         raise ValueError("scores must be a finite task-by-model matrix of probabilities")
     return scores >= _probability(tau, "tau")
+
+
+def accept(passes, scores, tau):
+    """Check results after a response check: an answer passes only if it passed
+    before and its response score is at least ``tau``. ``tau=None`` changes nothing."""
+    if tau is None:
+        return passes
+    return np.asarray(passes) & gate(scores, tau)
 
 
 def chain_metrics(chain, outcomes, costs, frontier_index: int, catch: float = 1.0,
@@ -188,30 +204,46 @@ def certify_gated_chain(chains, taus, choose, certify, frontier_index: int, *,
     paired with every tau (``None`` = no gate) and the pairs go through the same
     fixed-sequence test. Returns (chain, tau, bound) or ([], None, None).
     """
-    epsilon = _probability(epsilon, "epsilon")
-    delta = _probability(delta, "delta", open_interval=True)
     taus = list(taus)
     if not taus:
         raise ValueError("Require at least one gate setting; use None for no gate")
-    choose_gates = [gate(choose[3], tau) for tau in taus]
-    certify_gates = [gate(certify[3], tau) for tau in taus]
-    scored = [(chain, setting, chain_metrics(chain, *choose[:2], frontier_index, passes=choose[2],
-                                             eligible=choose_gates[setting]))
-              for chain in chains for setting in range(len(taus))]
-    scored = [(c, t, m) for c, t, m in scored if m["degradation_rate"] <= epsilon
+    variants = [(tau, (*choose[:3], gate(choose[3], tau)), (*certify[:3], gate(certify[3], tau)))
+                for tau in taus]
+    return certify_policies(chains, variants, frontier_index, epsilon=epsilon, delta=delta)
+
+
+def certify_policies(chains, variants, frontier_index: int, *, epsilon: float, delta: float):
+    """The fixed-sequence test of ``certify_chain`` over every chain in every variant.
+
+    ``variants`` lists (label, choose, certify), where ``choose`` and ``certify`` are
+    (outcomes, costs, passes, eligible) on disjoint tasks: the same tasks in every
+    variant, with that variant's check results and gate decisions. Nothing in a
+    variant may be fitted on these tasks. Returns (chain, label, bound) or
+    ([], None, None).
+    """
+    epsilon = _probability(epsilon, "epsilon")
+    delta = _probability(delta, "delta", open_interval=True)
+    variants = list(variants)
+    if not variants:
+        raise ValueError("Require at least one policy variant")
+    scored = [(chain, index, chain_metrics(chain, *choose[:2], frontier_index, passes=choose[2],
+                                           eligible=choose[3]))
+              for chain in chains for index, (_, choose, _) in enumerate(variants)]
+    scored = [(c, v, m) for c, v, m in scored if m["degradation_rate"] <= epsilon
               and m["savings"] is not None and m["savings"] > 0]
-    scored.sort(key=lambda ctm: (ctm[2]["degradation_rate"], -ctm[2]["savings"]))
-    n = len(certify[0])
-    best, best_tau, best_savings, best_bound = [], None, 0.0, None
-    for chain, setting, metrics in scored:
+    scored.sort(key=lambda cvm: (cvm[2]["degradation_rate"], -cvm[2]["savings"]))
+    best, best_label, best_savings, best_bound = [], None, 0.0, None
+    for chain, index, metrics in scored:
+        label, _, certify = variants[index]
+        n = len(certify[0])
         degradations = round(chain_metrics(chain, *certify[:2], frontier_index, passes=certify[2],
-                                           eligible=certify_gates[setting])["degradation_rate"] * n)
+                                           eligible=certify[3])["degradation_rate"] * n)
         bound = clopper_pearson_upper(degradations, n, delta)
         if bound > epsilon:
             break  # fixed sequence: stop at the first failure
         if metrics["savings"] > best_savings:
-            best, best_tau, best_savings, best_bound = chain, taus[setting], metrics["savings"], bound
-    return best, best_tau, best_bound
+            best, best_label, best_savings, best_bound = chain, label, metrics["savings"], bound
+    return best, best_label, best_bound
 
 
 def checks_matrix(checks: pd.DataFrame, tasks: pd.DataFrame, models) -> np.ndarray:
@@ -225,8 +257,9 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                            seeds=range(10), fractions=(0.4, 0.3, 0.3), delta: float = 0.05,
                            max_length: int = 3, top_k: int = 8, gate_method: str | None = None,
                            gate_thresholds=DEFAULT_GATE_THRESHOLDS,
-                           gate_fractions=(0.35, 0.1, 0.2, 0.2, 0.15),
-                           catch_rates: dict | None = None, gate_embeddings=None) -> dict:
+                           fit_fractions=None, catch_rates: dict | None = None,
+                           gate_embeddings=None, response_check: bool = False,
+                           response_thresholds=DEFAULT_RESPONSE_THRESHOLDS) -> dict:
     """For each seed, split tasks into choose / certify / test parts. Pick a chain
     two ways: "uncertified" (lowest cost with degradation <= epsilon on the choose
     part) and "certified" (also passes a Clopper-Pearson bound <= epsilon on the
@@ -239,19 +272,31 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     its own rate, independently of the task.
     Writes cascade-runs.csv, cascade-summary.csv, cascade-summary.json, report.md.
 
-    With ``gate_method`` (a router predictor), each seed instead splits tasks by
-    ``gate_fractions`` into train / score-calibration / choose / certify / test
-    parts, fits the predictor on the first two, and adds a "gated_certified" pick:
+    With ``gate_method`` (a router predictor) or ``response_check``, each seed
+    instead splits tasks by ``fit_fractions`` into train / score-calibration /
+    choose / certify / test parts and fits on the first two. A gate adds a
+    "gated_certified" pick:
     the certified search over every chain paired with every ``gate_thresholds``
     value or no gate (see ``certify_gated_chain``). ``gate_embeddings`` is an optional
     NPZ of fixed prompt embeddings for the predictor (as for ``tine run``); the
     default is TF-IDF fitted on the train part.
+
+    ``response_check`` adds a "response_certified" pick: the certified search over
+    every chain with the setting's check alone or combined with a response check
+    (``tine.acceptance``) at one of ``response_thresholds``. It needs known
+    input_tokens and output_tokens for every outcome. With ``catch=0`` the response
+    check is the only check, so that setting involves no simulated check.
     """
     if gate_method is not None and gate_method not in METHODS:
         raise ValueError(f"Unknown gate method: {gate_method!r}; choose one of {METHODS}")
     gated = gate_method is not None
-    parts = 5 if gated else 3
-    fractions = tuple(_probability(value, "fraction") for value in (gate_fractions if gated else fractions))
+    if not isinstance(response_check, bool):
+        raise ValueError("response_check must be a boolean")
+    fitted = gated or response_check
+    parts = 5 if fitted else 3
+    if fit_fractions is None:
+        fit_fractions = GATE_FRACTIONS if gated else RESPONSE_FRACTIONS
+    fractions = tuple(_probability(value, "fraction") for value in (fit_fractions if fitted else fractions))
     if len(fractions) != parts or not np.isclose(sum(fractions), 1, rtol=0, atol=1e-12) or min(fractions) <= 0:
         raise ValueError(f"fractions must be {parts} positive shares summing to 1")
     gate_thresholds = tuple(_probability(value, "gate threshold") for value in gate_thresholds)
@@ -259,6 +304,9 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
         raise ValueError("A gated experiment requires at least one gate threshold")
     if gate_embeddings is not None and not gated:
         raise ValueError("gate_embeddings requires a gate method")
+    response_thresholds = tuple(_probability(value, "response threshold") for value in response_thresholds)
+    if response_check and not response_thresholds:
+        raise ValueError("A response check requires at least one threshold")
     epsilons = tuple(_probability(value, "epsilon") for value in epsilons)
     catches = tuple(_probability(value, "catch") for value in catches)
     seeds = [_integer(value, "seed") for value in seeds]
@@ -282,6 +330,11 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     costs = matrix(frame, tasks, models, "cost_usd")
     measured, coverage = (None, None) if checks is None else prepare_checks(checks, tasks, models)
     lookup = load_embeddings(gate_embeddings, tasks) if gate_embeddings is not None else None
+    tokens = None
+    if response_check:
+        if any(column not in frame or frame[column].isna().any() for column in RESPONSE_COLUMNS):
+            raise ValueError("A response check requires known input_tokens and output_tokens for every outcome")
+        tokens = [matrix(frame, tasks, models, column) for column in RESPONSE_COLUMNS]
     model_catches = None
     if catch_rates is not None:
         missing = sorted(set(models) - {frontier} - set(catch_rates))
@@ -290,7 +343,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
         # The frontier's answer is final, so its check is never consulted.
         model_catches = [_probability(catch_rates.get(model, 1.0), "catch rate") for model in models]
     seeds = list(seeds)
-    runs = []
+    runs, response_aucs = [], []
     for seed in seeds:
         part = np.random.default_rng(seed).choice(parts, size=len(tasks), p=list(fractions))
         if len(set(part)) < parts:
@@ -305,6 +358,17 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
             if router.model_names != models:
                 raise ValueError("Gate predictor models do not match the outcome models")
             scores = router.predict_scores(tasks[TASK_COLUMNS], method=gate_method)
+        response_scores = None
+        if response_check:
+            def fit_part(index):
+                return (outcomes[part == index], *(values[part == index] for values in tokens))
+            response_scores = ResponseCheck(seed).fit(fit_part(0), fit_part(1)).predict_scores(*tokens)
+            held_out = part >= 2
+            # How well the score separates right from wrong answers on tasks it never saw.
+            response_aucs.append([
+                roc_auc_score(outcomes[held_out, column], response_scores[held_out, column])
+                if 0 < outcomes[held_out, column].sum() < held_out.sum() else np.nan
+                for column in range(len(models))])
         chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
         settings = [("measured", measured)] if measured is not None else [
             (catch, simulated_passes(outcomes, catch, np.random.default_rng(10_000 + seed)))
@@ -319,22 +383,37 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
             for epsilon in epsilons:
                 chain, bound = certify_chain(chains, rows(choose), rows(certify), frontier_index,
                                              epsilon=epsilon, delta=delta)
+                # method -> (chain, gate tau, response tau, bound)
                 picks = {
                     "uncertified": (select_chain(*rows(choose)[:2], frontier_index, epsilon=epsilon,
-                                                 passes=rows(choose)[2], chains=chains), None, None),
-                    "certified": (chain, None, bound),
+                                                 passes=rows(choose)[2], chains=chains), None, None, None),
+                    "certified": (chain, None, None, bound),
                 }
                 if gated:
-                    picks["gated_certified"] = certify_gated_chain(
+                    chain, tau, bound = certify_gated_chain(
                         chains, (None, *gate_thresholds), rows(choose), rows(certify),
                         frontier_index, epsilon=epsilon, delta=delta)
-                for method, (chain, tau, bound) in picks.items():
+                    picks["gated_certified"] = (chain, tau, None, bound)
+                if response_check:
+                    def accepted(mask, tau):
+                        part_outcomes, part_costs, part_passes, _ = rows(mask)
+                        return (part_outcomes, part_costs,
+                                accept(part_passes, response_scores[mask], tau), None)
+                    chain, tau, bound = certify_policies(
+                        chains, [(tau, accepted(choose, tau), accepted(certify, tau))
+                                 for tau in (None, *response_thresholds)],
+                        frontier_index, epsilon=epsilon, delta=delta)
+                    picks["response_certified"] = (chain, None, tau, bound)
+                for method, (chain, tau, response_tau, bound) in picks.items():
                     test_outcomes, test_costs, test_passes, test_scores = rows(test)
+                    if response_tau is not None:
+                        test_passes = accept(test_passes, response_scores[test], response_tau)
                     metrics = chain_metrics(chain, test_outcomes, test_costs, frontier_index,
                                             passes=test_passes, eligible=gate(test_scores, tau))
                     runs.append({"seed": seed, "catch": catch, "epsilon": epsilon, "method": method,
                                  "chain": " > ".join([models[j] for j in chain] + [frontier]),
                                  "gate_tau": np.nan if tau is None else tau,
+                                 "response_tau": np.nan if response_tau is None else response_tau,
                                  "certified_bound": bound, "test_tasks": int(test.sum()),
                                  **metrics})
     runs = pd.DataFrame(runs)
@@ -348,6 +427,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                     over_epsilon_runs=("over", "sum"),
                     frontier_only_runs=("chain", lambda c: int((c == frontier).sum())),
                     gated_runs=("gate_tau", "count"), gate_tau_median=("gate_tau", "median"),
+                    response_runs=("response_tau", "count"),
+                    response_tau_median=("response_tau", "median"),
                     frontier_call_rate=("frontier_call_rate", "mean"),
                     mean_calls=("mean_calls", "mean"),
                     most_common_chain=("chain", lambda c: c.value_counts().index[0]))
@@ -362,6 +443,15 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                         "embedding_sha256": embedding_fingerprint(lookup, tasks) if lookup else None,
                         "scope": "Predictor fitted per seed on the train and score-calibration parts only."}
                        if gated else None),
+              "response_check": ({"thresholds": list(response_thresholds),
+                                  "features": list(RESPONSE_COLUMNS),
+                                  "held_out_auc_mean": {
+                                      model: (None if np.isnan(value) else round(float(value), 4))
+                                      for model, value in zip(models, np.nanmean(
+                                          np.array(response_aucs, dtype=float), axis=0))
+                                      if model != frontier},
+                                  "scope": "Fitted per seed on the train and score-calibration parts only."}
+                                 if response_check else None),
               "cost_scope": "Recorded model-generation costs only; check execution costs are excluded.",
               "certification_scope": "Per seed/epsilon/check setting under IID assumptions; not simultaneous across this sweep. Simulated checks certify only the assumed check process.",
               "summary": summary.astype(object).where(summary.notna(), None).to_dict(orient="records")}
@@ -371,7 +461,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
         "Contains SYNTHETIC outcomes — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
         f"Frontier: `{frontier}`. Complete tasks: {len(tasks)}. Seeds: {len(seeds)}.",
         f"Each seed splits tasks {fractions} into "
-        f"{'train / score-calibration / ' if gated else ''}choose / certify / test parts.",
+        f"{'train / score-calibration / ' if fitted else ''}choose / certify / test parts.",
         "`uncertified` picks the cheapest chain whose degradation on the choose part is <= epsilon.",
         f"`certified` also requires a one-sided Clopper-Pearson bound <= epsilon (delta={delta})",
         "on the certify part, testing chains in a fixed order and stopping at the first failure.",
@@ -379,6 +469,11 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
            f"predictor gate at one of {gate_thresholds}: a cheaper model is tried only where its predicted",
            "success is at least that threshold. `gated_runs` counts runs whose pick uses a gate."]
           if gated else []),
+        *(["`response_certified` runs the certified search over each chain with the setting's check alone",
+           f"or with a response check at one of {response_thresholds}: an answer is accepted only if it",
+           "passes that check and its response-size score is at least the threshold. `response_runs`",
+           "counts runs whose pick uses the response check. With catch 0 it is the only check."]
+          if response_check else []),
         "",
         "`catch` is the share of wrong answers the check catches: simulated for numbers and",
         "for `per-model` (supplied rate per model, applied independently of the task),",
