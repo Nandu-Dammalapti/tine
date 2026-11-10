@@ -99,8 +99,7 @@ short LiveCodeBench ones, so it overstates the signal within one kind of task.
 1. Rerun with per-answer sample-check results (`--checks`) so the combination of
    sample check and response check is measured, not assumed independent.
 2. Log response tokens in shadow mode and fit the check on customer traffic.
-3. Decide whether the guarantee should bound net accuracy loss instead of only
-   counting losses: at epsilon 0.05 the certified chain matches gpt-5's accuracy.
+3. More certify tasks: at epsilon 0.02 the bound, not the check, rejects most policies.
 
 ## Reproduce
 
