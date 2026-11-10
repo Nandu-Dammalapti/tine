@@ -179,3 +179,93 @@ def test_zero_baseline_cost_has_unknown_savings_and_cannot_select_a_chain(tmp_pa
     text = (tmp_path / "run/cascade-summary.json").read_text()
     assert "NaN" not in text
     assert json.loads(text)["summary"][0]["savings_mean"] is None
+
+
+def test_gate_skips_ineligible_models_at_no_cost():
+    eligible = np.zeros(OUTCOMES.shape, dtype=bool)
+    eligible[0, 0] = True  # cheap only where it is right
+    m = chain_metrics([0], OUTCOMES, COSTS, 2, catch=0.0, eligible=eligible)
+    # task0: 1; tasks 1-3 go straight to the frontier: 10 each -> 31 vs 40
+    assert m["savings"] == pytest.approx(1 - 31 / 40)
+    assert m["degradation_rate"] == 0 and m["accuracy"] == 0.75
+    assert m["frontier_call_rate"] == 0.75 and m["mean_calls"] == 1
+    everything = chain_metrics([0], OUTCOMES, COSTS, 2, catch=0.0,
+                               eligible=np.ones(OUTCOMES.shape, dtype=bool))
+    assert everything == chain_metrics([0], OUTCOMES, COSTS, 2, catch=0.0)
+
+
+def test_gate_thresholds_scores_and_rejects_bad_input():
+    from tine.cascade import gate
+    scores = np.array([[0.9, 0.2, 0.0], [0.5, 0.5, 0.0]])
+    assert gate(scores, None) is None
+    assert gate(scores, 0.5).tolist() == [[True, False, False], [True, True, False]]
+    for bad in [(None, 0.5), (scores, 1.5), (scores * 2, 0.5), (scores[0], 0.5)]:
+        with pytest.raises(ValueError):
+            gate(*bad)
+    with pytest.raises(ValueError):
+        chain_metrics([0], OUTCOMES, COSTS, 2, eligible=OUTCOMES.astype(float))
+
+
+def test_gated_certification_uses_the_gate_when_the_check_is_weak():
+    from tine.cascade import certify_gated_chain
+    n = 400
+    outcomes = np.ones((n, 2), dtype=bool)
+    outcomes[: n // 4, 0] = False              # cheap model wrong on a quarter
+    costs = np.tile([1.0, 10.0], (n, 1))
+    passes = np.ones((n, 2), dtype=bool)       # the check catches nothing
+    scores = np.where(outcomes, 0.9, 0.1)      # the predictor knows
+    part = (outcomes, costs, passes, scores)
+    assert certify_gated_chain([[0]], (None,), part, part, 1, epsilon=0.02, delta=0.05) == ([], None, None)
+    chain, tau, bound = certify_gated_chain([[0]], (None, 0.5), part, part, 1, epsilon=0.02, delta=0.05)
+    assert chain == [0] and tau == 0.5 and bound <= 0.02
+    with pytest.raises(ValueError):
+        certify_gated_chain([[0]], (), part, part, 1, epsilon=0.02, delta=0.05)
+
+
+def test_gated_experiment_reports_gated_method(tmp_path):
+    frame = synthetic_fixture(n_tasks=400, seed=5)
+    result = run_cascade_experiment(frame, "frontier", tmp_path, seeds=range(2), epsilons=(0.02,),
+                                    catches=(0.9,), gate_method="logistic")
+    runs = pd.read_csv(tmp_path / "cascade-runs.csv")
+    assert set(runs.method) == {"uncertified", "certified", "gated_certified"}
+    assert runs.loc[runs.method != "gated_certified", "gate_tau"].isna().all()
+    assert result["gate"]["method"] == "logistic"
+    assert "gated_certified" in (tmp_path / "report.md").read_text()
+    # choose / certify / test exclude the tasks the predictor was fitted on
+    assert runs.test_tasks.max() < 400 * 0.3
+    with pytest.raises(ValueError):
+        run_cascade_experiment(frame, "frontier", tmp_path, gate_method="oracle")
+    with pytest.raises(ValueError):
+        run_cascade_experiment(frame, "frontier", tmp_path, gate_method="knn", gate_thresholds=())
+
+
+def test_gate_cli(tmp_path, capsys):
+    from tine.data import write_outcomes
+    write_outcomes(synthetic_fixture(n_tasks=300, seed=6), tmp_path / "o.jsonl")
+    main(["cascade", "--input", str(tmp_path / "o.jsonl"), "--frontier", "frontier",
+          "--output", str(tmp_path / "out"), "--seeds", "1", "--epsilon", "0.02", "--catch", "0.9",
+          "--gate", "knn", "--gate-threshold", "0.7", "0.9"])
+    assert "gated_certified" in capsys.readouterr().out
+
+
+def test_per_model_catch_rates(tmp_path):
+    rng = np.random.default_rng(0)
+    passes = simulated_passes(np.zeros((4000, 2), dtype=bool), [1.0, 0.25], rng)
+    assert not passes[:, 0].any() and 0.7 < passes[:, 1].mean() < 0.8
+    with pytest.raises(ValueError):
+        simulated_passes(np.zeros((5, 2), dtype=bool), [1.0], rng)
+    frame = synthetic_fixture(n_tasks=200, seed=5)
+    rates = {model: 1.0 for model in frame.model.unique() if model != "frontier"}
+    result = run_cascade_experiment(frame, "frontier", tmp_path, seeds=range(2), epsilons=(0.02,),
+                                    catches=(), catch_rates=rates)
+    assert {row["catch"] for row in result["summary"]} == {"per-model"}
+    assert all(row["degradation_max"] == 0 for row in result["summary"])
+    with pytest.raises(ValueError, match="lack models"):
+        run_cascade_experiment(frame, "frontier", tmp_path, catch_rates={"cheap": 0.5})
+    pd.DataFrame({"model": list(rates), "catch_rate": 0.9}).to_csv(tmp_path / "rates.csv", index=False)
+    from tine.data import write_outcomes
+    write_outcomes(frame, tmp_path / "o.jsonl")
+    main(["cascade", "--input", str(tmp_path / "o.jsonl"), "--frontier", "frontier", "--seeds", "1",
+          "--output", str(tmp_path / "out"), "--epsilon", "0.02", "--catch", "1.0",
+          "--catch-rates", str(tmp_path / "rates.csv")])
+    assert set(pd.read_csv(tmp_path / "out" / "cascade-summary.csv")["catch"]) == {"1.0", "per-model"}

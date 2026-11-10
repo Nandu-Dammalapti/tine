@@ -41,6 +41,12 @@ def main(argv=None):
     cascade.add_argument("--checks", type=Path, help="Measured check results CSV (task_id, model, passed)")
     cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
+    cascade.add_argument("--catch-rates", type=Path,
+                         help="CSV (model, catch_rate): also simulate each model's own catch rate")
+    cascade.add_argument("--gate", choices=("logistic", "knn", "cluster"),
+                         help="Also try chains gated by this router predictor")
+    cascade.add_argument("--gate-threshold", type=float, nargs="+",
+                         help="Predicted-success thresholds to try for the gate")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
     combine.add_argument("--output", type=Path, required=True)
@@ -94,10 +100,20 @@ def main(argv=None):
         from tine.data import read_outcomes
 
         checks = read_checks(args.checks) if args.checks else None
+        catch_rates = None
+        if args.catch_rates:
+            import pandas as pd
+            rates = pd.read_csv(args.catch_rates, dtype={"model": str}, keep_default_na=False)
+            if not {"model", "catch_rate"} <= set(rates.columns) or rates.model.duplicated().any():
+                raise SystemExit("--catch-rates needs model and catch_rate columns, one row per model")
+            catch_rates = dict(zip(rates.model, rates.catch_rate.astype(float)))
         result = run_cascade_experiment(read_outcomes(args.input), args.frontier, args.output,
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),
-                                        max_length=args.max_length)
+                                        max_length=args.max_length, gate_method=args.gate,
+                                        catch_rates=catch_rates,
+                                        **({"gate_thresholds": args.gate_threshold}
+                                           if args.gate_threshold else {}))
         print(json.dumps(result["summary"], indent=2, default=float))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "combine-outcomes":

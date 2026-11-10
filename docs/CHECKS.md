@@ -42,3 +42,24 @@ answers, generate tests, call providers, or launch a Colab job.
 Outputs are published together after the run succeeds. A failed rerun preserves
 the previous report and unrelated files in the output directory. Inputs marked
 synthetic retain that label in the JSON summary and report.
+
+## Predictor-gated chains
+
+`tine cascade --gate logistic|knn|cluster` adds a `gated_certified` pick. A gated
+chain tries a cheaper model only on tasks where the router's predicted success for
+that model is at least a threshold (`--gate-threshold`, default 0.5 to 0.9), and
+still escalates when the answer fails its check. A skipped model costs nothing.
+The search covers every chain with every threshold and with no gate, through the
+same fixed-sequence certification as `certified`.
+
+Each seed splits tasks into train / score-calibration / choose / certify / test
+parts. The predictor is fitted on the first two only, with train-only TF-IDF
+features, so `certified` and `gated_certified` are compared on the same held-out
+tasks. These parts are smaller than in an ungated run: do not compare the two
+runs' numbers directly.
+
+`--catch-rates RATES.csv` (columns `model`, `catch_rate`, every non-frontier model)
+adds a simulated `per-model` setting where each model's wrong answers are caught at
+its own rate. The rate is applied independently of the task, so it cannot show
+whether a check and the predictor miss the same answers. Use per-answer `--checks`
+for that. It cannot be combined with `--checks`.
