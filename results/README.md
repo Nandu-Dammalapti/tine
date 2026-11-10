@@ -85,6 +85,8 @@ definition in AGENTS.md. They need a team decision; nothing in the code has chan
 - Run each repository's existing tests on the SWE-bench answers that pass the static
   checks (isolated Linux machine). This is the measurement that decides whether
   chains reach the 95% catch rate they need on real repositories.
+  The runner and Colab notebook are written and not yet run: see
+  [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.

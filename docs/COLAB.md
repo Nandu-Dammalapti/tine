@@ -18,6 +18,13 @@ The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. Thresholds
 
 Run [`notebooks/tine_colab_step2_coding.ipynb`](../notebooks/tine_colab_step2_coding.ipynb) on a CPU runtime after Step 1. It imports the graded HumanEval, MBPP and SWE-bench Verified results from the archive already on Drive. It pools them with LiveCodeBench into one `coding` group with `tine combine-outcomes`, which keeps only models present in every dataset, drops models whose recorded cost is zero on every row, and excludes `openrouter` (a router, not a model). It then evaluates against `gpt-5` and `claude-sonnet-4`. The pooled guarantee covers tasks drawn like that mix, not each dataset on its own.
 
+## Repository tests on SWE-bench patches
+
+[`notebooks/tine_colab_swe_repo_tests.ipynb`](../notebooks/tine_colab_swe_repo_tests.ipynb) runs each
+repository's tests on the recorded model patches, on a CPU runtime. **It executes model-written code**:
+use a fresh runtime and delete it afterwards. Read [SWE_CHECKS.md](SWE_CHECKS.md) first. It has not
+been run yet; its first cells are a smoke test for that reason.
+
 ## Cells and outputs
 
 | Stage | What to run | What it saves |
