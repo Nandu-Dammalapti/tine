@@ -43,7 +43,7 @@ class FakeShell:
 
 
 def fake_harness():
-    def make_test_spec(instance):
+    def make_test_spec(instance, env_name="testbed", repo_dir="/testbed"):
         return SimpleNamespace(instance_id=instance["instance_id"], repo=instance["repo"],
                                env_image_key=instance["repo"] + instance["version"],
                                setup_env_script="ENV:" + instance["repo"],
@@ -197,3 +197,31 @@ def test_refuses_to_run_where_the_machine_is_not_prepared(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="Refusing"):
         runner_module.main(["--bench-dir", str(bench), "--static-checks", str(static),
                             "--dataset", str(dataset), "--output", str(tmp_path / "out.csv")])
+
+
+def test_partition_keeps_each_repository_version_on_one_worker():
+    instances = {f"s-{n}": {"repo": "sympy/sympy", "version": str(n % 3)} for n in range(9)}
+    instances.update({f"d-{n}": {"repo": "django/django", "version": str(n % 4)} for n in range(20)})
+    jobs = {iid: [{}] * 3 for iid in instances}
+    shares = runner_module.partition(sorted(instances), jobs, instances, 4)
+    assert len(shares) == 4 and sorted(iid for share in shares for iid in share) == sorted(instances)
+    owner = {}
+    for index, share in enumerate(shares):
+        for iid in share:
+            key = (instances[iid]["repo"], instances[iid]["version"])
+            assert owner.setdefault(key, index) == index
+    # The three slow sympy groups land on three different workers.
+    assert len({owner[("sympy/sympy", str(v))] for v in range(3)}) == 3
+    single = runner_module.partition(sorted(instances), jobs, instances, 1)
+    assert len(single) == 1 and sorted(single[0]) == sorted(instances)
+
+
+def test_workers_use_their_own_environment_and_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module.Path, "is_dir", lambda self: True)
+    shell = FakeShell(tmp_path / "work")
+    runner = runner_module.Runner(shell, fake_harness(), mirror_dir=None, log_dir=tmp_path / "logs",
+                                  env_name="testbed3", repo_dir="/testbed3")
+    runner.run_instance(INSTANCES["a__a-1"], answers(("m", "FIX")), tmp_path / "results.csv", {})
+    text = "\n".join(shell.calls)
+    assert "conda env remove -n testbed3 " in text and "/opt/miniconda3/envs/testbed3" in text
+    assert "cd /testbed3 && git reset" in text and "/testbed " not in text
