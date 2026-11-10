@@ -38,8 +38,8 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-09 | [coding-benchmark](2026-11-09-coding-benchmark/README.md) | Can a predictor pick a cheaper model from the prompt? Can escalation chains save money? How good are public-sample checks? | Prompt-only routers certify 0% savings (TF-IDF, MiniLM and Qwen3 embeddings alike). Chains certify 38-42% with a perfect check, 4-14% at 95% catch, 0% at 90%. Measured public samples catch only 38-74% of wrong answers from the strong cheap models, so chains with real sample checks certify 0%. |
 | 2026-11-10 | [gated-chains](2026-11-10-gated-chains/README.md) | Does gating a chain by the prompt-only predictor rescue weak checks? | Barely: 0% to about 1% at epsilon 0.02 with per-model sample rates; 3% to 13-18% at epsilon 0.05. Qwen3 0.6B embeddings for the gate, and an issue-only view of SWE-bench prompts, change nothing. |
 | 2026-11-10 | [response-check](2026-11-10-response-check/README.md) | Does the size of the response say whether the answer is right? | Yes for coding: held-out AUC 0.76-0.99 per model. With per-model sample rates it certifies 6.2% at epsilon 0.02 and 31.8% at 0.05 on `lcb`; with no other check 3.6% and 14.3%. Weaker on multiple choice (MMLU-Pro: 3.4% and 19.4%). |
-| 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. On `lcb-swe` it beats gpt-5's accuracy at about 40% lower cost, because gpt-5 is weak on SWE-bench in this benchmark (15.8% against 34.6% for the best models), yet its degradation rate never drops below 3.9%. Run with 0.6B embeddings, not the paper's 8B. |
-| 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). Run with Apple `patch`; rerun on Linux. |
+| 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. On `lcb-swe` it beats gpt-5's accuracy at about 40% lower cost, because gpt-5 is weak on SWE-bench in this benchmark (15.8% against 34.6% for the best models), yet its degradation rate never drops below 3.9%. Run with both the 0.6B encoder and the paper's 8B encoder, with the same conclusions. |
+| 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). On Linux, static checks catch 58% of wrong answers. A partial run of the repositories' own tests (135 django tasks, on Colab) raises that to 65%: most wrong patches break nothing and simply do not fix the issue. |
 
 ## How the findings fit together
 
@@ -52,10 +52,13 @@ outputs, prompts and embeddings are not (see "Where the data is").
 4. The official Avengers-Pro code, also prompt-only, saves money on `lcb` only by
    giving up accuracy, and cannot hold a 2% limit. Tine's router reports that it
    cannot and falls back to the frontier.
-5. Two cheap checks are measured so far. Public sample tests (catch 38-74% for the
+5. On real repositories (django, partial run) checks that ask "did anything break"
+   catch about two thirds of wrong patches. The rest apply cleanly, break nothing and
+   do not fix the issue.
+6. Two cheap checks are measured so far. Public sample tests (catch 38-74% for the
    useful models) and response size (AUC 0.76-0.99). Together they are the best
    result to date, but their combination is simulated as independent, not measured.
-6. At epsilon 0.02 the number of certification tasks limits the result as much as
+7. At epsilon 0.02 the number of certification tasks limits the result as much as
    the check does: with about 420 tasks a policy may show at most 3 degradations.
 
 ## Open decisions
@@ -82,16 +85,15 @@ definition in AGENTS.md. They need a team decision; nothing in the code has chan
 
 ## Open items
 
-- Run each repository's existing tests on the SWE-bench answers that pass the static
-  checks (isolated Linux machine). This is the measurement that decides whether
-  chains reach the 95% catch rate they need on real repositories.
-  The runner and Colab notebook are written and not yet run: see
-  [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
+- Finish the SWE-bench repository-test run (137 of 303 tasks done, django only) and
+  certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
+- A check aimed at the change itself (model-written tests for the issue, or a judge
+  model). Existing tests plus static checks catch about two thirds of wrong patches
+  on django; chains need about 95%.
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.
-- Avengers-Pro with the paper's Qwen3-Embedding-8B vectors, and on a pool with more
-  kinds of task.
+- Avengers-Pro on a pool with more kinds of task.
 - No result here uses customer traffic. Token counts, costs and check quality all
   need measuring in shadow mode.
 
@@ -104,7 +106,7 @@ Nothing below is in Git.
 | LLMRouterBench archive (1.3 GB, 7.7 GB extracted) | `artifacts/bench/` on the machine that ran the experiment | `python scripts/fetch_benchmark.py --output-dir BENCH --revision b95870f9e60c589e82f7972c91ffa8de9ca89f85` |
 | Canonical outcomes (`lcb.jsonl`, `lcb-swe.jsonl`, ...) | `artifacts/data/` | Commands in each folder's "Reproduce" section |
 | Full run outputs (per-seed CSVs, reports) | `artifacts/runs/` | Rerun the commands |
-| Qwen3 0.6B and 8B full-prompt embeddings, `tine run` outputs with them | Nandu's Google Drive, `MyDrive/tine` | Ask Nandu to share the folder |
+| Qwen3 0.6B and 8B full-prompt embeddings, `tine run` outputs with them, Colab SWE-bench test results (`swe/`) | Nandu's Google Drive, `MyDrive/tine` (shared with Ashmith on 2026-11-10) | Download from the shared folder |
 | Qwen3 0.6B embeddings with the issue-only view | `artifacts/embeddings/` on Nandu's Mac | `scripts/embed.py --prompt-view issue` |
 | Official Avengers-Pro code | `artifacts/third_party/AvengersPro` | See [docs/AVENGERS_PRO.md](../docs/AVENGERS_PRO.md) |
 

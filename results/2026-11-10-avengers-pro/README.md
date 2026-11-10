@@ -150,10 +150,52 @@ Two consequences for Gacrux, both open decisions (see the results index):
 2. A guarantee that counts only losses rejects a policy that is cheaper and more
    accurate than the frontier.
 
+## With the paper's encoder: Qwen3-Embedding-8B
+
+Added later on 2026-11-10 (`avengers8b-*`). The same runs with Nandu's
+Qwen3-Embedding-8B vectors (4,096-d, revision
+`1d8ad4ca9b3dd8059ad90a75d4983776a23d44af`, full prompt, 2,048-token truncation,
+computed on Colab; `lcb` feature fingerprint `4075b7069e09cc0340a1d0027a9fff54545b87b3ba97c0bb29cc116670715481`).
+This is the encoder the paper used. Each run covers both limits (`--epsilon 0.02 0.05`),
+so the picks files carry an `epsilon` column.
+
+`lcb`, mean over 10 seeds, gpt-5 accuracy 86.3%:
+
+| performance weight | paper setting: saved / accuracy / degradation | repository setting: saved / accuracy / degradation |
+| --- | --- | --- |
+| 1.0 | 9.9% / 83.7% / 4.3% | 5.9% / 85.1% / 2.4% |
+| 0.9 | 29.4% / 81.3% / 6.3% | 16.9% / 84.9% / 2.7% |
+| 0.8 | 36.4% / 80.8% / 7.1% | 38.4% / 82.7% / 5.6% |
+| 0.7 | 64.7% / 77.5% / 11.1% | 66.6% / 79.9% / 9.5% |
+
+Held-out picks:
+
+| pool | setting | epsilon | mean saved | accuracy vs gpt-5 | runs over epsilon | fell back to gpt-5 only |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lcb` | paper | 0.02 | 6.9% | 85.2% vs 86.5% | 3 of 10 | 7 |
+| `lcb` | paper | 0.05 | 16.0% | 83.1% vs 86.5% | 4 of 10 | 2 |
+| `lcb` | repository | 0.02 | 5.6% | 85.3% vs 86.5% | 4 of 10 | 4 |
+| `lcb` | repository | 0.05 | 28.1% | 83.5% vs 86.5% | 4 of 10 | 0 |
+| `lcb-swe` | paper | 0.02 | 0% | 64.4% vs 64.4% | 0 of 10 | 10 |
+| `lcb-swe` | paper | 0.05 | -0.5% | 66.2% vs 64.4% | 1 of 10 | 7 |
+| `lcb-swe` | repository | 0.02 | -0.7% | 64.7% vs 64.4% | 1 of 10 | 9 |
+| `lcb-swe` | repository | 0.05 | 9.1% | 67.0% vs 64.4% | 2 of 10 | 3 |
+
+The 8B encoder does not change the conclusions:
+
+- On `lcb` no weight keeps mean degradation at or below 2% (lowest 2.4%), and
+  maximising accuracy still gives less than gpt-5 (85.1% or 83.7% against 86.3%).
+- A weight picked on held-out tasks breaks the limit in 3 or 4 of 10 runs.
+- On `lcb-swe` the repository setting at weight 0.6 saves 41.6% at 64.3% accuracy
+  against gpt-5's 64.0% (`avengers8b-lcb-swe-repo-curve.csv`), with a degradation rate
+  of 7.7%: the same picture as with the 0.6B encoder.
+- Differences from the 0.6B runs are within a few points in both directions. For
+  example the repository setting's pick at epsilon 0.02 on `lcb` saves 5.6% here and
+  18.2% with 0.6B, in both cases breaking the limit in 4 to 6 of 10 runs.
+
 ## Limits
 
-- 0.6B embeddings, not the paper's 8B. On the 2026-11-09 router runs the 8B encoder
-  did not change Tine's results, but Avengers-Pro has not been run with it.
+- The first runs used 0.6B embeddings; the 8B section above uses the paper's encoder.
 - One benchmark, one task type. The paper reports results on six mixed benchmarks,
   where clusters separate kinds of task. Within one coding benchmark there is less
   for clustering to find.
@@ -164,8 +206,7 @@ Two consequences for Gacrux, both open decisions (see the results index):
 
 ## Next
 
-1. Rerun with the Qwen3-Embedding-8B vectors from Nandu's Drive.
-2. Run on a pool with more kinds of task (for example `lcb` + MMLU-Pro), which is
+1. Run on a pool with more kinds of task (for example `lcb` + MMLU-Pro), which is
    closer to the paper's setting.
 
 ## Reproduce

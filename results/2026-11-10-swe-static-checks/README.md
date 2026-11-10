@@ -87,11 +87,75 @@ picked on 75 tasks with the static checks alone (`uncertified` in
 points of accuracy. The price gap on this pool is large enough that a stronger
 check would pay off.
 
+## Linux rerun of the static checks
+
+Added later on 2026-11-10 (`static-check-rates-swe-linux.csv`), from the Colab
+notebook, with GNU patch as in the harness. GNU patch applies about 400 more patches
+than Apple's, and more of those leave a file that no longer parses.
+
+| | macOS (Apple patch) | Linux (GNU patch) |
+| --- | --- | --- |
+| answers that pass, of 7,000 | 50.5% | 54.7% |
+| catch rate, all models | 63.5% | 58.2% |
+| catch rate, cheaper models in the table above | 53-76% | 47-66% |
+| false rejects | 3.0% | 2.6% |
+| accuracy among answers that pass | 44.4% | 41.1% |
+
+Use the Linux numbers. The false rejects that remain are answers the benchmark
+graded right whose patch does not apply here with either tool.
+
+## Existing tests: partial run on django
+
+`repo-test-rates-django-partial.csv`, `repo-test-summary-django-partial.json`.
+`scripts/swe_repo_tests.py` on a 2-core Colab CPU runtime (see
+[docs/SWE_CHECKS.md](../../docs/SWE_CHECKS.md)). **This executed model-written code,
+on Colab only.** The run was stopped by hand after 137 of the planned 303 tasks, all
+django; sympy has not run. Eight models: claude-opus-4.1, claude-sonnet-4,
+deepseek-r1-0528, deepseek-v3.1-terminus, deepseek-v3-0324, kimi-k2-0905, glm-4.6,
+qwen3-235b-a22b-2507.
+
+Is the Docker-free environment trustworthy?
+
+- 135 of 137 tasks resolved with their reference patch. The other two need Python
+  3.5, whose dependencies no longer build.
+- Over 683 model patches run, this run's "resolved" agrees with the benchmark's
+  grade 93.9% of the time. The 42 disagreements are almost all one way: 41 patches
+  resolve here that the benchmark graded wrong, 1 the reverse. They cluster on a few
+  tasks (six models on `django__django-12419`, four on `django__django-11119`). Which
+  side is right is not established; the benchmark's own harness logs are not
+  available. The numbers below use the benchmark's grades.
+
+What the checks catch, over 1,065 answers on the 135 valid tasks (311 right, 754 wrong):
+
+| check | wrong answers caught | right answers rejected | accepted answers that are right |
+| --- | --- | --- | --- |
+| static only | 49.3% | - | - |
+| static + existing tests still pass | 65.4% | 1.3% | 54.0% |
+
+Per model the combined catch rate is 54-75%.
+
+Of the 375 wrong patches that applied and ran:
+
+- 114 (30%) broke a test that passed before. This is what a customer's existing
+  test suite would catch.
+- 220 (59%) broke nothing and failed the tests written for the issue. Only a test
+  aimed at the change catches these.
+- 41 (11%) passed every test here and are the disputed grades above. If this run is
+  right about them, the combined catch rate is 69% and 61% of accepted answers are right.
+
+**Reading:** on django, a repository's existing tests add 16 points to the static
+checks, and the two together catch about two thirds of wrong patches. The 95% that
+escalation chains need (see the results index) is not reachable with checks that only
+ask "did anything break". Most wrong patches are wrong quietly: they apply, break
+nothing, and do not fix the issue.
+
+This sample is too small to certify a chain (135 tasks), so no savings figure is given.
+
 ## What this means
 
-Static checks are worth having: they are free and remove half the answers. They are
-not enough. The next measurement is the one that decides the business case: how many
-of the remaining wrong patches a repository's existing tests catch.
+Static checks are worth having: they are free and remove about half the answers.
+They are not enough, and on the django sample neither are existing tests. What is
+missing is a check aimed at the change itself.
 
 ## Limits
 
@@ -104,9 +168,12 @@ of the remaining wrong patches a repository's existing tests catch.
 
 ## Next
 
-1. Rerun `scripts/swe_patch_checks.py` on Linux (GNU patch).
-2. Run each repository's existing tests on the 3,534 answers that pass, on an
-   isolated Linux machine, and feed the result to `tine cascade --checks`.
+1. Finish the test run (the rest of django, then sympy) and run `tine cascade
+   --checks` on the result. It resumes from `MyDrive/tine/swe/repo-tests.csv`.
+2. Settle the 41 disputed grades by inspecting a few of those patches by hand.
+3. Measure a check aimed at the change: tests written for the issue by a model, or
+   a stronger model judging the patch. The hidden issue tests catch 220 of the 261
+   wrong patches that existing tests miss, which is the ceiling such a check aims at.
 
 ## Reproduce
 

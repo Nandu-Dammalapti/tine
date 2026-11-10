@@ -1,0 +1,11 @@
+{
+  "tasks_attempted": 137,
+  "tasks_valid": 135,
+  "gold_statuses": {
+    "env_failed": 2,
+    "ok": 135
+  },
+  "runs_compared_with_benchmark_grade": 683,
+  "agreement_with_benchmark_grade": 0.9385,
+  "note": "Partial Colab run stopped by hand on 2026-11-10: django tasks only."
+}
