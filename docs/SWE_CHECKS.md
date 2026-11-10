@@ -102,9 +102,19 @@ patches: stop if any row is not `ok` / `resolved=True` and report the output. Ce
 is the long run (default eight models, ten hours, resumable). Cell 7 prints the
 summary to copy back.
 
-Expected time is not known until the smoke test: each run reinstalls the package and
-runs a few test modules. Budget on the order of a minute per patch and about 1,500
-patches for the default models.
+The first smoke test (2026-11-10) validated 5 of 6 reference patches. The sixth,
+`django__django-10097`, needs a Python 3.5 environment whose dependencies no longer
+build; only 2 of the 306 tasks use Python 3.5. A django run took 3-4 seconds and a
+sympy run about 50.
+
+The default run is about 1,450 model patches plus about 300 reference patches,
+roughly 8 hours on one core. The work is unit tests, so a GPU or TPU does not help;
+cores do. `--workers N` (the notebook passes the CPU count) runs N tasks at once,
+each with its own conda environment, checkout and home directories, and keeps each
+repository version with one worker so its environment is built once. Environment
+builds are serialised because conda's package cache is shared. Expect roughly 4-5
+hours on a 2-core runtime and 1.5-2 hours on an 8-core High-RAM runtime. Parallel
+workers have not been run on Colab yet.
 
 After it finishes, on any machine with the results:
 
