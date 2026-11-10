@@ -1,4 +1,8 @@
 import pytest
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest.mock import patch
 
 from tine.ledger import Ledger, request_fingerprint
 
@@ -91,6 +95,30 @@ def test_cache_uses_latest_resolved_outcome_and_late_reversal():
     assert ledger.cached("a", "openai", body) is None
 
 
+def test_context_cache_keys_survive_reopen_and_exclude_legacy_entries(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    body = {"model": "frontier", "messages": []}
+    context = {"url": "https://provider.example/v1/chat/completions", "headers": {}}
+    ledger = Ledger(path)
+    legacy_id = row(ledger, request_body=body, success=True)
+    ledger.close()
+
+    ledger = Ledger(path)
+    assert ledger.cached("a", "openai", body)["request_id"] == legacy_id
+    assert ledger.cached("a", "openai", body, cache_context=context) is None
+    scoped_id = row(ledger, request_body=body, success=True, cache_context=context)
+    ledger.close()
+
+    ledger = Ledger(path)
+    assert ledger.cached("a", "openai", body, cache_context=context)["request_id"] == scoped_id
+    assert ledger.cached("a", "openai", body)["request_id"] == legacy_id
+    assert ledger.cached("b", "openai", body, cache_context=context) is None
+    ledger.update_outcome("a", legacy_id, False)
+    assert ledger.cached("a", "openai", body, cache_context=context)["request_id"] == scoped_id
+    assert ledger.report("a")["requests"] == 2
+    ledger.close()
+
+
 def test_known_cost_per_success_includes_failed_request_spend():
     ledger = Ledger()
     row(ledger, success=True, cost_usd=1, baseline_cost_usd=2)
@@ -99,3 +127,76 @@ def test_known_cost_per_success_includes_failed_request_spend():
     assert report["known_cost_per_verified_success_usd"] == 4
     assert report["verified_savings_usd"] == 1
     assert "not a billing amount" in report["savings_scope"]
+
+
+@pytest.mark.parametrize("later_hour", [9, 10])
+def test_latest_outcome_wins_when_wall_clock_repeats_or_moves_backwards(later_hour):
+    ledger = Ledger()
+    body = {"model": "frontier", "messages": []}
+    with patch("tine.ledger.datetime") as clock:
+        clock.now.return_value = datetime(2026, 11, 9, 10, tzinfo=timezone.utc)
+        first = row(ledger, request_body=body, success=True)
+        clock.now.return_value = datetime(2026, 11, 9, later_hour, tzinfo=timezone.utc)
+        second = row(ledger, request_body=body, success=False)
+        assert ledger.cached("a", "openai", body) is None
+        ledger.update_outcome("a", first, True)
+        assert ledger.cached("a", "openai", body)["request_id"] == first
+        ledger.update_outcome("a", second, False)
+        assert ledger.cached("a", "openai", body) is None
+    ledger.close()
+
+
+def test_outcome_order_is_shared_across_connections_and_survives_reopen(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    first, second = Ledger(path), Ledger(path)
+    body = {"model": "frontier", "messages": []}
+    ids = [row(first, request_body=body, success=True), row(second, request_body=body, success=True)]
+    barrier = Barrier(2)
+
+    def update(store, request_id, success):
+        barrier.wait(timeout=5)
+        store.update_outcome("a", request_id, success)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = [pool.submit(update, first, ids[0], False), pool.submit(update, second, ids[1], True)]
+        for job in jobs:
+            job.result(timeout=10)
+    records = [first.get("a", request_id) for request_id in ids]
+    assert len({record["outcome_sequence"] for record in records}) == 2
+    latest = max(records, key=lambda record: record["outcome_sequence"])
+    first.close()
+    second.close()
+    reopened = Ledger(path)
+    cached = reopened.cached("a", "openai", body)
+    assert (cached["request_id"] if cached else None) == (latest["request_id"] if latest["success"] else None)
+    assert reopened.cached("b", "openai", body) is None
+    reopened.close()
+
+
+def test_legacy_cache_migration_preserves_rows_and_orders_new_evidence_first(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy.sqlite3"
+    body = {"model": "frontier", "messages": []}
+    ledger = Ledger(path)
+    with patch("tine.ledger.datetime") as clock:
+        clock.now.return_value = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        request_id = row(ledger, request_body=body, success=True, cost_usd=0.5)
+    ledger.close()
+    # Reconstruct the original ledger schema, before timestamp/sequence ordering.
+    with sqlite3.connect(path) as database:
+        columns = [column[1] for column in database.execute("PRAGMA table_info(requests)")
+                   if column[1] not in {"outcome_updated_at", "outcome_sequence"}]
+        database.execute(f"CREATE TABLE legacy_requests AS SELECT {', '.join(columns)} FROM requests")
+        database.execute("DROP TABLE requests")
+        database.execute("ALTER TABLE legacy_requests RENAME TO requests")
+        database.execute("DROP TABLE IF EXISTS ledger_state")
+    migrated = Ledger(path)
+    assert migrated.cached("a", "openai", body)["request_id"] == request_id
+    assert migrated.get("a", request_id)["cost_usd"] == 0.5
+    with patch("tine.ledger.datetime") as clock:
+        clock.now.return_value = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        row(migrated, request_body=body, success=False)
+    assert migrated.cached("a", "openai", body) is None
+    assert migrated.report("a")["requests"] == 2
+    migrated.close()

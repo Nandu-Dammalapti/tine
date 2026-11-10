@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import json
 from itertools import permutations
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from tine.calibration import clopper_pearson_upper
+from tine.calibration import _integer, _matrices, _probability, clopper_pearson_upper
+from tine.artifacts import experiment_output
+from tine.checks import prepare_checks
 from tine.pipeline import complete_tasks, matrix
 
 
@@ -33,21 +34,22 @@ def chain_metrics(chain, outcomes, costs, frontier_index: int, catch: float = 1.
     Without it, ``catch`` gives expected values. Degradation counts tasks the
     frontier solves but the chain's final answer misses.
     """
+    outcomes, costs, frontier_index = _matrices(outcomes, costs, frontier_index)
+    if not len(outcomes):
+        raise ValueError("outcomes and costs must be nonempty")
+    catch = _probability(catch, "catch")
+    chain = [_integer(model, "chain model index") for model in chain]
+    if any(model >= outcomes.shape[1] for model in chain):
+        raise ValueError("chain model index is outside the model columns")
     if passes is not None:
-        passes = np.asarray(passes, dtype=bool)
-        if passes.shape != np.shape(outcomes):
-            raise ValueError("passes must match outcomes")
+        passes = np.asarray(passes)
+        if passes.shape != outcomes.shape or passes.dtype != np.dtype(bool):
+            raise ValueError("passes must match outcomes and contain known Boolean check results")
         # A wrong answer that passes ships; a failed check escalates.
         catch = 1.0
         outcomes_for_flow = passes
     else:
         outcomes_for_flow = None
-    outcomes = np.asarray(outcomes, dtype=bool)
-    costs = np.asarray(costs, dtype=float)
-    if outcomes.shape != costs.shape or outcomes.ndim != 2 or not len(outcomes):
-        raise ValueError("outcomes and costs must be matching nonempty task x model matrices")
-    if not 0 <= catch <= 1:
-        raise ValueError("catch must be between 0 and 1")
     if frontier_index in chain or len(set(chain)) != len(chain):
         raise ValueError("chain must list distinct non-frontier models")
     n = len(outcomes)
@@ -81,7 +83,11 @@ def chain_metrics(chain, outcomes, costs, frontier_index: int, catch: float = 1.
 def candidate_chains(outcomes, costs, frontier_index: int, max_length: int = 3, top_k: int = 8):
     """Ordered chains of up to ``max_length`` cheaper models, drawn from the ``top_k``
     models that save most when tried alone first."""
-    costs = np.asarray(costs, dtype=float)
+    outcomes, costs, frontier_index = _matrices(outcomes, costs, frontier_index)
+    if not len(outcomes):
+        raise ValueError("Candidate selection requires nonempty outcomes")
+    max_length = _integer(max_length, "max_length", minimum=1)
+    top_k = _integer(top_k, "top_k", minimum=1)
     frontier_mean = costs[:, frontier_index].mean()
     cheaper = [j for j in range(costs.shape[1])
                if j != frontier_index and costs[:, j].mean() < frontier_mean]
@@ -95,11 +101,14 @@ def select_chain(outcomes, costs, frontier_index: int, *, epsilon: float, catch:
     """Cheapest chain whose degradation rate on these tasks is at most epsilon
     (point estimate, no safety margin). Returns ``[]`` (always frontier) if none fits.
     """
+    epsilon = _probability(epsilon, "epsilon")
+    catch = _probability(catch, "catch")
     chains = candidate_chains(outcomes, costs, frontier_index) if chains is None else chains
     best, best_savings = [], 0.0
     for chain in chains:
         metrics = chain_metrics(chain, outcomes, costs, frontier_index, catch, passes)
-        if metrics["degradation_rate"] <= epsilon and metrics["savings"] > best_savings:
+        if (metrics["degradation_rate"] <= epsilon and metrics["savings"] is not None
+                and metrics["savings"] > best_savings):
             best, best_savings = chain, metrics["savings"]
     return best
 
@@ -107,7 +116,10 @@ def select_chain(outcomes, costs, frontier_index: int, *, epsilon: float, catch:
 def simulated_passes(outcomes, catch: float, rng) -> np.ndarray:
     """Check results under an assumed catch rate: right answers pass; each wrong
     answer is caught (fails the check) with probability ``catch``."""
-    outcomes = np.asarray(outcomes, dtype=bool)
+    catch = _probability(catch, "catch")
+    outcomes = np.asarray(outcomes)
+    if outcomes.dtype != np.dtype(bool):
+        raise ValueError("outcomes must contain known Boolean labels")
     caught = rng.random(outcomes.shape) < catch
     return outcomes | ~caught
 
@@ -123,9 +135,12 @@ def certify_chain(chains, choose, certify, frontier_index: int, *, epsilon: floa
     passed, the one saving most on ``choose`` wins. Returns (chain, bound) or
     ([], None) for always-frontier.
     """
+    epsilon = _probability(epsilon, "epsilon")
+    delta = _probability(delta, "delta", open_interval=True)
     scored = [(chain, chain_metrics(chain, *choose[:2], frontier_index, passes=choose[2]))
               for chain in chains]
-    scored = [(c, m) for c, m in scored if m["degradation_rate"] <= epsilon and m["savings"] > 0]
+    scored = [(c, m) for c, m in scored if m["degradation_rate"] <= epsilon
+              and m["savings"] is not None and m["savings"] > 0]
     scored.sort(key=lambda cm: (cm[1]["degradation_rate"], -cm[1]["savings"]))
     n = len(certify[0])
     best, best_savings, best_bound = [], 0.0, None
@@ -143,11 +158,7 @@ def certify_chain(chains, choose, certify, frontier_index: int, *, epsilon: floa
 def checks_matrix(checks: pd.DataFrame, tasks: pd.DataFrame, models) -> np.ndarray:
     """Measured check results (columns task_id, model, passed) as a tasks x models
     matrix. A missing or unknown result counts as a pass: no check, nothing caught."""
-    known = checks.dropna(subset=["passed"])
-    known = known.assign(passed=known.passed.astype(str).str.lower().isin(["true", "1"]))
-    pivot = known.pivot_table(index="task_id", columns="model", values="passed", aggfunc="all")
-    pivot = pivot.reindex(index=tasks.task_id.to_numpy(), columns=models)
-    return pivot.fillna(True).to_numpy(dtype=bool)
+    return prepare_checks(checks, tasks, models)[0]
 
 
 def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01, 0.005),
@@ -163,10 +174,21 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     ``checks`` (task_id, model, passed), reported as catch "measured".
     Writes cascade-runs.csv, cascade-summary.csv, cascade-summary.json, report.md.
     """
-    if not np.isclose(sum(fractions), 1) or min(fractions) <= 0:
+    fractions = tuple(_probability(value, "fraction") for value in fractions)
+    if len(fractions) != 3 or not np.isclose(sum(fractions), 1, rtol=0, atol=1e-12) or min(fractions) <= 0:
         raise ValueError("fractions must be three positive shares summing to 1")
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
+    epsilons = tuple(_probability(value, "epsilon") for value in epsilons)
+    catches = tuple(_probability(value, "catch") for value in catches)
+    seeds = [_integer(value, "seed") for value in seeds]
+    delta = _probability(delta, "delta", open_interval=True)
+    max_length = _integer(max_length, "max_length", minimum=1)
+    top_k = _integer(top_k, "top_k", minimum=1)
+    if not seeds or not epsilons or (checks is None and not catches):
+        raise ValueError("Require nonempty seeds, epsilons, and simulated catch settings")
+    synthetic = bool(any(
+        column in frame and frame[column].eq("synthetic").any()
+        for column in ("cost_source", "success_label_source")
+    ))
     frame, tasks, excluded = complete_tasks(frame, frontier)
     if tasks.tenant.nunique() != 1:
         raise ValueError("Run the cascade experiment on one tenant at a time")
@@ -174,7 +196,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     frontier_index = models.index(frontier)
     outcomes = matrix(frame, tasks, models, "success", boolean=True)
     costs = matrix(frame, tasks, models, "cost_usd")
-    measured = None if checks is None else checks_matrix(checks, tasks, models)
+    measured, coverage = (None, None) if checks is None else prepare_checks(checks, tasks, models)
     seeds = list(seeds)
     runs = []
     for seed in seeds:
@@ -218,15 +240,18 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                     mean_calls=("mean_calls", "mean"),
                     most_common_chain=("chain", lambda c: c.value_counts().index[0]))
                .reset_index())
-    runs.to_csv(output / "cascade-runs.csv", index=False)
-    summary.to_csv(output / "cascade-summary.csv", index=False)
     result = {"frontier": frontier, "models": models, "complete_tasks": len(tasks),
+              "synthetic": synthetic,
               "excluded_tasks": len(excluded), "seeds": len(seeds), "fractions": list(fractions),
-              "delta": delta, "summary": summary.to_dict(orient="records")}
-    (output / "cascade-summary.json").write_text(json.dumps(result, indent=2, default=float) + "\n")
+              "delta": delta, "check_mode": "measured" if measured is not None else "simulated",
+              "check_coverage": coverage,
+              "cost_scope": "Recorded model-generation costs only; check execution costs are excluded.",
+              "certification_scope": "Per seed/epsilon/check setting under IID assumptions; not simultaneous across this sweep. Simulated checks certify only the assumed check process.",
+              "summary": summary.astype(object).where(summary.notna(), None).to_dict(orient="records")}
     table = summary.round(4)
-    (output / "report.md").write_text("\n".join([
+    report = "\n".join([
         "# Tine escalation-chain experiment", "",
+        "Contains SYNTHETIC outcomes — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
         f"Frontier: `{frontier}`. Complete tasks: {len(tasks)}. Seeds: {len(seeds)}.",
         f"Each seed splits tasks {fractions} into choose / certify / test parts.",
         "`uncertified` picks the cheapest chain whose degradation on the choose part is <= epsilon.",
@@ -237,9 +262,20 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
         "observed for `measured`. Benchmark labels come from hidden tests, so catch=1.0 is an",
         "optimistic upper bound. Degradation = frontier solved the task but the chain's final",
         "answer did not. Savings are against always using the frontier, on recorded costs.", "",
+        result["cost_scope"], result["certification_scope"], "",
+        (f"Measured check coverage: {coverage['known_checks']}/{coverage['expected_checks']}. "
+         f"Unknown checks: {coverage['unknown_checks']}; these pass without evidence. "
+         "Check records are matched by identity; the caller must verify they refer to the same recorded answers."
+         if coverage is not None else "Check outcomes are simulated; these are not measured checker-performance results."), "",
         table.to_markdown(index=False) if _has_tabulate() else table.to_string(index=False),
         "",
-    ]))
+    ])
+    with experiment_output(output) as staged:
+        runs.to_csv(staged / "cascade-runs.csv", index=False)
+        summary.to_csv(staged / "cascade-summary.csv", index=False)
+        (staged / "cascade-summary.json").write_text(
+            json.dumps(result, indent=2, default=float, allow_nan=False) + "\n", encoding="utf-8")
+        (staged / "report.md").write_text(report, encoding="utf-8")
     return result
 
 

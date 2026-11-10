@@ -108,6 +108,23 @@ def test_unknown_outcomes_and_nonfinite_scores_or_costs_rejected():
         calibrate(scores, costs, outcomes, 1, [0.5])
 
 
+@pytest.mark.parametrize("field", ["scores", "estimated_costs"])
+@pytest.mark.parametrize("value", [0.9 + 4j, False])
+def test_calibration_rejects_coercible_nonreal_measurements(field, value):
+    scores, costs, outcomes = example(200)
+    values = {"scores": scores, "estimated_costs": costs}
+    values[field] = values[field].astype(object)
+    values[field][0, 0] = value
+    with pytest.raises(ValueError, match="scores|costs"):
+        calibrate(**values, outcomes=outcomes, frontier_index=1, thresholds=[0.5])
+
+
+@pytest.mark.parametrize("costs", [np.array([[1 + 4j, 2]]), [[False, 1.0]]])
+def test_evaluation_rejects_costs_that_would_change_during_conversion(costs):
+    with pytest.raises(ValueError, match="costs"):
+        evaluate([0], np.ones((1, 2), dtype=bool), costs, 1)
+
+
 def test_metrics_cost_per_success_oracle_and_zero_denominators():
     outcomes = np.array([[True, True], [False, True], [False, False]])
     costs = np.array([[1, 4], [2, 5], [1, 6]], dtype=float)

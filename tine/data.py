@@ -16,6 +16,7 @@ the supplied historical recording, not current provider prices.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
@@ -26,6 +27,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tine.artifacts import atomic_write_text
 
 CANONICAL_COLUMNS = [
     "tenant", "task_id", "prompt", "task_type", "model", "success", "cost_usd",
@@ -34,6 +36,27 @@ CANONICAL_COLUMNS = [
 _REQUIRED = CANONICAL_COLUMNS[:7]
 _NUMERIC_OPTIONAL = ["input_tokens", "output_tokens", "cached_tokens", "latency_ms"]
 _TEXT_COLUMNS = ["tenant", "task_id", "prompt", "task_type", "model"]
+
+
+def _unique_csv_header(source):
+    """Reject duplicate field names before pandas can silently rename them."""
+    for header in csv.reader(source):
+        if not header or (len(header) == 1 and not header[0].strip()):
+            continue
+        if len(header) != len(set(header)):
+            raise ValueError("CSV must contain unique columns")
+        break
+    source.seek(0)
+
+
+def _unique_json_object(pairs):
+    """Keep contradictory fields from disappearing during JSON decoding."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON field: {key!r}")
+        result[key] = value
+    return result
 
 
 def _success(value):
@@ -57,6 +80,8 @@ def validate_outcomes(frame: pd.DataFrame, *, require_known: bool = False) -> pd
     """
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("outcomes must be a pandas DataFrame")
+    if not frame.columns.is_unique:
+        raise ValueError("Outcomes must have unique column names")
     missing = sorted(set(_REQUIRED) - set(frame.columns))
     if missing:
         raise ValueError(f"Missing outcome columns: {', '.join(missing)}")
@@ -73,6 +98,11 @@ def validate_outcomes(frame: pd.DataFrame, *, require_known: bool = False) -> pd
     result["success"] = result["success"].map(_success).astype(object)
     if require_known and result["success"].isna().any():
         raise ValueError("Pending success labels cannot be evaluated")
+    for column in ["cost_usd", *_NUMERIC_OPTIONAL]:
+        if column in result and result[column].map(
+            lambda value: isinstance(value, (bool, np.bool_, complex, np.complexfloating))
+        ).any():
+            raise ValueError(f"{column} must contain real numeric measurements; booleans and complex values are invalid")
     costs = pd.to_numeric(result["cost_usd"], errors="raise")
     if costs.isna().any() or not np.isfinite(costs).all() or (costs < 0).any():
         raise ValueError("cost_usd must contain finite nonnegative recorded per-request costs")
@@ -112,7 +142,8 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
     """Read a canonical CSV, JSONL, or JSON array, then validate it."""
     path = Path(path)
     if path.suffix.lower() == ".csv":
-        source = StringIO(path.read_text(encoding="utf-8"))
+        source = StringIO(path.read_text(encoding="utf-8-sig"))
+        _unique_csv_header(source)
         frame = pd.read_csv(source, dtype=dict.fromkeys(_TEXT_COLUMNS, str))
         # Preserve literal text while retaining the usual missing-value and
         # numeric parsing for measurements and existing provenance columns.
@@ -122,10 +153,10 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
         frame[text.columns] = text
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
         with path.open(encoding="utf-8") as source:
-            records = [json.loads(line) for line in source if line.strip()]
+            records = [json.loads(line, object_pairs_hook=_unique_json_object) for line in source if line.strip()]
         frame = pd.DataFrame(records)
     elif path.suffix.lower() == ".json":
-        records = json.loads(path.read_text())
+        records = json.loads(path.read_text(), object_pairs_hook=_unique_json_object)
         if not isinstance(records, list):
             raise ValueError("Canonical JSON must be an array; use import_llmrouterbench for result bundles")
         frame = pd.DataFrame(records)
@@ -161,13 +192,13 @@ def write_outcomes(frame: pd.DataFrame, path: str | Path) -> None:
     """Write validated canonical CSV or JSONL without changing unknown labels."""
     frame = validate_outcomes(frame)
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".csv":
-        frame.to_csv(path, index=False)
+        contents = frame.to_csv(index=False)
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
-        path.write_text("".join(outcome_json_lines(frame)), encoding="utf-8")
+        contents = "".join(outcome_json_lines(frame))
     else:
         raise ValueError("Output must be .csv, .jsonl, or .ndjson")
+    atomic_write_text(path, contents)
 
 
 def combine_outcomes(frames, *, task_type: str | None = None, exclude_models=(),
@@ -275,7 +306,7 @@ def import_llmrouterbench(
     grouped = {}
     for path in paths:
         raw = path.read_bytes()
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_unique_json_object)
         if not isinstance(data, dict) or not isinstance(data.get("records"), list):
             raise ValueError(f"{path}: expected a result object with records[]")
         if data.get("demo", False):
