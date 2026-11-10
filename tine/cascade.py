@@ -26,7 +26,7 @@ import pandas as pd
 from tine.calibration import _integer, _matrices, _probability, clopper_pearson_upper
 from tine.artifacts import experiment_output
 from tine.checks import prepare_checks
-from tine.pipeline import complete_tasks, matrix
+from tine.pipeline import complete_tasks, embedding_fingerprint, load_embeddings, matrix
 from tine.routing import METHODS, TASK_COLUMNS, Router
 
 DEFAULT_GATE_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9)
@@ -226,7 +226,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                            max_length: int = 3, top_k: int = 8, gate_method: str | None = None,
                            gate_thresholds=DEFAULT_GATE_THRESHOLDS,
                            gate_fractions=(0.35, 0.1, 0.2, 0.2, 0.15),
-                           catch_rates: dict | None = None) -> dict:
+                           catch_rates: dict | None = None, gate_embeddings=None) -> dict:
     """For each seed, split tasks into choose / certify / test parts. Pick a chain
     two ways: "uncertified" (lowest cost with degradation <= epsilon on the choose
     part) and "certified" (also passes a Clopper-Pearson bound <= epsilon on the
@@ -243,7 +243,9 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     ``gate_fractions`` into train / score-calibration / choose / certify / test
     parts, fits the predictor on the first two, and adds a "gated_certified" pick:
     the certified search over every chain paired with every ``gate_thresholds``
-    value or no gate (see ``certify_gated_chain``).
+    value or no gate (see ``certify_gated_chain``). ``gate_embeddings`` is an optional
+    NPZ of fixed prompt embeddings for the predictor (as for ``tine run``); the
+    default is TF-IDF fitted on the train part.
     """
     if gate_method is not None and gate_method not in METHODS:
         raise ValueError(f"Unknown gate method: {gate_method!r}; choose one of {METHODS}")
@@ -255,6 +257,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     gate_thresholds = tuple(_probability(value, "gate threshold") for value in gate_thresholds)
     if gated and not gate_thresholds:
         raise ValueError("A gated experiment requires at least one gate threshold")
+    if gate_embeddings is not None and not gated:
+        raise ValueError("gate_embeddings requires a gate method")
     epsilons = tuple(_probability(value, "epsilon") for value in epsilons)
     catches = tuple(_probability(value, "catch") for value in catches)
     seeds = [_integer(value, "seed") for value in seeds]
@@ -277,6 +281,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     outcomes = matrix(frame, tasks, models, "success", boolean=True)
     costs = matrix(frame, tasks, models, "cost_usd")
     measured, coverage = (None, None) if checks is None else prepare_checks(checks, tasks, models)
+    lookup = load_embeddings(gate_embeddings, tasks) if gate_embeddings is not None else None
     model_catches = None
     if catch_rates is not None:
         missing = sorted(set(models) - {frontier} - set(catch_rates))
@@ -296,7 +301,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
             # complete_tasks left one task per prompt, so the parts share no prompt.
             def part_rows(index):
                 return frame.loc[frame.task_id.isin(tasks.task_id[part == index])]
-            router = Router(frontier, seed=seed).fit(part_rows(0), part_rows(1))
+            router = Router(frontier, seed=seed, embedding_lookup=lookup).fit(part_rows(0), part_rows(1))
             if router.model_names != models:
                 raise ValueError("Gate predictor models do not match the outcome models")
             scores = router.predict_scores(tasks[TASK_COLUMNS], method=gate_method)
@@ -353,7 +358,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
               "delta": delta, "check_mode": "measured" if measured is not None else "simulated",
               "check_coverage": coverage,
               "gate": ({"method": gate_method, "thresholds": list(gate_thresholds),
-                        "features": "train_only_tfidf",
+                        "features": "supplied_embeddings" if lookup else "train_only_tfidf",
+                        "embedding_sha256": embedding_fingerprint(lookup, tasks) if lookup else None,
                         "scope": "Predictor fitted per seed on the train and score-calibration parts only."}
                        if gated else None),
               "cost_scope": "Recorded model-generation costs only; check execution costs are excluded.",

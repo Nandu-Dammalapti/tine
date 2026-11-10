@@ -269,3 +269,18 @@ def test_per_model_catch_rates(tmp_path):
           "--output", str(tmp_path / "out"), "--epsilon", "0.02", "--catch", "1.0",
           "--catch-rates", str(tmp_path / "rates.csv")])
     assert set(pd.read_csv(tmp_path / "out" / "cascade-summary.csv")["catch"]) == {"1.0", "per-model"}
+
+
+def test_gate_can_use_supplied_embeddings(tmp_path):
+    from tine.pipeline import prompt_hash
+    frame = synthetic_fixture(n_tasks=300, seed=5)
+    tasks = frame.drop_duplicates(["tenant", "task_id"])
+    vectors = tmp_path / "vectors.npz"
+    np.savez(vectors, tenants=tasks.tenant.to_numpy(dtype=str), task_ids=tasks.task_id.to_numpy(dtype=str),
+             prompt_hashes=[prompt_hash(prompt) for prompt in tasks.prompt],
+             embeddings=np.random.default_rng(0).normal(size=(len(tasks), 8)))
+    result = run_cascade_experiment(frame, "frontier", tmp_path / "out", seeds=[0], epsilons=(0.02,),
+                                    catches=(0.9,), gate_method="knn", gate_embeddings=vectors)
+    assert result["gate"]["features"] == "supplied_embeddings" and result["gate"]["embedding_sha256"]
+    with pytest.raises(ValueError, match="requires a gate method"):
+        run_cascade_experiment(frame, "frontier", tmp_path / "out", gate_embeddings=vectors)

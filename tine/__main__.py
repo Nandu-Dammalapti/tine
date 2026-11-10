@@ -45,6 +45,8 @@ def main(argv=None):
                          help="CSV (model, catch_rate): also simulate each model's own catch rate")
     cascade.add_argument("--gate", choices=("logistic", "knn", "cluster"),
                          help="Also try chains gated by this router predictor")
+    cascade.add_argument("--gate-embeddings", type=Path,
+                         help="NPZ of fixed prompt embeddings for the gate predictor (default: TF-IDF)")
     cascade.add_argument("--gate-threshold", type=float, nargs="+",
                          help="Predicted-success thresholds to try for the gate")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
@@ -111,7 +113,7 @@ def main(argv=None):
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),
                                         max_length=args.max_length, gate_method=args.gate,
-                                        catch_rates=catch_rates,
+                                        catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
                                         **({"gate_thresholds": args.gate_threshold}
                                            if args.gate_threshold else {}))
         print(json.dumps(result["summary"], indent=2, default=float))

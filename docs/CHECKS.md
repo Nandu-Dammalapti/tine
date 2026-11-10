@@ -54,7 +54,8 @@ same fixed-sequence certification as `certified`.
 
 Each seed splits tasks into train / score-calibration / choose / certify / test
 parts. The predictor is fitted on the first two only, with train-only TF-IDF
-features, so `certified` and `gated_certified` are compared on the same held-out
+features or the fixed embeddings given by `--gate-embeddings` (the NPZ format of
+`tine run --embeddings`), so `certified` and `gated_certified` are compared on the same held-out
 tasks. These parts are smaller than in an ungated run: do not compare the two
 runs' numbers directly.
 
