@@ -64,3 +64,26 @@ adds a simulated `per-model` setting where each model's wrong answers are caught
 its own rate. The rate is applied independently of the task, so it cannot show
 whether a check and the predictor miss the same answers. Use per-answer `--checks`
 for that. It cannot be combined with `--checks`.
+
+## Response check
+
+`tine cascade --response-check` adds a `response_certified` pick. A response check
+(`tine/acceptance.py`) scores each cheaper model's answer from two numbers the
+ledger already records, prompt tokens and response tokens, and accepts the answer
+only if the score is at least a threshold (`--response-threshold`, default 0.5 to
+0.95). For many models a long response goes with a wrong answer; the direction and
+strength differ, so each model has its own small classifier, calibrated on held-out
+tasks. It runs no tests and calls no model. An escalated answer has still been paid for.
+
+The search covers every chain with the setting's check alone or combined with the
+response check, through the same fixed-sequence certification. `--catch 0` makes the
+response check the only check, so that setting contains no simulated check. With a
+simulated `--catch` or `--catch-rates` setting, the simulated check and the response
+check are combined as if their misses were unrelated; per-answer `--checks` remove
+that assumption.
+
+Each seed splits tasks 20 / 10 / 15 / 40 / 15 by default (`--fit-fractions`) into
+train / score-calibration / choose / certify / test parts. The classifier has four
+features, so most tasks go to certification. Response tokens must be recorded for
+every outcome and must mean the same thing in production as in the fitting data
+(for example, whether reasoning tokens are counted).
