@@ -36,9 +36,9 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | Date | Folder | Question | Answer |
 | --- | --- | --- | --- |
 | 2026-11-09 | [coding-benchmark](2026-11-09-coding-benchmark/README.md) | Can a predictor pick a cheaper model from the prompt? Can escalation chains save money? How good are public-sample checks? | Prompt-only routers certify 0% savings (TF-IDF, MiniLM and Qwen3 embeddings alike). Chains certify 38-42% with a perfect check, 4-14% at 95% catch, 0% at 90%. Measured public samples catch only 38-74% of wrong answers from the strong cheap models, so chains with real sample checks certify 0%. |
-| 2026-11-10 | [gated-chains](2026-11-10-gated-chains/README.md) | Does gating a chain by the prompt-only predictor rescue weak checks? | Barely: 0% to about 1% at epsilon 0.02 with per-model sample rates; 3% to 13-18% at epsilon 0.05. Qwen3 0.6B embeddings for the gate change nothing. |
+| 2026-11-10 | [gated-chains](2026-11-10-gated-chains/README.md) | Does gating a chain by the prompt-only predictor rescue weak checks? | Barely: 0% to about 1% at epsilon 0.02 with per-model sample rates; 3% to 13-18% at epsilon 0.05. Qwen3 0.6B embeddings for the gate, and an issue-only view of SWE-bench prompts, change nothing. |
 | 2026-11-10 | [response-check](2026-11-10-response-check/README.md) | Does the size of the response say whether the answer is right? | Yes for coding: held-out AUC 0.76-0.99 per model. With per-model sample rates it certifies 6.2% at epsilon 0.02 and 31.8% at 0.05 on `lcb`; with no other check 3.6% and 14.3%. Weaker on multiple choice (MMLU-Pro: 3.4% and 19.4%). |
-| 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. Run with 0.6B embeddings, not the paper's 8B. |
+| 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. On `lcb-swe` it beats gpt-5's accuracy at about 40% lower cost, because gpt-5 is weak on SWE-bench in this benchmark (15.8% against 34.6% for the best models), yet its degradation rate never drops below 3.9%. Run with 0.6B embeddings, not the paper's 8B. |
 
 ## How the findings fit together
 
@@ -57,14 +57,35 @@ outputs, prompts and embeddings are not (see "Where the data is").
 6. At epsilon 0.02 the number of certification tasks limits the result as much as
    the check does: with about 420 tasks a policy may show at most 3 degradations.
 
+## Open decisions
+
+Two findings from the `lcb-swe` Avengers-Pro run question parts of the Gacrux
+definition in AGENTS.md. They need a team decision; nothing in the code has changed.
+
+1. **The routing rule.** "Cheapest model whose predicted success is at least tau,
+   else the frontier" cannot leave the frontier on hard tasks, where no model's
+   predicted success is high, even when the frontier is the worst choice there. On
+   SWE-bench gpt-5 solves 15.8% and a model at a tenth of its cost solves 25.4%. A
+   rule that compares each model with the frontier's own predicted success would
+   route those tasks away. An exploratory run of that rule (not in the repository)
+   certified up to 13% savings at epsilon 0.05 on `lcb-swe` where the current rule
+   certifies 2-5%, with accuracy 1-2 points above gpt-5.
+2. **What the guarantee bounds.** The guarantee counts only tasks the frontier
+   solved and the policy did not. A policy that is cheaper and more accurate overall
+   can fail it: "SWE-bench tasks to deepseek-v3.1-terminus" saves 27.7% and gains 3.1
+   points of accuracy, with a 3.1% degradation rate. Bounding net accuracy loss
+   instead would accept it. In the same exploratory run, the comparing rule with a
+   net-loss bound certified 25-29% at epsilon 0.05 at accuracy equal to or above
+   gpt-5. The trade-off: a net bound lets individual tasks regress as long as others
+   improve, which a customer may or may not accept.
+
 ## Open items
 
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.
-- Avengers-Pro with the paper's Qwen3-Embedding-8B vectors, and on `lcb-swe` or a
-  mixed pool.
-- The router and gated chains on `lcb-swe` with the issue-only SWE-bench view.
+- Avengers-Pro with the paper's Qwen3-Embedding-8B vectors, and on a pool with more
+  kinds of task.
 - No result here uses customer traffic. Token counts, costs and check quality all
   need measuring in shadow mode.
 

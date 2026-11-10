@@ -1,0 +1,569 @@
+[
+  {
+    "tenant": "benchmark",
+    "task_type": "coding",
+    "method": "logistic",
+    "tau": null,
+    "force_frontier": true,
+    "n": 311,
+    "degradations": 0,
+    "upper_bound": 0.0,
+    "epsilon": 0.02,
+    "delta": 0.05,
+    "thresholds_in_grid": 21,
+    "thresholds_tested": 1,
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); Bonferroni across groups and methods",
+    "loss": "frontier_success_and_selected_failure",
+    "reason": "no_certified_threshold",
+    "candidates": [
+      {
+        "tau": 1.0,
+        "degradations": 5,
+        "upper_bound": 0.03913731723143497,
+        "nonfrontier_count": 45,
+        "tested": true,
+        "certified": false
+      },
+      {
+        "tau": 0.9500000000000001,
+        "degradations": 4,
+        "upper_bound": 0.03451649448500507,
+        "nonfrontier_count": 53,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.9,
+        "degradations": 6,
+        "upper_bound": 0.043631772888134426,
+        "nonfrontier_count": 59,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.8500000000000001,
+        "degradations": 15,
+        "upper_bound": 0.08105328022385802,
+        "nonfrontier_count": 117,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.8,
+        "degradations": 28,
+        "upper_bound": 0.13083318516655162,
+        "nonfrontier_count": 152,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.75,
+        "degradations": 32,
+        "upper_bound": 0.1456291287607278,
+        "nonfrontier_count": 183,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.7000000000000001,
+        "degradations": 37,
+        "upper_bound": 0.16388561681144675,
+        "nonfrontier_count": 202,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.65,
+        "degradations": 39,
+        "upper_bound": 0.17112371465985615,
+        "nonfrontier_count": 204,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.6000000000000001,
+        "degradations": 41,
+        "upper_bound": 0.17832856362939548,
+        "nonfrontier_count": 205,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.55,
+        "degradations": 50,
+        "upper_bound": 0.2103880222920897,
+        "nonfrontier_count": 220,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.5,
+        "degradations": 57,
+        "upper_bound": 0.23497206255582304,
+        "nonfrontier_count": 226,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.45,
+        "degradations": 55,
+        "upper_bound": 0.22797607939466585,
+        "nonfrontier_count": 245,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.4,
+        "degradations": 57,
+        "upper_bound": 0.23497206255582304,
+        "nonfrontier_count": 255,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.35000000000000003,
+        "degradations": 59,
+        "upper_bound": 0.2419469937337964,
+        "nonfrontier_count": 256,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.30000000000000004,
+        "degradations": 63,
+        "upper_bound": 0.25583686829575825,
+        "nonfrontier_count": 301,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.25,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.2,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.15000000000000002,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.1,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.05,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.0,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      }
+    ]
+  },
+  {
+    "tenant": "benchmark",
+    "task_type": "coding",
+    "method": "knn",
+    "tau": null,
+    "force_frontier": true,
+    "n": 311,
+    "degradations": 0,
+    "upper_bound": 0.0,
+    "epsilon": 0.02,
+    "delta": 0.05,
+    "thresholds_in_grid": 21,
+    "thresholds_tested": 1,
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); Bonferroni across groups and methods",
+    "loss": "frontier_success_and_selected_failure",
+    "reason": "no_certified_threshold",
+    "candidates": [
+      {
+        "tau": 1.0,
+        "degradations": 3,
+        "upper_bound": 0.029727785800867414,
+        "nonfrontier_count": 32,
+        "tested": true,
+        "certified": false
+      },
+      {
+        "tau": 0.9500000000000001,
+        "degradations": 3,
+        "upper_bound": 0.029727785800867414,
+        "nonfrontier_count": 32,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.9,
+        "degradations": 11,
+        "upper_bound": 0.06490801747426575,
+        "nonfrontier_count": 60,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.8500000000000001,
+        "degradations": 9,
+        "upper_bound": 0.05658490902342022,
+        "nonfrontier_count": 65,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.8,
+        "degradations": 25,
+        "upper_bound": 0.11960427295445578,
+        "nonfrontier_count": 164,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.75,
+        "degradations": 24,
+        "upper_bound": 0.11583274932644493,
+        "nonfrontier_count": 165,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.7000000000000001,
+        "degradations": 31,
+        "upper_bound": 0.14194734253664434,
+        "nonfrontier_count": 180,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.65,
+        "degradations": 36,
+        "upper_bound": 0.16025339823094178,
+        "nonfrontier_count": 212,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.6000000000000001,
+        "degradations": 47,
+        "upper_bound": 0.1997626663604807,
+        "nonfrontier_count": 221,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.55,
+        "degradations": 52,
+        "upper_bound": 0.21744067995860308,
+        "nonfrontier_count": 225,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.5,
+        "degradations": 54,
+        "upper_bound": 0.22446992076876054,
+        "nonfrontier_count": 248,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.45,
+        "degradations": 56,
+        "upper_bound": 0.23147675577732077,
+        "nonfrontier_count": 251,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.4,
+        "degradations": 56,
+        "upper_bound": 0.23147675577732077,
+        "nonfrontier_count": 251,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.35000000000000003,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 294,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.30000000000000004,
+        "degradations": 66,
+        "upper_bound": 0.2662045669850437,
+        "nonfrontier_count": 296,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.25,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 309,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.2,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.15000000000000002,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.1,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.05,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.0,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      }
+    ]
+  },
+  {
+    "tenant": "benchmark",
+    "task_type": "coding",
+    "method": "cluster",
+    "tau": 0.8500000000000001,
+    "force_frontier": false,
+    "n": 311,
+    "degradations": 0,
+    "upper_bound": 0.013078814238216338,
+    "epsilon": 0.02,
+    "delta": 0.05,
+    "thresholds_in_grid": 21,
+    "thresholds_tested": 5,
+    "family_size": 3,
+    "corrected_alpha": 0.016666666666666666,
+    "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); Bonferroni across groups and methods",
+    "loss": "frontier_success_and_selected_failure",
+    "reason": "certified_threshold",
+    "candidates": [
+      {
+        "tau": 1.0,
+        "degradations": 0,
+        "upper_bound": 0.013078814238216338,
+        "nonfrontier_count": 0,
+        "tested": true,
+        "certified": true
+      },
+      {
+        "tau": 0.9500000000000001,
+        "degradations": 0,
+        "upper_bound": 0.013078814238216338,
+        "nonfrontier_count": 0,
+        "tested": true,
+        "certified": true
+      },
+      {
+        "tau": 0.9,
+        "degradations": 0,
+        "upper_bound": 0.013078814238216338,
+        "nonfrontier_count": 0,
+        "tested": true,
+        "certified": true
+      },
+      {
+        "tau": 0.8500000000000001,
+        "degradations": 0,
+        "upper_bound": 0.013078814238216338,
+        "nonfrontier_count": 0,
+        "tested": true,
+        "certified": true
+      },
+      {
+        "tau": 0.8,
+        "degradations": 20,
+        "upper_bound": 0.10058125571504498,
+        "nonfrontier_count": 171,
+        "tested": true,
+        "certified": false
+      },
+      {
+        "tau": 0.75,
+        "degradations": 20,
+        "upper_bound": 0.10058125571504498,
+        "nonfrontier_count": 171,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.7000000000000001,
+        "degradations": 31,
+        "upper_bound": 0.14194734253664434,
+        "nonfrontier_count": 171,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.65,
+        "degradations": 47,
+        "upper_bound": 0.1997626663604807,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.6000000000000001,
+        "degradations": 49,
+        "upper_bound": 0.20685256903841123,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.55,
+        "degradations": 58,
+        "upper_bound": 0.23846210748798552,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.5,
+        "degradations": 58,
+        "upper_bound": 0.23846210748798552,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.45,
+        "degradations": 58,
+        "upper_bound": 0.23846210748798552,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.4,
+        "degradations": 58,
+        "upper_bound": 0.23846210748798552,
+        "nonfrontier_count": 229,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.35000000000000003,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.30000000000000004,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.25,
+        "degradations": 65,
+        "upper_bound": 0.26275323869785244,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.2,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.15000000000000002,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.1,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.05,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      },
+      {
+        "tau": 0.0,
+        "degradations": 69,
+        "upper_bound": 0.27653200900750674,
+        "nonfrontier_count": 311,
+        "tested": false,
+        "certified": false
+      }
+    ]
+  }
+]

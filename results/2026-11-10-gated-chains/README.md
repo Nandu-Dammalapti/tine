@@ -83,6 +83,25 @@ logistic gate on `per-model`, and 1 of 10 for the Qwen3 knn gate at catch 0.90. 
 matches the router result in the 2026-11-09 folder: Qwen3 embeddings did not help
 there either. The 8B encoder was not tried for the gate.
 
+### `lcb-swe` with the issue-only view
+
+`gated-lcb-swe-tfidf-*-summary.csv`, `gated-lcb-swe-qwen3-issue-*-summary.csv`,
+`router-lcb-swe-qwen3-issue-*`. SWE-bench prompts are an issue followed by about
+70,000 characters of repository code. The embeddings here encode only the issue block
+for SWE-bench tasks (`scripts/embed.py --prompt-view issue`) and the whole prompt for
+LiveCodeBench tasks.
+
+- Router (`tine run`, seed 42, epsilon 0.02): 0% savings. `cluster` certified a
+  threshold of 0.85 and routed no test task away from gpt-5; `logistic` and `knn`
+  certified nothing. This is the same outcome as the full-prompt Qwen3 runs recorded
+  in the 2026-11-09 folder.
+- Gated chains (catch 0.90 / 0.95 / 1.0, epsilon 0.02 and 0.05): the Qwen3 issue-view
+  gate and the TF-IDF gate are within 5 points of each other in every setting, in both
+  directions. For example at catch 0.95, epsilon 0.02 the plain chain certifies 2.4%,
+  TF-IDF gates 3.4-5.8% and Qwen3 issue-view gates 3.0-4.2%.
+
+Encoding only the issue does not help the predictor.
+
 Reproduce: add `--gate-embeddings EMB/lcb-qwen3-0.6b-2048.npz` to the command below
 (the embedding command is in [avengers-pro](../2026-11-10-avengers-pro/README.md)).
 
@@ -90,8 +109,8 @@ Reproduce: add `--gate-embeddings EMB/lcb-qwen3-0.6b-2048.npz` to the command be
 
 1. Rerun with per-answer check results (`--checks`) from `scripts/lcb_sample_checks.py`
    instead of simulated per-model rates.
-2. The gate with Qwen3 0.6B embeddings is done (above). `lcb-swe` with the issue-only
-   view is still to run.
+2. The gate with Qwen3 0.6B embeddings and the issue-only view are done (above).
+   Neither helps.
 3. Stronger checks remain the main lever: differential testing between models, or a
    judge model, measured the same way.
 
