@@ -1,0 +1,7 @@
+catch,epsilon,method,savings_mean,savings_min,savings_max,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs,gated_runs,gate_tau_median,response_runs,response_tau_median,frontier_call_rate,mean_calls,most_common_chain
+measured,0.02,uncertified,0.0,0.0,0.0,0.41859967175604035,0.41859967175604035,0.0,0.0,0,10,0,,0,,1.0,1.0,claude-opus-4.1
+measured,0.02,certified,0.0,0.0,0.0,0.41859967175604035,0.41859967175604035,0.0,0.0,0,10,0,,0,,1.0,1.0,claude-opus-4.1
+measured,0.04,uncertified,0.0,0.0,0.0,0.41859967175604035,0.41859967175604035,0.0,0.0,0,10,0,,0,,1.0,1.0,claude-opus-4.1
+measured,0.04,certified,0.0,0.0,0.0,0.41859967175604035,0.41859967175604035,0.0,0.0,0,10,0,,0,,1.0,1.0,claude-opus-4.1
+measured,0.05,uncertified,0.18486241745453996,0.0,0.5039232400641743,0.40568153898983156,0.41859967175604035,0.040159427149959646,0.10204081632653061,5,5,0,,0,,0.7294933605268159,1.229493360526816,claude-opus-4.1
+measured,0.05,certified,0.0,0.0,0.0,0.41859967175604035,0.41859967175604035,0.0,0.0,0,10,0,,0,,1.0,1.0,claude-opus-4.1

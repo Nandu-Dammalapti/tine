@@ -61,12 +61,56 @@ Mean held-out savings vs gpt-5 over 10 seeds, certified picks
 it to rescue weak checks at coding-level epsilon. This matches the 2026-11-09 finding
 that the predictors cannot tell from the prompt which tasks a cheaper model solves.
 
+## Qwen3 embeddings for the gate
+
+Added later on 2026-11-10 (`gated-lcb-qwen3-*-summary.csv`). The same runs with the
+gate predictor fed Qwen3-Embedding-0.6B vectors (1,024-d, revision
+`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, full prompt, 2,048 tokens, computed
+locally) through `--gate-embeddings`, in place of TF-IDF. Same seeds and parts, so the
+plain-chain column is identical.
+
+| catch | epsilon | plain chain | TF-IDF gate: logistic / knn / cluster | Qwen3 gate: logistic / knn / cluster |
+| --- | --- | --- | --- | --- |
+| 0.95 | 0.02 | 5.0% | 8.1% / 13.7% / 9.7% | 12.3% / 8.8% / 5.2% |
+| per-model | 0.02 | 0% | 1.4% / 1.1% / 0.1% | 1.4% / 1.2% / 0.9% |
+| 0.90 | 0.05 | 26.6% | 26.6% / 22.1% / 19.3% | 27.5% / 30.3% / 31.4% |
+| per-model | 0.05 | 3.2% | 18.1% / 15.2% / 12.6% | 11.0% / 16.1% / 14.0% |
+
+A stronger encoder does not make the gate better: the differences go both ways and
+are within the spread between predictors. Runs over epsilon: none at epsilon 0.02;
+at epsilon 0.05, 2 of 10 for the Qwen3 cluster gate and 1 of 10 for the Qwen3
+logistic gate on `per-model`, and 1 of 10 for the Qwen3 knn gate at catch 0.90. This
+matches the router result in the 2026-11-09 folder: Qwen3 embeddings did not help
+there either. The 8B encoder was not tried for the gate.
+
+### `lcb-swe` with the issue-only view
+
+`gated-lcb-swe-tfidf-*-summary.csv`, `gated-lcb-swe-qwen3-issue-*-summary.csv`,
+`router-lcb-swe-qwen3-issue-*`. SWE-bench prompts are an issue followed by about
+70,000 characters of repository code. The embeddings here encode only the issue block
+for SWE-bench tasks (`scripts/embed.py --prompt-view issue`) and the whole prompt for
+LiveCodeBench tasks.
+
+- Router (`tine run`, seed 42, epsilon 0.02): 0% savings. `cluster` certified a
+  threshold of 0.85 and routed no test task away from gpt-5; `logistic` and `knn`
+  certified nothing. This is the same outcome as the full-prompt Qwen3 runs recorded
+  in the 2026-11-09 folder.
+- Gated chains (catch 0.90 / 0.95 / 1.0, epsilon 0.02 and 0.05): the Qwen3 issue-view
+  gate and the TF-IDF gate are within 5 points of each other in every setting, in both
+  directions. For example at catch 0.95, epsilon 0.02 the plain chain certifies 2.4%,
+  TF-IDF gates 3.4-5.8% and Qwen3 issue-view gates 3.0-4.2%.
+
+Encoding only the issue does not help the predictor.
+
+Reproduce: add `--gate-embeddings EMB/lcb-qwen3-0.6b-2048.npz` to the command below
+(the embedding command is in [avengers-pro](../2026-11-10-avengers-pro/README.md)).
+
 ## Next
 
 1. Rerun with per-answer check results (`--checks`) from `scripts/lcb_sample_checks.py`
    instead of simulated per-model rates.
-2. Rerun the gate with sentence embeddings (`--gate-embeddings`) once the `lcb` /
-   `lcb-swe` embedding files exist.
+2. The gate with Qwen3 0.6B embeddings and the issue-only view are done (above).
+   Neither helps.
 3. Stronger checks remain the main lever: differential testing between models, or a
    judge model, measured the same way.
 
