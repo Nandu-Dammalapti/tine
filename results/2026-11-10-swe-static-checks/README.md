@@ -121,9 +121,18 @@ Is the Docker-free environment trustworthy?
 - Over 683 model patches run, this run's "resolved" agrees with the benchmark's
   grade 93.9% of the time. The 42 disagreements are almost all one way: 41 patches
   resolve here that the benchmark graded wrong, 1 the reverse. They cluster on a few
-  tasks (six models on `django__django-12419`, four on `django__django-11119`). Which
-  side is right is not established; the benchmark's own harness logs are not
-  available. The numbers below use the benchmark's grades.
+  tasks (six models on `django__django-12419`, four on `django__django-11119`). The numbers
+  below use the benchmark's grades.
+- **Checked by reading the patches (2026-11-11): the benchmark is the one that is
+  wrong on these.** 15 of the 41 make exactly the same edit as the task's reference
+  patch (same added and removed lines), so they are certainly right; for example on
+  `django__django-12419` six models change `SECURE_REFERRER_POLICY = None` to
+  `'same-origin'`, as the reference does, and the benchmark credits two of them. 38
+  of the 41 are patches that `git apply` rejects and GNU `patch --fuzz` applies
+  (wrong line counts in the hunk header). Among such patches this run resolves 66
+  and the benchmark credits 28. The benchmark's own run evidently did not apply
+  these patches. Its SWE-bench grades therefore undercount models that write sloppy
+  diffs, by about 6% of the patches run here. Prefer this run's grades where they exist.
 
 What the checks catch, over 1,065 answers on the 135 valid tasks (311 right, 754 wrong):
 
@@ -170,8 +179,7 @@ missing is a check aimed at the change itself.
 
 1. Finish the test run (the rest of django, then sympy) and run `tine cascade
    --checks` on the result. It resumes from `MyDrive/tine/swe/repo-tests.csv`.
-2. Settle the 41 disputed grades by inspecting a few of those patches by hand.
-3. Measure a check aimed at the change: tests written for the issue by a model, or
+2. Measure a check aimed at the change: tests written for the issue by a model, or
    a stronger model judging the patch. The hidden issue tests catch 220 of the 261
    wrong patches that existing tests miss, which is the ceiling such a check aims at.
 

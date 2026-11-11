@@ -44,9 +44,11 @@ after the answer.
   checks could not tell these patches apart at all: all 150 had passed them.
 - **It almost never rejects a right patch**, so it would cause few needless escalations.
 - **The 11 disputed cases:** the benchmark graded them wrong; our test run resolved
-  them. The judge, which saw neither grade, accepted 10 of the 11. Two independent
-  signals now agree against the benchmark's grade on these, so the "own test run" row
-  is probably the better estimate. This is not settled: nobody has inspected them by hand.
+  them. The judge, which saw neither grade, accepted 10 of the 11. Reading the
+  patches afterwards settled it: the benchmark under-credits patches that only apply
+  with `patch --fuzz`, several of which are identical to the reference fix (see
+  [swe-static-checks](../2026-11-10-swe-static-checks/README.md)). **Use the "own test
+  run" row.**
 - **With the free checks, the pipeline reaches the catch rate chains need.** Static
   checks plus existing tests catch 65% of wrong patches (benchmark grades) and the
   judge 82% of the remainder: about 94% together. On our test run's grades: 69% and
@@ -83,7 +85,8 @@ after the answer.
   in a batch came from different tasks, but a reviewer may still calibrate across them.
 - The judge is not pinned: no fixed model version or settings, so it cannot be rerun
   exactly.
-- Grades are disputed on 7% of cases; both readings are shown.
+- The benchmark's grades are wrong on about 7% of these cases; both readings are shown
+  and the own-test-run one is the reliable one.
 - No chain was certified. 135 tasks are too few.
 
 ## Next
@@ -94,7 +97,6 @@ after the answer.
 2. Finish the Colab test run (303 tasks), judge every accepted patch, and certify
    chains with `tine cascade --checks`, netting the judge's tokens from the savings.
 3. Test on tasks a model cannot have seen, to size the contamination effect.
-4. Inspect the 11 disputed cases by hand.
 
 ## Reproduce
 
