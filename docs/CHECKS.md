@@ -65,6 +65,15 @@ its own rate. The rate is applied independently of the task, so it cannot show
 whether a check and the predictor miss the same answers. Use per-answer `--checks`
 for that. It cannot be combined with `--checks`.
 
+## Agreement check
+
+For tasks whose answers can be compared exactly, `scripts/agreement_pairs.py` turns
+"ask two or three cheaper models and accept when they agree" into candidates for
+`tine cascade --checks`. Each group of models is one candidate that costs all of its
+members' calls on every task and whose check passes when their recorded answers are
+identical. Certification and savings then include the second and third opinions.
+See `results/2026-11-11-agreement-check`.
+
 ## Response check
 
 `tine cascade --response-check` adds a `response_certified` pick. A response check

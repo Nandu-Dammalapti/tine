@@ -18,6 +18,7 @@ Index of all results: [results/README.md](results/README.md). Outside research: 
 Avengers-Pro head-to-head: [results/2026-11-10-avengers-pro](results/2026-11-10-avengers-pro/README.md) and [docs/AVENGERS_PRO.md](docs/AVENGERS_PRO.md).
 Static patch checks on SWE-bench: [results/2026-11-10-swe-static-checks](results/2026-11-10-swe-static-checks/README.md).
 Judge check pilot: [results/2026-11-11-judge-pilot](results/2026-11-11-judge-pilot/README.md) and [docs/JUDGE.md](docs/JUDGE.md).
+Agreement check on exact-answer tasks: [results/2026-11-11-agreement-check](results/2026-11-11-agreement-check/README.md).
 Response check for escalation chains: [results/2026-11-10-response-check](results/2026-11-10-response-check/README.md).
 
 ## Setup
