@@ -26,7 +26,7 @@ The intended product includes:
 
 Deployment is a Docker container in the customer's cloud. Easy work can go to open models on customer hardware; difficult work can go to frontier APIs. No third-party router should receive prompts. Prompts sent to a frontier provider still reach that provider: never claim that all data stays in-house.
 
-The proposed business model is 20% of verified savings against the customer's default frontier model. Shadow mode and the report are free. At $1 million annual spend and 40% savings, that would be $80,000 annual revenue for Tine.
+The proposed business model is 20% of verified savings against the customer's default frontier model, net of what routing itself costs the customer (section 2). Shadow mode and the report are free. At $1 million annual spend and 40% savings, that would be $80,000 annual revenue for Tine.
 
 The team is Nandan (Nandu) Dammalapati, Ashmith Yaramada, and Nirvika Choudhury. All three write code; the team is applying to YC.
 
@@ -47,6 +47,8 @@ Lower `tau` routes more traffic to cheaper models, increasing savings and risk. 
 Initial planning values are `epsilon = 0.01–0.02` and `delta = 0.05` for coding, and about `epsilon = 0.05` for low-stakes internal work. These are proposed settings, not an established guarantee.
 
 Measure cost per completed task, including retries, output length, and caching. Per-token prices alone are insufficient.
+
+Routing has its own cost, and the customer bears it. Everything Gacrux spends to make or check a decision counts toward cost per completed task: cheaper attempts that are escalated, judge-model calls, test or check runs, embedding calls, and compute for models hosted on customer hardware. These calls run on the customer's own provider accounts and infrastructure, like the rest of the deployment, and appear on the customer's bill. Verified savings are therefore net of routing cost: the always-frontier baseline minus what was spent on answers and on routing. A check or judge that costs as much as it saves is not a saving. Record routing cost per request in the ledger, separately from the cost of the answer that was returned, and never report gross savings without it.
 
 ## 3. Gacrux architecture
 
