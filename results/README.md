@@ -42,6 +42,7 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). On Linux, static checks catch 58% of wrong answers. A partial run of the repositories' own tests (135 django tasks, on Colab) raises that to 65%: most wrong patches break nothing and simply do not fix the issue. |
 | 2026-11-11 | [judge-pilot](2026-11-11-judge-pilot/README.md) | Can a judge that reads only the issue and the patch reject the wrong patches that pass every free check? | In a 150-case pilot with a Claude Code session as judge: it rejects 95% of them by our own test run's grades (82% by the benchmark's, which under-credits some correct patches) and rejects about 2% of right patches. With the free checks that is about a 98% catch rate on django. A ceiling, not a baseline: the judge is unpinned and may know these public issues. |
 | 2026-11-11 | [agreement-check](2026-11-11-agreement-check/README.md) | For exact-answer tasks, does "accept when two or three cheaper models agree" certify savings after paying for every call? | Yes, on MMLU-Pro (3,000 tasks), from measured data only: three models that agree certify 32% at epsilon 0.02 with accuracy at gpt-5's level; two that agree certify 64% at epsilon 0.04. |
+| 2026-11-11 | [router-rules](2026-11-11-router-rules/README.md) | Do a relative routing rule and a net-accuracy guarantee (both opt-in) unblock the prompt-only router? What does a 4% limit change? | On `lcb` neither matters (under 5% at any limit). On `lcb-swe` together they take the router from 4-5% to 18-24% at epsilon 0.04-0.05 with accuracy above gpt-5's, but that pool's gain rests on gpt-5's formatting failures on SWE-bench. Raising epsilon from 0.02 to 0.04 alone moves the router by 2-4 points. |
 
 ## How the findings fit together
 
@@ -73,7 +74,9 @@ outputs, prompts and embeddings are not (see "Where the data is").
 ## Open decisions
 
 Two findings from the `lcb-swe` Avengers-Pro run question parts of the Gacrux
-definition in AGENTS.md. They need a team decision; nothing in the code has changed.
+definition in AGENTS.md. Both now exist as opt-in options (`tine run --rule relative`,
+`--loss net`) and are measured in [router-rules](2026-11-11-router-rules/README.md).
+Whether either becomes the default is still a team decision.
 
 1. **The routing rule.** "Cheapest model whose predicted success is at least tau,
    else the frontier" cannot leave the frontier on hard tasks, where no model's

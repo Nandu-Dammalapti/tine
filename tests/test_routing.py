@@ -185,3 +185,19 @@ def test_frontier_and_duplicate_validation():
         Router("absent").fit(outcomes("train"), outcomes("score"))
     with pytest.raises(ValueError, match="Duplicate"):
         Router("frontier").fit(pd.concat([outcomes("train"), outcomes("train")]), outcomes("score"))
+
+
+def test_relative_scores_compare_each_model_with_the_frontier():
+    from tine.routing import relative_scores
+    scores = np.array([[0.9, 0.5, 0.9], [0.3, 0.1, 0.2], [0.0, 1.0, 1.0]])
+    relative = relative_scores(scores, 2)
+    assert np.allclose(relative, [[0.5, 0.3, 0.5], [0.55, 0.45, 0.5], [0.0, 0.5, 0.5]])
+    costs = np.tile([1.0, 2.0, 10.0], (3, 1))
+    # Hard task (row 1): no model is likely to succeed, so the absolute rule stays on the
+    # frontier; the relative rule sees model 0 is likelier than the frontier.
+    assert route_indices(scores, costs, 0.5, 2).tolist() == [0, 2, 1]
+    assert route_indices(relative, costs, 0.5, 2).tolist() == [0, 0, 1]
+    assert route_indices(relative, costs, 0.6, 2).tolist() == [2, 2, 2]
+    for bad in [(scores * 2, 2), (scores, 5), (scores, True), (scores[0], 0)]:
+        with pytest.raises(ValueError):
+            relative_scores(*bad)

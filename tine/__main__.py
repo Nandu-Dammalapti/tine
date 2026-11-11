@@ -20,6 +20,10 @@ def main(argv=None):
             run.add_argument("--input", type=Path, required=True)
             run.add_argument("--frontier", required=True, help="Predeclared frontier baseline, not selected on test labels")
             run.add_argument("--embeddings", type=Path)
+            run.add_argument("--rule", choices=("absolute", "relative"), default="absolute",
+                             help="relative: compare each model with the frontier's own predicted success")
+            run.add_argument("--loss", choices=("degradation", "net"), default="degradation",
+                             help="net: bound overall accuracy loss, letting gains offset losses")
         else:
             run.add_argument("--tasks", type=int, default=2000)
     importer = commands.add_parser("import-llmrouterbench", help="Convert extracted upstream result JSON")
@@ -92,7 +96,9 @@ def main(argv=None):
         summary = run_experiment(frame, frontier, args.output, epsilon=args.epsilon,
                                  delta=args.delta, seed=args.seed,
                                  embeddings=getattr(args, "embeddings", None),
-                                 synthetic=args.command == "demo", latency_samples=args.latency_samples)
+                                 synthetic=args.command == "demo", latency_samples=args.latency_samples,
+                                 rule=getattr(args, "rule", "absolute"),
+                                 loss=getattr(args, "loss", "degradation"))
         print(json.dumps(summary, indent=2, allow_nan=False))
         print(f"Report: {args.output / 'report.md'}")
     elif args.command == "import-llmrouterbench":

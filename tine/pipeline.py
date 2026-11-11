@@ -27,7 +27,8 @@ import pandas as pd
 from tine.calibration import calibrate, evaluate, minimum_risk_tasks
 from tine.artifacts import experiment_output
 from tine.data import outcome_json_lines, validate_outcomes, write_outcomes
-from tine.routing import METHODS, Router, route_indices
+from tine.calibration import LOSSES
+from tine.routing import METHODS, RULES, Router, relative_scores, route_indices
 from tine.latency import LATENCY_SCOPE, benchmark_routing
 
 SPLITS = ("train", "score_calibration", "risk_calibration", "test")
@@ -188,9 +189,16 @@ def _json(value):
 
 
 def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42,
-                   embeddings=None, thresholds=None, synthetic=False, latency_samples=0):
+                   embeddings=None, thresholds=None, synthetic=False, latency_samples=0,
+                   rule="absolute", loss="degradation"):
     if isinstance(latency_samples, bool) or not isinstance(latency_samples, int) or latency_samples < 0:
         raise ValueError("latency_samples must be a nonnegative integer")
+    if rule not in RULES:
+        raise ValueError(f"rule must be one of {RULES}")
+    if loss not in LOSSES:
+        raise ValueError(f"loss must be one of {LOSSES}")
+    if rule != "absolute" and latency_samples:
+        raise ValueError("Latency sampling supports the absolute rule only")
     frame = validate_outcomes(frame)
     save_synthetic_outcomes = synthetic
     synthetic = bool(synthetic or any(
@@ -202,11 +210,13 @@ def run_experiment(frame, frontier, output, *, epsilon=0.02, delta=0.05, seed=42
             write_outcomes(frame, staged / "synthetic-outcomes.jsonl")
         return _run_experiment(frame, frontier, staged, epsilon=epsilon, delta=delta,
                                seed=seed, embeddings=embeddings, thresholds=thresholds,
-                               synthetic=synthetic, latency_samples=latency_samples)
+                               synthetic=synthetic, latency_samples=latency_samples,
+                               rule=rule, loss=loss)
 
 
 def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
-                    embeddings, thresholds, synthetic, latency_samples):
+                    embeddings, thresholds, synthetic, latency_samples,
+                    rule="absolute", loss="degradation"):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     thresholds = DEFAULT_THRESHOLDS if thresholds is None else list(thresholds)
@@ -253,6 +263,10 @@ def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
             started = time.perf_counter()
             test_scores = router.predict_scores(test_tasks, method=method)
             method_timings[method] = (time.perf_counter() - started) / len(test_tasks) * 1000
+            if rule == "relative":
+                # Compare each model with the frontier's own predicted success.
+                risk_scores = relative_scores(risk_scores, frontier_index)
+                test_scores = relative_scores(test_scores, frontier_index)
             chosen = np.full(len(test_tasks), frontier_index)
             policies = {}
             for task_type in sorted(tenant_tasks.task_type.unique()):
@@ -260,7 +274,7 @@ def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
                 test_mask = (test_tasks.task_type == task_type).to_numpy()
                 result = calibrate(risk_scores[risk_mask], risk_costs[risk_mask],
                                    risk_outcomes[risk_mask], frontier_index,
-                                   thresholds, epsilon, delta, family_size)
+                                   thresholds, epsilon, delta, family_size, loss=loss)
                 calibrations.append({"tenant": tenant, "task_type": task_type,
                                      "method": method, **result})
                 policies[task_type] = result
@@ -304,6 +318,7 @@ def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
         provenance.update(line.encode("utf-8"))
     summary = {"schema_version": 1, "synthetic": synthetic, "seed": seed,
                "frontier": frontier, "epsilon": epsilon, "delta": delta,
+               "rule": rule, "loss": loss,
                "feature_source": "supplied_embeddings" if lookup else "train_only_tfidf",
                "embedding_sha256": embedding_sha256,
                "embedding_fingerprint_format": "tine-embedding-features-v1" if lookup else None,
@@ -342,7 +357,11 @@ def _run_experiment(frame, frontier, output, *, epsilon, delta, seed,
     _plot(output, all_metrics, synthetic, curve_frame)
     report = ["# Tine offline report", "", "Contains SYNTHETIC outcomes — not benchmark evidence." if synthetic else "Existing graded outcomes; held-out test split.", "",
               f"Complete tasks: {len(tasks)}. Excluded incomplete/pending tasks: {len(excluded)}.",
-              f"Frontier: `{frontier}`. Epsilon: {epsilon}. Delta: {delta}.", "",
+              f"Frontier: `{frontier}`. Epsilon: {epsilon}. Delta: {delta}. Rule: {rule}. Loss: {loss}.", "",
+              *((["Relative rule: a model is eligible when its predicted success, compared with the frontier's own, clears the threshold (0.5 = as likely as the frontier).", ""]
+                 if rule == "relative" else [])
+                + (["Net loss: the guarantee bounds overall accuracy loss against the frontier (degradations minus gains). Individual tasks the frontier solves may be lost.", ""]
+                   if loss == "net" else [])),
               "See metrics.csv, calibration.json, decisions.csv, and cost-quality.png.", "",
               "Calibration bounds the event 'frontier succeeded and routed answer failed' per tenant/task type, testing thresholds in a fixed sequence from cautious to aggressive (stopping at the first failure) and with a Bonferroni correction across all methods/groups. It requires independently sampled (IID), representative tasks within each group and independent training/calibration/test splits. Exact duplicate prompts are deduplicated by a label-independent task ID ordering; semantic duplicates and upstream contamination require a separate audit.", "",
               "Threshold curves use test outcomes for reporting only. Do not select a new policy on this test set. Unknown/missing outcomes are excluded, which may bias results; exclusions are recorded. Costs are recorded per completed task and must include all retries in the source data. No model output was generated by this experiment.", "",

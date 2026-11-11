@@ -260,3 +260,18 @@ def test_invalid_latency_count_cannot_replace_existing_output(tmp_path, samples)
     with pytest.raises(ValueError, match="latency_samples"):
         run_experiment(synthetic_fixture(20), "frontier", output, latency_samples=samples)
     assert (output / "report.md").read_text() == "previous results"
+
+
+def test_relative_rule_and_net_loss_are_recorded_and_validated(tmp_path):
+    frame = synthetic_fixture(n_tasks=400, seed=3)
+    summary = run_experiment(frame, "frontier", tmp_path / "run", rule="relative", loss="net")
+    assert summary["rule"] == "relative" and summary["loss"] == "net"
+    calibration = json.loads((tmp_path / "run" / "calibration.json").read_text())
+    assert all(item["loss"].startswith("net_accuracy_loss") and "gains" in item for item in calibration)
+    report = (tmp_path / "run" / "report.md").read_text()
+    assert "Rule: relative. Loss: net." in report and "Relative rule" in report and "Net loss" in report
+    default = run_experiment(frame, "frontier", tmp_path / "default")
+    assert default["rule"] == "absolute" and default["loss"] == "degradation"
+    for bad in [{"rule": "best"}, {"loss": "gross"}, {"rule": "relative", "latency_samples": 5}]:
+        with pytest.raises(ValueError):
+            run_experiment(frame, "frontier", tmp_path / "bad", **bad)

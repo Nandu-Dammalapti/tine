@@ -184,3 +184,44 @@ def test_fixed_sequence_failure_rate_stays_below_delta():
         if result["tau"] is not None and fail_rate * (1 - result["tau"]) > epsilon:
             violations += 1
     assert violations / trials <= delta + 0.03
+
+
+def _policy_outcomes(n, degraded, gained):
+    """Two models (cheap, frontier). The cheap model always scores 1.0, so every
+    threshold routes to it: it loses ``degraded`` tasks and gains ``gained``."""
+    outcomes = np.ones((n, 2), dtype=bool)
+    outcomes[:degraded, 0] = False                          # frontier right, cheap wrong
+    outcomes[degraded:degraded + gained, 1] = False         # frontier wrong, cheap right
+    return np.ones((n, 2)), np.tile([1.0, 10.0], (n, 1)), outcomes
+
+
+def test_net_loss_accepts_a_policy_that_gains_more_than_it_loses():
+    from tine.calibration import clopper_pearson_lower
+    assert clopper_pearson_lower(0, 100, 0.05) == 0 and clopper_pearson_lower(0, 0, 0.05) == 0
+    assert 0.05 < clopper_pearson_lower(100, 1000, 0.025) < 0.1 < clopper_pearson_upper(100, 1000, 0.025)
+    scores, costs, outcomes = _policy_outcomes(1000, degraded=50, gained=100)
+    strict = calibrate(scores, costs, outcomes, 1, [1.0], epsilon=0.02, delta=0.05)
+    assert strict["force_frontier"] and strict["loss"] == "frontier_success_and_selected_failure"
+    net = calibrate(scores, costs, outcomes, 1, [1.0], epsilon=0.02, delta=0.05, loss="net")
+    assert not net["force_frontier"] and net["tau"] == 1.0
+    assert (net["degradations"], net["gains"]) == (50, 100) and net["upper_bound"] < 0
+    assert net["loss"].startswith("net_accuracy_loss")
+    # Losses that gains do not cover still fail.
+    scores, costs, outcomes = _policy_outcomes(1000, degraded=60, gained=20)
+    assert calibrate(scores, costs, outcomes, 1, [1.0], epsilon=0.02, delta=0.05, loss="net")["force_frontier"]
+    with pytest.raises(ValueError, match="loss"):
+        calibrate(scores, costs, outcomes, 1, [1.0], loss="gross")
+
+
+def test_net_loss_bound_rarely_certifies_an_unsafe_policy():
+    rng = np.random.default_rng(3)
+    certified, trials, n = 0, 400, 500
+    for _ in range(trials):
+        draw = rng.random(n)
+        outcomes = np.ones((n, 2), dtype=bool)
+        outcomes[draw < 0.06, 0] = False                       # true degradation rate 6%
+        outcomes[(draw >= 0.06) & (draw < 0.09), 1] = False    # true gain rate 3%: net loss 3% > epsilon
+        result = calibrate(np.ones((n, 2)), np.tile([1.0, 10.0], (n, 1)), outcomes, 1, [1.0],
+                           epsilon=0.02, delta=0.05, loss="net")
+        certified += not result["force_frontier"]
+    assert certified / trials <= 0.05

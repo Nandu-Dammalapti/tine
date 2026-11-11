@@ -1,7 +1,12 @@
 """Held-out routing calibration with a simultaneous conservative risk bound.
 
 The measured Bernoulli event is ``frontier succeeded AND chosen model failed``.
-Its probability upper-bounds net accuracy loss against the frontier.
+Its probability upper-bounds net accuracy loss against the frontier. It counts
+only losses, so it rejects a policy that loses a few tasks and gains more. The
+optional ``loss="net"`` bounds net accuracy loss itself: an upper bound on the
+loss rate minus a lower bound on the rate of ``frontier failed AND chosen model
+succeeded``, each at half the error level. That is a weaker promise: individual
+tasks may regress as long as accuracy overall does not fall by more than epsilon.
 
 Thresholds are tested by fixed-sequence testing (Learn-then-Test, Angelopoulos
 et al. 2021): from the most cautious threshold to the most aggressive, each is
@@ -62,6 +67,22 @@ def clopper_pearson_upper(k: int, n: int, alpha: float) -> float:
     return float(beta.isf(alpha, k + 1, n - k))
 
 
+def clopper_pearson_lower(k: int, n: int, alpha: float) -> float:
+    """Exact one-sided binomial lower bound with confidence ``1 - alpha``.
+    No observations, or no events, give 0.0."""
+    n = _integer(n, "n")
+    k = _integer(k, "k")
+    alpha = _probability(alpha, "alpha", open_interval=True)
+    if k > n:
+        raise ValueError("k cannot exceed n")
+    if n == 0 or k == 0:
+        return 0.0
+    return float(beta.ppf(alpha, k, n - k + 1))
+
+
+LOSSES = ("degradation", "net")
+
+
 def minimum_risk_tasks(epsilon: float, delta: float, comparisons: int) -> int | None:
     """Smallest nonempty calibration set that can pass with zero degradations.
 
@@ -106,6 +127,7 @@ def calibrate(
     epsilon: float = 0.02,
     delta: float = 0.05,
     family_size: int = 1,
+    loss: str = "degradation",
 ) -> dict:
     """Pick the lowest certified threshold, or force the frontier explicitly.
 
@@ -121,7 +143,14 @@ def calibrate(
     The conservative degradation bound can certify an expected accuracy loss
     at most epsilon under the stated sampling assumptions. It does not certify
     every individual request or validate calibration under distribution shift.
+
+    ``loss="net"`` certifies net accuracy loss instead: the upper bound on the
+    degradation rate minus the lower bound on the gain rate (frontier failed,
+    selected model succeeded), each at half of the corrected level, must be at most
+    epsilon. The policy may then lose individual tasks the frontier solves.
     """
+    if loss not in LOSSES:
+        raise ValueError(f"loss must be one of {LOSSES}")
     epsilon = _probability(epsilon, "epsilon")
     delta = _probability(delta, "delta", open_interval=True)
     family_size = _integer(family_size, "family_size", minimum=1)
@@ -156,7 +185,10 @@ def calibrate(
         "corrected_alpha": alpha,
         "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); "
                  "Bonferroni across groups and methods",
-        "loss": "frontier_success_and_selected_failure",
+        "loss": ("frontier_success_and_selected_failure" if loss == "degradation"
+                 else "net_accuracy_loss: degradation upper bound minus gain lower bound, "
+                      "each at half the corrected level"),
+        "gains": 0,
         "reason": "empty_calibration" if not n else "no_certified_threshold",
         "candidates": [],
     }
@@ -170,12 +202,18 @@ def calibrate(
     for tau in grid:
         selected = route_indices(scores, estimated_costs, tau, frontier_index)
         degradations = int(np.count_nonzero(outcomes[:, frontier_index] & ~outcomes[rows, selected]))
-        upper = clopper_pearson_upper(degradations, n, alpha)
+        gains = int(np.count_nonzero(~outcomes[:, frontier_index] & outcomes[rows, selected]))
+        if loss == "degradation":
+            upper = clopper_pearson_upper(degradations, n, alpha)
+        else:
+            upper = (clopper_pearson_upper(degradations, n, alpha / 2)
+                     - clopper_pearson_lower(gains, n, alpha / 2))
         passed = still_testing and upper <= epsilon
         result["candidates"].append(
             {
                 "tau": tau,
                 "degradations": degradations,
+                "gains": gains,
                 "upper_bound": upper,
                 "nonfrontier_count": int(np.count_nonzero(selected != frontier_index)),
                 "tested": still_testing,
@@ -190,6 +228,7 @@ def calibrate(
                 tau=tau,
                 force_frontier=False,
                 degradations=degradations,
+                gains=gains,
                 upper_bound=upper,
                 reason="certified_threshold",
             )
