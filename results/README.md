@@ -1,5 +1,8 @@
 # Results index
 
+**Where we stand in one page:** [SCOREBOARD.md](SCOREBOARD.md) compares Gacrux with
+OpenRouter, Avengers-Pro and always using gpt-5.
+
 Start here. Each folder below has its own README with setup, tables, limits and the
 commands that regenerate it. This page says what each experiment asked, what it
 found, and how the findings fit together. Update it whenever a results folder is
