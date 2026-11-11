@@ -72,7 +72,7 @@ right more often than gpt-5 is overall, and they gain more tasks than they lose.
 - A chain of two groups that share a member is charged for that member twice, so
   savings for multi-group chains are slightly understated.
 - Latency: two or three calls in parallel, then a frontier call when they disagree
-  (14-31% of tasks at epsilon 0.02-0.04).
+  (11-31% of tasks for the certified picks at epsilon 0.02-0.04).
 - Benchmark runs, not customer traffic.
 
 ## Next
