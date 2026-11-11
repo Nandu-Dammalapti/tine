@@ -137,6 +137,7 @@ def embed_tasks(
     cache_dir: str | None = None,
     encoder: Any = None,
     prompt_view: str = "full",
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Encode batches with atomic checkpoints; injectable encoder enables CPU tests.
 
@@ -175,6 +176,11 @@ def embed_tasks(
         metadata["prompt_handling"] = (
             f"Full prompt hashed; {prompt_view} view encoded and truncated at max_seq_length tokens")
         metadata["prompt_view"] = prompt_view
+    if extra_metadata:
+        # Recorded with the output and checked on resume, e.g. which layer was read.
+        if set(extra_metadata) & set(metadata):
+            raise ValueError("extra_metadata cannot replace built-in metadata")
+        metadata.update(extra_metadata)
 
     manifest_path = checkpoint_dir / "manifest.json"
     if manifest_path.exists():
