@@ -17,6 +17,7 @@ Predictor-gated escalation chains: [results/2026-11-10-gated-chains](results/202
 Index of all results: [results/README.md](results/README.md). Outside research: [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md).
 Avengers-Pro head-to-head: [results/2026-11-10-avengers-pro](results/2026-11-10-avengers-pro/README.md) and [docs/AVENGERS_PRO.md](docs/AVENGERS_PRO.md).
 Static patch checks on SWE-bench: [results/2026-11-10-swe-static-checks](results/2026-11-10-swe-static-checks/README.md).
+Judge check pilot: [results/2026-11-11-judge-pilot](results/2026-11-11-judge-pilot/README.md) and [docs/JUDGE.md](docs/JUDGE.md).
 Response check for escalation chains: [results/2026-11-10-response-check](results/2026-11-10-response-check/README.md).
 
 ## Setup

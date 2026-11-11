@@ -1,0 +1,11 @@
+{
+  "judge": "claude-session",
+  "cases": 150,
+  "batches": 15,
+  "cases_per_batch": 10,
+  "measured_subagent_tokens_per_batch": [102019, 103048, 101005, 98611, 99294, 98422, 98274, 95524, 97739, 97566, 96555, 99847, 101083, 101453, 102926],
+  "measured_subagent_tokens_total": 1493366,
+  "measured_subagent_tokens_per_case": 9956,
+  "estimated_text_tokens_per_case": {"prompt": 707, "completion": 46},
+  "note": "Measured tokens are the sub-agents' whole usage: their own system prompt and tool definitions on each of about four steps, the batch, reasoning and output. Estimated text tokens are characters / 4 of the judge instructions plus one case, and of one verdict; they exclude reasoning."
+}

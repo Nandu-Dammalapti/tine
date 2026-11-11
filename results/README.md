@@ -40,6 +40,7 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-10 | [response-check](2026-11-10-response-check/README.md) | Does the size of the response say whether the answer is right? | Yes for coding: held-out AUC 0.76-0.99 per model. With per-model sample rates it certifies 6.2% at epsilon 0.02 and 31.8% at 0.05 on `lcb`; with no other check 3.6% and 14.3%. Weaker on multiple choice (MMLU-Pro: 3.4% and 19.4%). |
 | 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. On `lcb-swe` it beats gpt-5's accuracy at about 40% lower cost, because gpt-5 is weak on SWE-bench in this benchmark (15.8% against 34.6% for the best models), yet its degradation rate never drops below 3.9%. Run with both the 0.6B encoder and the paper's 8B encoder, with the same conclusions. |
 | 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). On Linux, static checks catch 58% of wrong answers. A partial run of the repositories' own tests (135 django tasks, on Colab) raises that to 65%: most wrong patches break nothing and simply do not fix the issue. |
+| 2026-11-11 | [judge-pilot](2026-11-11-judge-pilot/README.md) | Can a judge that reads only the issue and the patch reject the wrong patches that pass every free check? | In a 150-case pilot with a Claude Code session as judge: it rejects 82% of them by the benchmark's grades and 95% by our own test run's, and rejects 1-2% of right patches. With the free checks that is a 94-98% catch rate on django. A ceiling, not a baseline: the judge is unpinned and may know these public issues. |
 
 ## How the findings fit together
 
@@ -58,7 +59,11 @@ outputs, prompts and embeddings are not (see "Where the data is").
 6. Two cheap checks are measured so far. Public sample tests (catch 38-74% for the
    useful models) and response size (AUC 0.76-0.99). Together they are the best
    result to date, but their combination is simulated as independent, not measured.
-7. At epsilon 0.02 the number of certification tasks limits the result as much as
+7. A judge that reads the issue and the patch (Gacrux stage 4, applied after the
+   answer) is the first check to reach the catch rate chains need, in a pilot with a
+   frontier-class judge. Whether a small local judge keeps that, and what it costs,
+   is open.
+8. At epsilon 0.02 the number of certification tasks limits the result as much as
    the check does: with about 420 tasks a policy may show at most 3 degradations.
 
 ## Open decisions
@@ -87,9 +92,9 @@ definition in AGENTS.md. They need a team decision; nothing in the code has chan
 
 - Finish the SWE-bench repository-test run (137 of 303 tasks done, django only) and
   certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
-- A check aimed at the change itself (model-written tests for the issue, or a judge
-  model). Existing tests plus static checks catch about two thirds of wrong patches
-  on django; chains need about 95%.
+- The judge check with a small open model on local hardware, on the same 150 cases
+  ([docs/JUDGE.md](../docs/JUDGE.md)), then on every accepted patch once the Colab
+  run is complete, with the judge's tokens netted from savings.
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.
