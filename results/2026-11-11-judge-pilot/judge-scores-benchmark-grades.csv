@@ -1,0 +1,5 @@
+judge,threshold,cases,right,wrong,right_rejected,wrong_rejected,catch_rate,false_reject_rate,accepted_share,accuracy_when_accepted,unparsed,mean_prompt_tokens,mean_completion_tokens,tokens_estimated,mean_seconds
+claude-session,verdict,150,76,74,1,61,0.8243,0.0132,0.5867,0.8523,0,706.7,45.9,True,
+claude-session,0.5,150,76,74,1,61,0.8243,0.0132,0.5867,0.8523,0,706.7,45.9,True,
+claude-session,0.7,150,76,74,2,61,0.8243,0.0263,0.58,0.8506,0,706.7,45.9,True,
+claude-session,0.9,150,76,74,15,65,0.8784,0.1974,0.4667,0.8714,0,706.7,45.9,True,
