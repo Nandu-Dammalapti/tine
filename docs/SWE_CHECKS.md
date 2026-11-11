@@ -99,8 +99,9 @@ Open `notebooks/tine_colab_swe_repo_tests.ipynb` on a **CPU** runtime and run al
 cells. It needs the Drive folder from the first notebook (`MyDrive/tine`), or it
 downloads the benchmark archive again. Cell 5 is a smoke test on six reference
 patches: stop if any row is not `ok` / `resolved=True` and report the output. Cell 6
-is the long run (default eight models, ten hours, resumable). Cell 7 prints the
-summary to copy back.
+is the long run (default eight models, ten hours). It saves after every patch, so it
+can be done in short sessions: on a fresh runtime rerun cells 1-4, lower `MAX_HOURS`
+if needed, and run cell 6 again. Cell 7 prints the summary.
 
 The first smoke test (2026-11-10) validated 5 of 6 reference patches. The sixth,
 `django__django-10097`, needs a Python 3.5 environment whose dependencies no longer
