@@ -49,6 +49,15 @@ def _nonnegative(value: Any, name: str) -> None:
         raise ValueError(f"{name} must be finite and nonnegative or None")
 
 
+def _cost_sum(values) -> float | None:
+    """Unrepresentable totals are unknown, never Infinity in the API response."""
+    try:
+        total = math.fsum(values)
+    except OverflowError:
+        return None
+    return total if math.isfinite(total) else None
+
+
 class Ledger:
     """A single local DB can contain tenants; every read/update requires one."""
 
@@ -84,6 +93,7 @@ class Ledger:
                     output_tokens INTEGER,
                     cached_tokens INTEGER,
                     cost_usd REAL,
+                    routing_cost_usd REAL,
                     baseline_cost_usd REAL,
                     latency_ms REAL,
                     outcome_updated_at TEXT,
@@ -106,6 +116,9 @@ class Ledger:
                 )
             if "outcome_sequence" not in columns:
                 self._db.execute("ALTER TABLE requests ADD COLUMN outcome_sequence INTEGER NOT NULL DEFAULT 0")
+            if "routing_cost_usd" not in columns:
+                # Older records never measured routing overhead. Do not invent zero.
+                self._db.execute("ALTER TABLE requests ADD COLUMN routing_cost_usd REAL")
             self._db.execute(
                 "CREATE TABLE IF NOT EXISTS ledger_state "
                 "(id INTEGER PRIMARY KEY CHECK(id=1), outcome_sequence INTEGER NOT NULL)"
@@ -145,6 +158,7 @@ class Ledger:
         output_tokens: int | None = None,
         cached_tokens: int | None = None,
         cost_usd: float | None = None,
+        routing_cost_usd: float | None = None,
         baseline_cost_usd: float | None = None,
         latency_ms: float | None = None,
     ) -> str:
@@ -154,6 +168,7 @@ class Ledger:
             raise ValueError("success must be bool or None")
         for name, value in (
             ("cost_usd", cost_usd),
+            ("routing_cost_usd", routing_cost_usd),
             ("baseline_cost_usd", baseline_cost_usd),
             ("latency_ms", latency_ms),
         ):
@@ -191,6 +206,7 @@ class Ledger:
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
             "cost_usd": cost_usd,
+            "routing_cost_usd": routing_cost_usd,
             "baseline_cost_usd": baseline_cost_usd,
             "latency_ms": latency_ms,
             "outcome_updated_at": now if success is not None else None,
@@ -233,6 +249,7 @@ class Ledger:
         success: bool,
         *,
         cost_usd: Any = _UNSET,
+        routing_cost_usd: Any = _UNSET,
         baseline_cost_usd: Any = _UNSET,
     ) -> bool:
         """Apply a caller-supplied outcome and optional measured costs later."""
@@ -242,6 +259,7 @@ class Ledger:
         values: list[Any] = [int(success), datetime.now(timezone.utc).isoformat()]
         for name, value in (
             ("cost_usd", cost_usd),
+            ("routing_cost_usd", routing_cost_usd),
             ("baseline_cost_usd", baseline_cost_usd),
         ):
             if value is not _UNSET:
@@ -297,7 +315,7 @@ class Ledger:
         """Report known ledger amounts, never extrapolate missing costs."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT success,cost_usd,baseline_cost_usd,cached_from "
+                "SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from "
                 "FROM requests WHERE tenant=?",
                 (tenant,),
             ).fetchall()
@@ -306,14 +324,31 @@ class Ledger:
             for row in rows
             if row["success"] == 1
             and row["cost_usd"] is not None
+            and row["routing_cost_usd"] is not None
             and row["baseline_cost_usd"] is not None
         ]
-        verified_cost = sum(row["cost_usd"] for row in comparable)
-        verified_baseline = sum(row["baseline_cost_usd"] for row in comparable)
-        known_cost = sum(
+        cost_columns = ("cost_usd", "routing_cost_usd")
+        verified_answer_cost = _cost_sum(row["cost_usd"] for row in comparable)
+        verified_routing_cost = _cost_sum(row["routing_cost_usd"] for row in comparable)
+        verified_cost = _cost_sum(row[column] for row in comparable for column in cost_columns)
+        verified_baseline = _cost_sum(row["baseline_cost_usd"] for row in comparable)
+        known_answer_cost = _cost_sum(
             row["cost_usd"] for row in rows if row["cost_usd"] is not None
         )
+        known_routing_cost = _cost_sum(
+            row["routing_cost_usd"] for row in rows if row["routing_cost_usd"] is not None
+        )
+        known_cost = _cost_sum(row[column] for row in rows for column in cost_columns if row[column] is not None)
+        unknown_answer = sum(row["cost_usd"] is None for row in rows)
+        unknown_routing = sum(row["routing_cost_usd"] is None for row in rows)
+        unknown_cost = sum(row["cost_usd"] is None or row["routing_cost_usd"] is None for row in rows)
         successes = sum(row["success"] == 1 for row in rows)
+        savings = fraction = None
+        if comparable and verified_baseline is not None and verified_cost is not None:
+            savings = verified_baseline - verified_cost
+            if verified_baseline > 0:
+                value = 1 - verified_cost / verified_baseline
+                fraction = value if math.isfinite(value) else None
         return {
             "tenant": tenant,
             "requests": len(rows),
@@ -321,21 +356,30 @@ class Ledger:
             "failures": sum(row["success"] == 0 for row in rows),
             "pending_outcomes": sum(row["success"] is None for row in rows),
             "cache_hits": sum(row["cached_from"] is not None for row in rows),
+            "known_answer_cost_total_usd": known_answer_cost,
+            "known_routing_cost_total_usd": known_routing_cost,
             "known_cost_total_usd": known_cost,
             "known_cost_per_verified_success_usd": (
-                known_cost / successes if successes else None
+                known_cost / successes if successes and not unknown_cost and known_cost is not None else None
             ),
-            "unknown_cost_requests": sum(row["cost_usd"] is None for row in rows),
+            "unknown_cost_requests": unknown_cost,
+            "unknown_answer_cost_requests": unknown_answer,
+            "unknown_routing_cost_requests": unknown_routing,
             "comparable_verified_requests": len(comparable),
+            "verified_answer_cost_usd": verified_answer_cost,
+            "verified_routing_cost_usd": verified_routing_cost,
             "verified_cost_usd": verified_cost,
             "verified_baseline_cost_usd": verified_baseline,
-            "verified_savings_usd": verified_baseline - verified_cost,
-            "savings_fraction": (
-                1 - verified_cost / verified_baseline if verified_baseline > 0 else None
-            ),
+            "verified_savings_usd": savings,
+            "savings_fraction": fraction,
             "scope": "development ledger; outcomes and baseline costs are caller-attested",
+            "cost_scope": (
+                "answer generation plus routing/checking costs; known totals sum only measured "
+                "components and are incomplete when unknown_cost_requests is nonzero"
+            ),
             "savings_scope": (
-                "comparable successful requests only; failed and pending requests "
+                "net of routing costs on successful requests with known answer, routing, and baseline costs only; "
+                "failed, pending, and incompletely costed requests "
                 "are excluded from this subtotal, so it is not a billing amount"
             ),
         }
