@@ -130,6 +130,7 @@ class OutcomeUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: StrictBool
     cost_usd: StrictFloat | None = Field(default=None, ge=0, allow_inf_nan=False)
+    routing_cost_usd: StrictFloat | None = Field(default=None, ge=0, allow_inf_nan=False)
     baseline_cost_usd: StrictFloat | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 

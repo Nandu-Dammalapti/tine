@@ -116,3 +116,5 @@ The optional fixed-embedding stage pins a small sentence encoder, checks 50 prom
 ## Development proxy
 
 See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, and cache isolation are tested with mocked providers. SQLite is a local development backend. Learned live routing, production Postgres, real provider validation, shadow jobs, nightly retraining, a calibrated deployment process, and model generation/distillation remain future work; none is claimed by the offline report.
+
+The ledger records answer-generation and routing/checking costs separately. Verified savings subtract both; requests with unknown routing costs are excluded from that comparison. Supply measured `routing_cost_usd` through the outcome endpoint, including for cache hits. Existing records retain unknown routing costs after migration.
