@@ -38,6 +38,21 @@ Below are a GitHub issue from the {repository} repository and a patch that claim
 
 Reply with one JSON object and nothing else:
 {{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
+# A second style for smaller models, which tend to accept everything when asked for a
+# bare verdict: make the reviewer work through the change before deciding.
+THINK_INSTRUCTIONS = """You are a strict code reviewer deciding whether a proposed change may be merged.
+
+Below are a GitHub issue from the {repository} repository and a patch that claims to resolve it. The patch applies cleanly and does not break the project's existing tests, but about half of patches like this do NOT actually fix the issue. You cannot run code.
+
+Work through these steps in a few sentences each:
+1. What exactly must change for the issue to be resolved?
+2. What does the patch change, and where?
+3. Name the most likely way this patch fails: a case from the issue it does not handle, the wrong location, or behaviour that differs from what the issue asks for.
+4. Decide. Accept only if you found no real problem in step 3.
+
+End your reply with one JSON object on its own line:
+{{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
+STYLES = {"verdict": None, "think": THINK_INSTRUCTIONS}
 CASE_TEMPLATE = "<issue>\n{issue}\n</issue>\n\n<patch>\n{patch}\n</patch>"
 MAX_ISSUE_CHARS = 12000
 MAX_PATCH_CHARS = 20000
@@ -49,8 +64,11 @@ def case_text(case: dict) -> str:
     return CASE_TEMPLATE.format(issue=case["issue"][:MAX_ISSUE_CHARS], patch=case["patch"][:MAX_PATCH_CHARS])
 
 
-def build_messages(case: dict) -> list[dict]:
-    return [{"role": "system", "content": INSTRUCTIONS.format(repository=case["repository"])},
+def build_messages(case: dict, style: str = "verdict") -> list[dict]:
+    if style not in STYLES:
+        raise ValueError(f"style must be one of {sorted(STYLES)}")
+    instructions = STYLES[style] or INSTRUCTIONS
+    return [{"role": "system", "content": instructions.format(repository=case["repository"])},
             {"role": "user", "content": case_text(case)}]
 
 
@@ -147,7 +165,8 @@ def append_verdict(output: Path, row: dict) -> None:
 
 
 def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_name: str | None = None,
-          api_key: str | None = None, max_tokens: int = 400, timeout: float = 300, client=None) -> dict:
+          api_key: str | None = None, max_tokens: int = 400, timeout: float = 300, client=None,
+          style: str = "verdict") -> dict:
     """One request per case to an OpenAI-compatible endpoint. Resumes from ``output``."""
     import httpx
 
@@ -161,7 +180,8 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
             continue
         started = time.time()
         response = client.post(base_url.rstrip("/") + "/chat/completions", headers=headers, json={
-            "model": model, "messages": build_messages(case), "temperature": 0, "max_tokens": max_tokens})
+            "model": model, "messages": build_messages(case, style), "temperature": 0,
+            "max_tokens": max_tokens})
         response.raise_for_status()
         payload = response.json()
         usage = payload.get("usage") or {}
@@ -245,6 +265,9 @@ def main(argv=None) -> None:
     run.add_argument("--judge-name", help="label for this judge in the output (default: the model name)")
     run.add_argument("--api-key-env", help="environment variable holding the API key, if the endpoint needs one")
     run.add_argument("--max-tokens", type=int, default=400)
+    run.add_argument("--style", choices=sorted(STYLES), default="verdict",
+                     help="think: have the reviewer reason through the change before its verdict "
+                          "(use a larger --max-tokens)")
     check = commands.add_parser("score", help="compare verdict files with the key")
     check.add_argument("--key", type=Path, required=True)
     check.add_argument("--verdicts", type=Path, nargs="+", required=True)
@@ -259,7 +282,8 @@ def main(argv=None) -> None:
         if args.api_key_env and not api_key:
             raise SystemExit(f"Environment variable {args.api_key_env} is not set")
         print(json.dumps(judge(args.cases, args.output, base_url=args.base_url, model=args.model,
-                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens)))
+                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens,
+                               style=args.style)))
     else:
         rows = score(args.key, args.verdicts, grade=args.grade)
         if args.output:

@@ -91,8 +91,13 @@ grade; the two disagree on about 6% of patches (see the results folder).
 
 ## Running a local judge on a Mac
 
-No local model runner is installed on the development Mac as of 2026-11-11. With
-Ollama (or any runner exposing `/v1/chat/completions`): install it, start it, pull an
+`--style think` makes the judge reason through the change before its verdict (use
+`--max-tokens 900`). It was added for small models, which accept nearly everything
+when asked for a bare verdict; on the first one tried it only swapped that for
+rejecting nearly everything.
+
+With Ollama (or any runner exposing `/v1/chat/completions`): install it, start it, pull an
 open coding model that fits in memory, and run step 2 against
-`http://127.0.0.1:11434/v1`. Claude Code's sandbox cannot use the Mac's GPU or start
-the runner, so start it yourself; the script only needs the local port.
+`http://localhost:11434/v1`. Claude Code's sandbox cannot use the Mac's GPU or start
+the runner, so start it yourself. From inside the sandbox the request has to go
+through the session's proxy: run with `NO_PROXY= no_proxy=` and the host `localhost`.

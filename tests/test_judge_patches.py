@@ -120,3 +120,12 @@ def test_score_reports_catch_rate_false_rejects_and_token_cost(tmp_path):
     assert rows[0.5]["false_reject_rate"] == 0.0  # r2 is accepted at 0.6 despite its verdict
     other = judge_module.score(key, [verdicts], grade="run_resolved")[0]
     assert (other["right"], other["wrong"]) == (3, 2)
+
+
+def test_think_style_changes_the_instructions_only():
+    case = {"case_id": "c", "repository": "o/r", "issue": "i", "patch": "p"}
+    plain, think = judge_module.build_messages(case), judge_module.build_messages(case, "think")
+    assert plain[1] == think[1] and "strict code reviewer" in think[0]["content"] and "o/r" in think[0]["content"]
+    assert judge_module.parse_verdict('1. ... 4. Decide.\n{"verdict": "reject", "probability": 0.2, "reason": "x"}')["verdict"] == "reject"
+    with pytest.raises(ValueError):
+        judge_module.build_messages(case, "guess")

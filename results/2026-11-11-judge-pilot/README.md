@@ -56,6 +56,34 @@ after the answer.
   ([coding-benchmark](../2026-11-09-coding-benchmark/README.md)). This is a product
   of two measured rates on django, not a certified chain.
 
+## A small local model on the same cases (2026-11-12)
+
+The deployment design calls for a small open model on the customer's hardware, so
+the same 150 cases went to `qwen2.5-coder:14b` (14.8B parameters, 4-bit quantised,
+through Ollama on an M4 Pro MacBook) with `scripts/judge_patches.py judge`, one
+request per case, temperature 0. Graded against our own test run (87 right, 63 wrong):
+
+| judge | wrong patches rejected | right patches rejected | accepted patches that are right | AUC |
+| --- | --- | --- | --- | --- |
+| Claude Code session (ceiling) | 95.2% | 2.3% | 96.6% | 0.99 |
+| qwen2.5-coder:14b, bare verdict (same instructions) | 3.2% | 3.4% | 57.9% | 0.54 |
+| qwen2.5-coder:14b, reason first (`--style think`) | 79.4% | 80.5% | 56.7% | 0.50 |
+
+- **The small model cannot do this task.** Asked for a bare verdict it accepts 97% of
+  patches. Made to reason first it rejects 80% of them, right and wrong alike. In
+  both cases its ranking of right over wrong is at chance.
+- The second style was written after seeing the first result, on the same cases. It
+  did not help, so there is nothing to confirm on fresh cases.
+- Cost was never the obstacle: about 690 prompt and 40 completion tokens and 3.3
+  seconds per case for the bare verdict; 770 and 150 tokens and 10.8 seconds when
+  reasoning first.
+
+So the pilot's result is a property of a strong judge (and possibly of its knowing
+these public issues), not of the judging step. An off-the-shelf small model on
+customer hardware is not a verifier for code. The options are a stronger judge with
+its cost netted from savings, a larger open model, or a small model trained on
+verification outcomes.
+
 ## What the judge costs
 
 `session-judge-usage.json`.
@@ -91,9 +119,8 @@ after the answer.
 
 ## Next
 
-1. Run the same 150 cases through a small open model on local hardware
-   (`judge_patches.py judge`, see docs/JUDGE.md) and compare with these rows. How much
-   of the ceiling does a judge the customer can host keep?
+1. A larger open model on the same cases, and a pinned frontier model through an API
+   with a spending cap, to find the cheapest judge that still separates right from wrong.
 2. Finish the Colab test run (303 tasks), judge every accepted patch, and certify
    chains with `tine cascade --checks`, netting the judge's tokens from the savings.
 3. Test on tasks a model cannot have seen, to size the contamination effect.
