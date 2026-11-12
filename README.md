@@ -92,6 +92,8 @@ The cluster method is an Avengers-style heuristic, **not** a claimed reproductio
 
 Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on existing outcomes. See [measured check evidence](docs/CHECKS.md) for the `--checks` schema, tenant isolation, missing-check behavior, and the limits of simulated check results. Cascade reports publish together and retain synthetic labels; reported costs exclude running the checks.
 
+`python -m tine combine-outcomes` can append fresh outcome files to an existing pool while preserving `source_task_type` and reporting every source. Missing source labels use another recorded label for the same tenant/task, or that row's current task type, before `--task-type` relabels the pool. Conflicting source labels for one task are rejected. Source names such as `NA` remain literal text when reloading CSV files.
+
 ## Prepare original coding tasks
 
 Use the task-only loader when preparing inputs for later model generation and grading. It preserves original splits and check code as text and omits reference solutions. Keep its output separate from graded model outcomes. MBPP here refers to the sanitized subset.
