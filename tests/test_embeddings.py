@@ -105,3 +105,40 @@ def test_issue_view_is_encoded_but_full_prompt_is_hashed(tmp_path):
     with pytest.raises(ValueError, match="prompt_view"):
         embedding.embed_tasks(tasks, tmp_path / "other.npz", revision="a" * 40,
                               encoder=FakeEncoder(), prompt_view="code")
+
+
+def test_extra_metadata_is_recorded_and_checked_on_resume(tmp_path):
+    tasks = embedding.prepare_tasks(synthetic_fixture(n_tasks=3))
+    output = tmp_path / "hidden.npz"
+    metadata = embedding.embed_tasks(tasks, output, revision="a" * 40, encoder=FakeEncoder(),
+                                     extra_metadata={"layer": 21})
+    assert metadata["layer"] == 21
+    with pytest.raises(ValueError, match="mismatch"):
+        embedding.embed_tasks(tasks, output, revision="a" * 40, encoder=FakeEncoder(),
+                              extra_metadata={"layer": 12})
+    with pytest.raises(ValueError, match="built-in"):
+        embedding.embed_tasks(tasks, tmp_path / "x.npz", revision="a" * 40, encoder=FakeEncoder(),
+                              extra_metadata={"model": "other"})
+
+
+def test_hidden_state_script_writes_a_file_the_pipeline_accepts(tmp_path):
+    import json
+    import sys
+    from tine.data import write_outcomes
+    scripts = str(Path(__file__).parents[1] / "scripts")
+    sys.path.insert(0, scripts)
+    try:
+        spec2 = importlib.util.spec_from_file_location("tine_hidden", Path(scripts) / "hidden_states.py")
+        hidden = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(hidden)
+    finally:
+        sys.path.remove(scripts)
+    frame = synthetic_fixture(n_tasks=6)
+    write_outcomes(frame, tmp_path / "outcomes.jsonl")
+    metadata = hidden.main(["--input", str(tmp_path / "outcomes.jsonl"), "--output", str(tmp_path / "h.npz"),
+                            "--layer", "21", "--batch-size", "4"], encoder=FakeEncoder())
+    assert metadata["representation"] == "last_token_hidden_state" and metadata["layer"] == 21
+    assert metadata["model"] == "Qwen/Qwen2.5-7B-Instruct" and metadata["chat_template"] is True
+    assert json.loads((tmp_path / "h.npz.json").read_text())["layer"] == 21
+    tasks = embedding.prepare_tasks(frame)
+    assert len(load_embeddings(tmp_path / "h.npz", tasks)) == 6

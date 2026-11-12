@@ -46,6 +46,8 @@ Lower `tau` routes more traffic to cheaper models, increasing savings and risk. 
 
 Initial planning values are `epsilon = 0.01–0.02` and `delta = 0.05` for coding, and about `epsilon = 0.05` for low-stakes internal work. These are proposed settings, not an established guarantee.
 
+As of 2026-11-11 the team's working quality limit for experiments and reports is `epsilon = 0.04`, with `delta = 0.05`. Report results at 0.04 first and keep 0.02 alongside it for comparison. It remains the customer's choice in a deployment, and the rule above still holds: a result must not be made to look better by quietly moving the limit.
+
 Measure cost per completed task, including retries, output length, and caching. Per-token prices alone are insufficient.
 
 Routing has its own cost, and the customer bears it. Everything Gacrux spends to make or check a decision counts toward cost per completed task: cheaper attempts that are escalated, judge-model calls, test or check runs, embedding calls, and compute for models hosted on customer hardware. These calls run on the customer's own provider accounts and infrastructure, like the rest of the deployment, and appear on the customer's bill. Verified savings are therefore net of routing cost: the always-frontier baseline minus what was spent on answers and on routing. A check or judge that costs as much as it saves is not a saving. Record routing cost per request in the ledger, separately from the cost of the answer that was returned, and never report gross savings without it.

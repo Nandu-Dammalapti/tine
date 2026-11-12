@@ -108,6 +108,30 @@ def route_indices(
     return np.argmin(np.where(eligible, costs, np.inf), axis=1)
 
 
+RULES = ("absolute", "relative")
+
+
+def relative_scores(scores: np.ndarray, frontier_index: int) -> np.ndarray:
+    """Scores for the relative rule: how each model's predicted success compares
+    with the frontier's own, mapped to [0, 1] so the same thresholds and
+    ``route_indices`` apply. 0.5 means "as likely as the frontier"; a model is
+    eligible at threshold tau when its lead over the frontier is at least
+    ``2 * tau - 1``.
+
+    The absolute rule asks "is this model likely to succeed?", which no model
+    satisfies on a hard task, so the request stays on the frontier even where the
+    frontier is the least likely to succeed. The relative rule asks "is it at least
+    as likely as the frontier?".
+    """
+    scores = real_array(scores, "scores")
+    if scores.ndim != 2 or not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
+        raise ValueError("Scores must be a finite task-by-model matrix of probabilities")
+    if isinstance(frontier_index, bool) or not isinstance(frontier_index, (int, np.integer)) \
+            or not 0 <= frontier_index < scores.shape[1]:
+        raise ValueError("frontier_index must be a valid column index")
+    return np.clip(0.5 + (scores - scores[:, [frontier_index]]) / 2, 0.0, 1.0)
+
+
 class Router:
     """One tenant's CPU predictors with separate held-out score calibration.
 

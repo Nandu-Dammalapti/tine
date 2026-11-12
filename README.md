@@ -19,6 +19,7 @@ Avengers-Pro head-to-head: [results/2026-11-10-avengers-pro](results/2026-11-10-
 Static patch checks on SWE-bench: [results/2026-11-10-swe-static-checks](results/2026-11-10-swe-static-checks/README.md).
 Judge check pilot: [results/2026-11-11-judge-pilot](results/2026-11-11-judge-pilot/README.md) and [docs/JUDGE.md](docs/JUDGE.md).
 Agreement check on exact-answer tasks: [results/2026-11-11-agreement-check](results/2026-11-11-agreement-check/README.md).
+Router rule and guarantee options: [results/2026-11-11-router-rules](results/2026-11-11-router-rules/README.md). Architecture status: [docs/ARCHITECTURE_STATUS.md](docs/ARCHITECTURE_STATUS.md).
 Response check for escalation chains: [results/2026-11-10-response-check](results/2026-11-10-response-check/README.md).
 
 ## Setup

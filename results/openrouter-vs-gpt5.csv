@@ -1,0 +1,10 @@
+dataset,split,tasks,openrouter_accuracy,gpt5_accuracy,openrouter_cost_over_gpt5,degradation_rate
+livecodebench,test,1055,0.6114,0.8645,0.2506,0.2682
+simpleqa,test,4326,0.4239,0.479,0.1762,0.2843
+swe-bench,verified,500,0.106,0.158,0.5869,0.11
+hle,test,2158,0.1381,0.2632,0.93,0.1705
+arc-agi,v1,400,0.4875,0.52,0.8532,0.0975
+mmlupro,test_3000,3000,0.8577,0.8737,1.6479,0.0413
+gpqa,test,198,0.7677,0.8485,1.0757,0.1061
+aime,hybrid,60,0.4333,0.8833,1.324,0.4667
+livemathbench,test,121,0.5785,0.7934,2.3754,0.2314
