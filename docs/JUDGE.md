@@ -101,3 +101,12 @@ open coding model that fits in memory, and run step 2 against
 `http://localhost:11434/v1`. Claude Code's sandbox cannot use the Mac's GPU or start
 the runner, so start it yourself. From inside the sandbox the request has to go
 through the session's proxy: run with `NO_PROXY= no_proxy=` and the host `localhost`.
+
+## Running a larger open model on Colab
+
+[`notebooks/tine_colab_judge.ipynb`](../notebooks/tine_colab_judge.ipynb) runs step 2 with
+`qwen2.5-coder:32b` under Ollama on a Colab A100, in both styles, on the 150 pilot cases. Runner,
+prompt and script are the same as the 14B run on the Mac, so the comparison isolates model size. It
+sets a 16k context so no case is cut off, and saves the verdict files and a run record (model
+digest, Ollama version, GPU, repository revision) to `MyDrive/tine/`. The cases file goes on Drive,
+never in the repository. No patch is executed. Score afterwards with step 3.

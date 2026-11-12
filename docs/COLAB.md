@@ -25,6 +25,12 @@ repository's tests on the recorded model patches, on a CPU runtime. **It execute
 use a fresh runtime and delete it afterwards. Read [SWE_CHECKS.md](SWE_CHECKS.md) first. It has not
 been run yet; its first cells are a smoke test for that reason.
 
+## A larger open model as the verifier
+
+[`notebooks/tine_colab_judge.ipynb`](../notebooks/tine_colab_judge.ipynb) needs an **A100** runtime. It
+runs `qwen2.5-coder:32b` with Ollama as the judge on the 150 pilot patches and saves its verdicts to
+Drive. The model reads patches; nothing is executed. See [JUDGE.md](JUDGE.md).
+
 ## Cells and outputs
 
 | Stage | What to run | What it saves |
