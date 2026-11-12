@@ -149,7 +149,11 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
         # numeric parsing for measurements and existing provenance columns.
         source.seek(0)
         text = pd.read_csv(source, dtype=str, keep_default_na=False,
-                           usecols=lambda column: column in _TEXT_COLUMNS)
+                           usecols=lambda column: column in [*_TEXT_COLUMNS, "source_task_type"])
+        if "source_task_type" in text:
+            # Empty optional provenance is unknown; literal names such as NA
+            # are source labels, just like they are valid task types.
+            text["source_task_type"] = text.source_task_type.mask(text.source_task_type.eq(""), None)
         frame[text.columns] = text
     elif path.suffix.lower() in {".jsonl", ".ndjson"}:
         with path.open(encoding="utf-8") as source:
@@ -226,6 +230,16 @@ def combine_outcomes(frames, *, task_type: str | None = None, exclude_models=(),
     combined = pd.concat(frames, ignore_index=True)
     if "source_task_type" not in combined:
         combined["source_task_type"] = combined["task_type"]
+    known_sources = combined.source_task_type.dropna()
+    if not known_sources.map(lambda value: isinstance(value, str) and bool(value.strip())).all():
+        raise ValueError("source_task_type must contain nonempty strings or null")
+    sources = combined.groupby(["tenant", "task_id"]).source_task_type
+    if sources.nunique().gt(1).any():
+        raise ValueError("Conflicting source_task_type for the same tenant/task_id")
+    # A prior pool may have provenance while newly appended outcomes do not.
+    # Recover a task's recorded source where available, otherwise retain its
+    # current task type before the caller relabels this new pool.
+    combined["source_task_type"] = sources.transform("first").fillna(combined.task_type)
     if task_type is not None:
         if not isinstance(task_type, str) or not task_type.strip():
             raise ValueError("task_type must be a nonempty string")

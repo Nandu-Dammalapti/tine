@@ -306,3 +306,85 @@ def test_combine_outcomes_pools_groups_and_drops_unusable_models(tmp_path):
     main(["combine-outcomes", "--input", *paths, "--output", str(tmp_path / "c.jsonl"),
           "--task-type", "coding"])
     assert len(read_outcomes(tmp_path / "c.jsonl")) == 5 * 2
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".csv"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_incremental_pooling_retains_every_source_after_reload(tmp_path, suffix, reverse):
+    from tine.data import combine_outcomes
+
+    first = _outcomes("humaneval", ["big", "small"], 3)
+    second = _outcomes("mbpp", ["big", "small"], 2)
+    third = _outcomes("swe-bench", ["big", "small"], 4)
+    pooled, _ = combine_outcomes([first, second], task_type="coding")
+    path = tmp_path / ("pooled" + suffix)
+    write_outcomes(pooled, path)
+    inputs = [read_outcomes(path), third]
+    if reverse:
+        inputs.reverse()
+    result, report = combine_outcomes(inputs, task_type="all-coding")
+    assert report["tasks_by_source"] == {"humaneval": 3, "mbpp": 2, "swe-bench": 4}
+    assert result.source_task_type.notna().all()
+    assert set(result.task_type) == {"all-coding"}
+    assert "source_task_type" not in third  # caller's source data stays unchanged
+    assert set(pooled.source_task_type) == {"humaneval", "mbpp"}
+    direct, _ = combine_outcomes([first, second, third], task_type="all-coding")
+    columns = ["task_id", "model", "success", "cost_usd", "task_type", "source_task_type"]
+    pd.testing.assert_frame_equal(result[columns].sort_values(["task_id", "model"]).reset_index(drop=True),
+                                  direct[columns].sort_values(["task_id", "model"]).reset_index(drop=True))
+
+
+def test_pooling_fills_missing_source_before_relabeling():
+    from tine.data import combine_outcomes
+
+    rows = _outcomes("mbpp", ["big", "small"], 2)
+    rows["source_task_type"] = ["mbpp", None, None, "mbpp"]
+    result, report = combine_outcomes([rows], task_type="coding")
+    assert result.source_task_type.tolist() == ["mbpp"] * 4
+    assert report["tasks_by_source"] == {"mbpp": 2}
+
+
+def test_pooling_recovers_source_from_another_model_of_the_same_task():
+    from tine.data import combine_outcomes
+
+    rows = _outcomes("coding", ["big", "small"], 2)
+    rows["source_task_type"] = ["humaneval", None, None, "mbpp"]
+    result, report = combine_outcomes([rows], task_type="combined")
+    assert result.source_task_type.tolist() == ["humaneval", "humaneval", "mbpp", "mbpp"]
+    assert report["tasks_by_source"] == {"humaneval": 1, "mbpp": 1}
+
+
+def test_source_recovery_does_not_cross_tenant_boundaries():
+    from tine.data import combine_outcomes
+
+    first = _outcomes("coding", ["big", "small"], 1)
+    second = first.copy()
+    first["tenant"], second["tenant"] = "a", "b"
+    first["source_task_type"] = ["humaneval", None]
+    second["source_task_type"] = [None, "mbpp"]
+    result, report = combine_outcomes([first, second], task_type="combined")
+    assert result.loc[result.tenant == "a", "source_task_type"].tolist() == ["humaneval"] * 2
+    assert result.loc[result.tenant == "b", "source_task_type"].tolist() == ["mbpp"] * 2
+    assert report["tasks_by_source"] == {"humaneval": 1, "mbpp": 1}
+
+
+@pytest.mark.parametrize("label", ["NA", "null", "001"])
+def test_pooled_source_names_survive_csv_reload(tmp_path, label):
+    from tine.data import combine_outcomes
+
+    pooled, _ = combine_outcomes([_outcomes(label, ["big", "small"], 2)], task_type="coding")
+    path = tmp_path / "pooled.csv"
+    write_outcomes(pooled, path)
+    result, report = combine_outcomes([read_outcomes(path)], task_type="combined")
+    assert result.source_task_type.tolist() == [label] * 4
+    assert report["tasks_by_source"] == {label: 2}
+
+
+@pytest.mark.parametrize("source", [["humaneval", "mbpp"], ["", ""], [123, 123]])
+def test_pooling_rejects_ambiguous_source_labels(source):
+    from tine.data import combine_outcomes
+
+    rows = _outcomes("coding", ["big", "small"], 1)
+    rows["source_task_type"] = source
+    with pytest.raises(ValueError, match="source_task_type"):
+        combine_outcomes([rows], task_type="combined")
