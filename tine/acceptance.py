@@ -17,13 +17,16 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from tine.numeric import real_array
+
 RESPONSE_COLUMNS = ("input_tokens", "output_tokens")
 
 
 def _token_matrix(values, name: str) -> np.ndarray:
-    values = np.asarray(values, dtype=float)
-    if values.ndim != 2 or not np.isfinite(values).all() or (values < 0).any():
-        raise ValueError(f"{name} must be a task-by-model matrix of known nonnegative token counts")
+    values = real_array(values, name)
+    if (values.ndim != 2 or not values.size or not np.isfinite(values).all()
+            or (values < 0).any() or (values != np.floor(values)).any()):
+        raise ValueError(f"{name} must be a nonempty task-by-model matrix of known nonnegative whole token counts")
     return values
 
 
