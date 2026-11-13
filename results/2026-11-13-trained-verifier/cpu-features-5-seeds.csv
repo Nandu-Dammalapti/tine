@@ -1,0 +1,16 @@
+features,cases_scored,cases,right,wrong,seeds,auc,auc_sd,catch_rate,false_reject_rate,accepted_share,accuracy_when_accepted
+structure,all,861,473,388,5,0.619,0.014,0.24,0.113,0.83,0.587
+structure,cheap,747,399,348,5,0.627,0.015,0.222,0.094,0.846,0.572
+structure,subset,150,87,63,5,0.7,0.028,0.203,0.076,0.871,0.616
+text,all,861,473,388,5,0.572,0.023,0.196,0.107,0.853,0.575
+text,cheap,747,399,348,5,0.579,0.025,0.193,0.105,0.854,0.559
+text,subset,150,87,63,5,0.541,0.039,0.222,0.122,0.836,0.609
+structure+text,all,861,473,388,5,0.611,0.018,0.239,0.106,0.834,0.589
+structure+text,cheap,747,399,348,5,0.618,0.018,0.228,0.088,0.847,0.575
+structure+text,subset,150,87,63,5,0.658,0.044,0.213,0.074,0.868,0.619
+agreement,all,861,473,388,5,0.747,0.004,0.398,0.099,0.766,0.646
+agreement,cheap,747,399,348,5,0.757,0.004,0.418,0.103,0.75,0.639
+agreement,subset,150,87,63,5,0.794,0.004,0.39,0.081,0.789,0.676
+structure+text+agreement,all,861,473,388,5,0.752,0.011,0.373,0.102,0.776,0.636
+structure+text+agreement,cheap,747,399,348,5,0.762,0.011,0.378,0.103,0.769,0.623
+structure+text+agreement,subset,150,87,63,5,0.8,0.019,0.314,0.083,0.82,0.649

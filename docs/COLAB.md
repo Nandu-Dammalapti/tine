@@ -31,6 +31,13 @@ been run yet; its first cells are a smoke test for that reason.
 runs `qwen2.5-coder:32b` with Ollama as the judge on the 150 pilot patches and saves its verdicts to
 Drive. The model reads patches; nothing is executed. See [JUDGE.md](JUDGE.md).
 
+## Training a verifier on graded patches
+
+[`notebooks/tine_colab_train_verifier.ipynb`](../notebooks/tine_colab_train_verifier.ipynb) needs a GPU
+runtime (A100 or L4). A frozen Qwen2.5-7B-Instruct reads the 861 accepted patches once; a logistic
+regression is trained on its hidden states and scored on held-out tasks. Nothing is executed and the
+language model is not trained. See [JUDGE.md](JUDGE.md).
+
 ## Cells and outputs
 
 | Stage | What to run | What it saves |

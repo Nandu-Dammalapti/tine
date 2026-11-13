@@ -110,3 +110,15 @@ prompt and script are the same as the 14B run on the Mac, so the comparison isol
 sets a 16k context so no case is cut off, and saves the verdict files and a run record (model
 digest, Ollama version, GPU, repository revision) to `MyDrive/tine/`. The cases file goes on Drive,
 never in the repository. No patch is executed. Score afterwards with step 3.
+
+## Training a verifier instead
+
+`scripts/train_verifier.py` takes the same cases and key and trains a logistic regression to predict
+the grade, scored by cross-validation grouped by task. `compare` runs several feature groups over
+several splits and writes one table; `train` writes held-out predictions in the verdict format, so
+step 3 scores a trained verifier next to any judge. `encode` (GPU) saves a frozen language model's
+hidden states for each case as extra features;
+[`notebooks/tine_colab_train_verifier.ipynb`](../notebooks/tine_colab_train_verifier.ipynb) runs it.
+The `agreement` features compare a patch with other models' patches for the same task: using them at
+run time means several cheap calls per request, which is routing cost. Pass the frontier model to
+`--agreement-exclude`. Results: `results/2026-11-13-trained-verifier`.
