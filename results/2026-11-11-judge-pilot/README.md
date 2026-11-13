@@ -84,6 +84,34 @@ customer hardware is not a verifier for code. The options are a stronger judge w
 its cost netted from savings, a larger open model, or a small model trained on
 verification outcomes.
 
+## A larger open model on the same cases (2026-11-13)
+
+`notebooks/tine_colab_judge.ipynb`: `qwen2.5-coder:32b` (Ollama id `b92d6a0bd47e`, 4-bit, 19 GB) on
+a Colab A100, 16k context, repository revision `a41e597`. Same script, prompt, runner and 150 cases
+as the 14B run, so only the model's size changed. No prompt was cut off (longest 2,278 tokens).
+Graded against our own test run:
+
+| judge | wrong patches rejected | right patches rejected | accepted patches that are right | AUC |
+| --- | --- | --- | --- | --- |
+| Claude Code session (ceiling) | 95.2% | 2.3% | 96.6% | 0.99 |
+| qwen2.5-coder:32b, bare verdict | 17.5% | 16.1% | 58.4% | 0.57 |
+| qwen2.5-coder:32b, reason first | 68.3% | 49.4% | 68.8% | 0.62 |
+| no judge (accept all 150) | 0% | 0% | 58.0% | - |
+
+- **More than doubling the model's size barely helps.** The bare verdict is still at chance: it
+  rejects right and wrong patches at the same rate. Four of its replies had no usable verdict and
+  count as rejections.
+- Reasoning first shows a weak signal (AUC 0.62 against 0.50 for the 14B model), but to reject
+  two thirds of the wrong patches it throws away half of the right ones. Moving its threshold
+  does not rescue it: at probability 0.9 it rejects 87% of wrong and 68% of right.
+- Against the benchmark's grades the reason-first run is 73.0% and 42.1%: same conclusion.
+- Cost: 692 prompt and 33 completion tokens and 1.2 seconds per case for the bare verdict; 769 and
+  169 tokens and 4.6 seconds when reasoning first.
+
+**Reading:** off-the-shelf open coding models up to 32B do not verify patches. The gap to the
+ceiling is not closed by size in this range or by prompt style. What remains is a pinned strong
+model through an API with its cost netted from savings, or a verifier trained on graded patches.
+
 ## What the judge costs
 
 `session-judge-usage.json`.
@@ -119,8 +147,9 @@ verification outcomes.
 
 ## Next
 
-1. A larger open model on the same cases, and a pinned frontier model through an API
-   with a spending cap, to find the cheapest judge that still separates right from wrong.
+1. A pinned mid-sized and frontier model through an API with a spending cap, to find the
+   cheapest judge that still separates right from wrong; and a verifier trained on graded
+   patches (about 1,300 patches with test-run grades exist as of 2026-11-12).
 2. Finish the Colab test run (303 tasks), judge every accepted patch, and certify
    chains with `tine cascade --checks`, netting the judge's tokens from the savings.
 3. Test on tasks a model cannot have seen, to size the contamination effect.

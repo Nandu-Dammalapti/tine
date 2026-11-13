@@ -103,8 +103,8 @@ Whether either becomes the default is still a team decision.
 
 - Finish the SWE-bench repository-test run (222 of 303 tasks done as of 2026-11-12) and
   certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
-- A verifier for code that a customer can afford: a small local model failed
-  ([judge-pilot](2026-11-11-judge-pilot/README.md)). Next: a larger open model, a
+- A verifier for code that a customer can afford: open coding models of 14B and 32B both failed
+  ([judge-pilot](2026-11-11-judge-pilot/README.md)). Next: a
   pinned frontier judge with its cost netted from savings, or a small model trained
   on verification outcomes.
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
