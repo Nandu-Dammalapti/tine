@@ -1,0 +1,18 @@
+{
+  "tasks_attempted": 222,
+  "tasks_valid": 219,
+  "gold_statuses": {
+    "ok": 219,
+    "env_failed": 2,
+    "gold_unresolved": 1
+  },
+  "tasks_valid_by_repository": {
+    "django": 160,
+    "sympy": 59
+  },
+  "runs_compared_with_benchmark_grade": 1080,
+  "agreement_with_benchmark_grade": 0.9407,
+  "resolved_here_but_graded_wrong": 63,
+  "graded_right_but_unresolved_here": 1,
+  "note": "Partial Colab run as of 2026-11-12: 222 of the planned 303 django and sympy tasks."
+}

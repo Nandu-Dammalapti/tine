@@ -8,7 +8,7 @@ says how each is measured on the recorded SWE-bench answers in LLMRouterBench.
 | Check | Needs | Script | Status |
 | --- | --- | --- | --- |
 | Static: the patch applies and its Python files parse | the repository | `scripts/swe_patch_checks.py` | Run on macOS, 2026-11-10: `results/2026-11-10-swe-static-checks` |
-| Existing tests: tests that passed before still pass | the repository's test environment | `scripts/swe_repo_tests.py`, `notebooks/tine_colab_swe_repo_tests.ipynb` | Partial run on Colab, 2026-11-10 (137 django tasks): `results/2026-11-10-swe-static-checks` |
+| Existing tests: tests that passed before still pass | the repository's test environment | `scripts/swe_repo_tests.py`, `notebooks/tine_colab_swe_repo_tests.ipynb` | Partial run on Colab, 2026-11-12 (222 of 303 django and sympy tasks): `results/2026-11-10-swe-static-checks` |
 | Response check: response size | the ledger | `tine cascade --response-check` | Run: `results/2026-11-10-response-check` |
 
 ## Static checks: `scripts/swe_patch_checks.py`

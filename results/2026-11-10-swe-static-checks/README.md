@@ -160,6 +160,32 @@ nothing, and do not fix the issue.
 
 This sample is too small to certify a chain (135 tasks), so no savings figure is given.
 
+## Existing tests: larger partial run, django and sympy (2026-11-12)
+
+`repo-test-rates-partial-222.csv`, `repo-test-summary-partial-222.json`. The same Colab run,
+resumed: 222 of the planned 303 tasks, now including sympy. 219 are valid (160 django, 59 sympy);
+two django tasks need Python 3.5 and on one the reference patch did not resolve here. Same eight
+models, 1,734 answers. **Model-written code was executed on Colab only.**
+
+| grades used | check | wrong answers caught | right answers rejected | accepted answers that are right |
+| --- | --- | --- | --- | --- |
+| benchmark's | static only | 49.6% | - | - |
+| benchmark's | static + existing tests | 64.3% | 1.1% | 49.8% |
+| this run's | static only | 52.2% | - | - |
+| this run's | static + existing tests | 67.8% | 0% (by construction) | 56.7% |
+
+- The django-only numbers above hold on the larger sample: the two free checks catch about two
+  thirds of wrong patches (per model 55-71% on the benchmark's grades, 56-74% on this run's).
+- sympy is like django for catching (63.0% against 64.8%, benchmark's grades) but its answers are
+  worse to begin with: 37.6% of accepted sympy answers are right against 53.7% for django.
+- Agreement with the benchmark's grades is 94.1% over 1,080 patches run. All but one of the 64
+  disagreements are patches that resolve here and the benchmark graded wrong, the pattern
+  explained in the section above.
+- Of the 627 wrong patches (benchmark's grades) that ran: 171 (27%) broke an existing test, 393
+  (63%) broke nothing and failed the issue's own tests, 63 (10%) are the disputed grades.
+
+Still to run: 81 tasks. 219 tasks is still too few to certify a chain, so no savings figure.
+
 ## What this means
 
 Static checks are worth having: they are free and remove about half the answers.
