@@ -37,7 +37,7 @@ Sources: [response-check](2026-11-10-response-check/README.md),
 
 No certified Gacrux number yet. What is measured: free checks catch about 69% of wrong
 patches on django, and a frontier-class model reading the patch caught 95% of the
-rest in a 150-case pilot, while a small local model caught none usefully
+rest in a 150-case pilot, while open local models of 14B and 32B could not tell right from wrong
 ([judge-pilot](2026-11-11-judge-pilot/README.md)). The
 OpenRouter auto-router is 41% cheaper than gpt-5 there at 10.6% accuracy against 15.8%.
 
