@@ -77,10 +77,15 @@ Certified picks, mean over 10 seeds on held-out tasks:
   less at 2% (24%), not more. More candidates means more chains tried on the same
   choosing data, and the picked chain fails certification more often (5 of 10 runs
   fall back to the frontier).
-- **Math is weaker: 15-20%.** Models agree on about half the questions, and free-form
-  answers do not always match when they mean the same thing (`0.5` and `1/2`), which
-  counts as disagreement here. The extraction also misses 11-27% of answers per
-  model. A normaliser for math answers would raise this; not built.
+- **Math is weaker: 15-20%.** Two cheap models agree on about half the questions
+  (55%), against 82% on multiple choice, and the frontier itself is right on only 72%.
+- **Spelling of answers is not the reason.** A normaliser that gives `0.5`, `1/2` and
+  `\dfrac{1}{2}` one spelling was tried: it changed 6.5% of extracted answers, raised
+  agreement only from 55% to 58%, and certified savings did not improve (11.9% at the
+  2% limit, 20.1% at 4%). The pairs it newly matched were more often ones the
+  benchmark grades differently from each other, because its grader compares strings.
+  It was not kept. The extraction also finds no final answer in 11-27% of responses
+  per model, mostly reasoning cut off before the answer.
 
 ## Limits
 
@@ -90,7 +95,9 @@ Certified picks, mean over 10 seeds on held-out tasks:
   quarter of the frontier), not their accuracy.
 - The benchmark's train and test files were pooled and re-split by seed. Its own
   split was not used.
-- Exact-match comparison of extracted answers; see the math note above.
+- Exact-match comparison of extracted answers. Two models that agree by this
+  comparison were graded differently from each other by the benchmark on 1-3% of
+  agreed math questions, so some of its math grades depend on formatting.
 
 ## Result 2: the LLMRouter library's routers on LiveCodeBench
 
