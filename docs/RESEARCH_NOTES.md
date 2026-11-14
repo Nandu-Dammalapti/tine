@@ -124,3 +124,33 @@ current product.
 - <https://www.faros.ai/platform>
 - <https://www.faros.ai/solutions/optimal-model-routing>
 - <https://www.faros.ai/blog/measuring-token-efficiency-ai-engineering> (2026-06-17)
+
+## LLMRouter (ulab-uiuc), read 2026-11-14
+
+Source: the repository README at <https://github.com/ulab-uiuc/LLMRouter> (MIT licence, PyPI
+`llmrouter-lib`, paper arXiv:2608.06867). Read only; the library was not installed or run here, so
+everything below is what the README states, not something we measured.
+
+What it is: an open-source collection of about 19 routers behind one command line (`llmrouter
+train / infer / chat / serve`), a data pipeline that runs candidate models on 11 benchmarks, a
+benchmark of recorded outcomes (xRouteBench: 8 datasets, 18 models), and an OpenAI-compatible server.
+
+| Part | Use for Tine | Why |
+| --- | --- | --- |
+| Single-round routers: kNN, SVM, MLP, matrix factorisation, Elo, RouterDC, GraphRouter, Hybrid LLM, CausalLM | **Baselines only** | All choose a model from the prompt alone. Our result is that prompt-only routing certifies 0-5% savings on coding with every representation tried. Worth running through our certifier as we did for Avengers-Pro, to say so against a public library. |
+| AutoMix | **Worth testing** | The one cascade in the set: a small model answers, checks its own answer, and escalates. It is the published version of our "try, check, escalate". We found small models cannot check code; test it on exact-answer tasks. |
+| xRouteBench | **Worth pulling** | Recorded responses, scores and token counts per model per query. Responses are what agreement checks need; more datasets to test agreement on. Check licence and overlap with LLMRouterBench first. |
+| `llmrouter serve` (OpenAI-compatible, streaming, `/v1/responses`) and the plugin folder for custom routers | **Reference, and a possible distribution route** | Shows the proxy surface customers expect. Gacrux could be registered as a custom router for side-by-side comparison. Not our runtime: no ledger, tenant isolation, or guarantee. |
+| Router-R1, multi-round and agentic routers | **Not for us now** | An LLM does the routing over several rounds, on a GPU, with pinned vLLM. Routing cost is high and it is netted from savings (AGENTS.md section 2). |
+| GMTRouter, PersonalizedRouter | **Not for us** | Per-user preference. Tine learns per company from verified outcomes. |
+| TSRouter, ComfyUI nodes, Slack and Discord gateway | **Not for us** | Multimodal and chat tooling outside the product. |
+
+What it does not have, which is Tine's ground: no quality limit and no calibration (routers are
+trained on `alpha * performance - beta * cost`), no check on the answer after it is produced other
+than AutoMix's self-check, no savings ledger, no learning from a company's own outcomes. Its headline
+(learned routers beat the best fixed model by 14.6% relative) is a performance figure on QA-style
+benchmarks with open models, not cost saved at held quality, and it has no SWE-bench.
+
+Reading for us: the "which router" layer is a commodity that anyone can install. That supports
+putting Tine's effort into verification, the guarantee and per-company outcomes, and using this
+library as the baseline set rather than rebuilding those routers.
