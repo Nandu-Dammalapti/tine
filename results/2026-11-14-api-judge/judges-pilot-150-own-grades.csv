@@ -1,0 +1,13 @@
+judge,threshold,cases,right,wrong,right_rejected,wrong_rejected,catch_rate,false_reject_rate,accepted_share,accuracy_when_accepted,unparsed,mean_prompt_tokens,mean_completion_tokens,tokens_estimated,mean_seconds,mean_cost_usd
+claude-session,verdict,150,87,63,2,60,0.9524,0.023,0.5867,0.9659,0,706.7,45.9,True,,
+claude-session,0.5,150,87,63,2,60,0.9524,0.023,0.5867,0.9659,0,706.7,45.9,True,,
+claude-session,0.7,150,87,63,3,60,0.9524,0.0345,0.58,0.9655,0,706.7,45.9,True,,
+claude-session,0.9,150,87,63,18,62,0.9841,0.2069,0.4667,0.9857,0,706.7,45.9,True,,
+claude-sonnet-5-5 (medium),verdict,150,87,63,5,56,0.8889,0.0575,0.5933,0.9213,1,1080.6,567.9,False,5.6,0.00784
+claude-sonnet-5-5 (medium),0.5,150,87,63,5,56,0.8889,0.0575,0.5933,0.9213,1,1080.6,567.9,False,5.6,0.00784
+claude-sonnet-5-5 (medium),0.7,150,87,63,5,56,0.8889,0.0575,0.5933,0.9213,1,1080.6,567.9,False,5.6,0.00784
+claude-sonnet-5-5 (medium),0.9,150,87,63,15,58,0.9206,0.1724,0.5133,0.9351,1,1080.6,567.9,False,5.6,0.00784
+qwen2.5-coder:32b (think),verdict,150,87,63,43,43,0.6825,0.4943,0.4267,0.6875,0,769.4,168.5,False,4.6,
+qwen2.5-coder:32b (think),0.5,150,87,63,24,26,0.4127,0.2759,0.6667,0.63,0,769.4,168.5,False,4.6,
+qwen2.5-coder:32b (think),0.7,150,87,63,38,34,0.5397,0.4368,0.52,0.6282,0,769.4,168.5,False,4.6,
+qwen2.5-coder:32b (think),0.9,150,87,63,59,55,0.873,0.6782,0.24,0.7778,0,769.4,168.5,False,4.6,

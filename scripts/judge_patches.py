@@ -208,7 +208,7 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
 def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd: float,
                     judge_name: str | None = None, effort: str = "medium", max_tokens: int = 8000,
                     style: str = "verdict", workers: int = 4, prices: tuple[float, float] | None = None,
-                    client=None) -> dict:
+                    client=None, ca_bundle: str | None = None) -> dict:
     """One request per case to a Claude model. Resumes from ``output``.
 
     Spending is counted from each reply's reported usage and the run stops before a
@@ -225,7 +225,15 @@ def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd:
     if client is None:
         import anthropic
 
-        client = anthropic.Anthropic(max_retries=5)
+        if ca_bundle:
+            # Verify TLS against this certificate file instead of the operating system's
+            # store, for environments where the system store cannot be read.
+            import ssl
+
+            http_client = anthropic.DefaultHttpxClient(verify=ssl.create_default_context(cafile=ca_bundle))
+            client = anthropic.Anthropic(max_retries=5, http_client=http_client)
+        else:
+            client = anthropic.Anthropic(max_retries=5)
     judge_name = judge_name or f"{model} ({effort})"
     previous = [row for row in read_csv(output) if row["judge"] == judge_name] if Path(output).exists() else []
     done = {row["case_id"] for row in previous}
@@ -349,6 +357,8 @@ def main(argv=None) -> None:
     run.add_argument("--max-cost-usd", type=float,
                      help="anthropic: stop before spending more than this in total for the output file")
     run.add_argument("--workers", type=int, default=4, help="anthropic: requests in flight at once")
+    run.add_argument("--ca-bundle", help="anthropic: certificate file to verify TLS against (e.g. certifi's), "
+                                         "when the system certificate store cannot be read")
     run.add_argument("--model", required=True)
     run.add_argument("--judge-name", help="label for this judge in the output (default: the model name)")
     run.add_argument("--api-key-env", help="environment variable holding the API key, if the endpoint needs one")
@@ -374,7 +384,7 @@ def main(argv=None) -> None:
         print(json.dumps(judge_anthropic(args.cases, args.output, model=args.model, judge_name=args.judge_name,
                                          max_cost_usd=args.max_cost_usd, effort=args.effort,
                                          max_tokens=args.max_tokens or 8000, style=args.style,
-                                         workers=args.workers)))
+                                         workers=args.workers, ca_bundle=args.ca_bundle)))
     elif args.command == "judge":
         if not args.base_url:
             raise SystemExit("--base-url is required for an OpenAI-compatible endpoint")

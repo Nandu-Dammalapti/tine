@@ -49,6 +49,7 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-11 | [hidden-states](2026-11-11-hidden-states/README.md) | Does a frozen LLM's internal state work in front of the kNN index where topic embeddings failed? | It predicts difficulty clearly better (kNN AUC 0.81 against 0.70-0.74). That still does not make a prompt-only router save much (2-8% at epsilon 0.04), but as a gate in front of chains it certifies 15% where topic-embedding gates certify 8-11%. |
 | 2026-11-13 | [trained-verifier](2026-11-13-trained-verifier/README.md) | Can a small classifier trained on graded patches verify a cheap model's patch? | On 861 accepted patches from 204 tasks, scored on held-out tasks: patch size and wording give AUC about 0.6, no better than a 32B open model. Agreement between cheap models' patches gives 0.76, the best signal found that needs no strong model: it catches 42% of wrong patches while rejecting 10% of right ones. Hidden states of a frozen 7B model give 0.69 and do not add to agreement. The session judge is at 0.99, so training on 861 patches does not replace a strong judge. |
 | 2026-11-14 | [xroutebench](2026-11-14-xroutebench/README.md) | Does the agreement check hold on a second benchmark, and how do the LLMRouter library's routers do under a quality limit? | Agreement repeats on xRouteBench (18 open models): on 4,762 multiple-choice questions two cheap models that agree save 45% at the 2% limit and 74% at 4% (over the limit in 2 of 10 runs at 4%); three save 53% at 2%. Math: 15-20%. Switching to one cheaper model certifies 0%. The library's kNN, SVM, MLP, matrix-factorisation and Elo routers, run unmodified on LiveCodeBench, either send everything to gpt-5 or drop accuracy from 86% to 39-46%; certified savings 0%. |
+| 2026-11-14 | [api-judge](2026-11-14-api-judge/README.md) | Does a pinned strong model verify patches, what does a check cost, and does a chain with it save money net of the judge? (Paid run: $8.85.) | `claude-sonnet-5-5` on 1,110 accepted patches: rejects 79% of wrong ones and 9% of right ones (AUC 0.92; 89% and 6% on the 150 pilot cases, which were optimistic) at $0.008 per check, 2.4% of a frontier answer. Chains with free checks plus the judge on 274 tasks: about a third cheaper than `claude-opus-4.1` net of the judge, 55% accurate against 49-50%, within the limit in 29 of 30 held-out runs. Certified: 0% with the default split (too few tasks), 22% at a 4% limit and 30% at 5% when half the tasks certify. Nothing at 2% yet. |
 
 ## How the findings fit together
 
@@ -105,11 +106,9 @@ Whether either becomes the default is still a team decision.
 
 - Finish the SWE-bench repository-test run (277 of 306 tasks done as of 2026-11-14; the free checks alone certify 0%) and
   certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
-- A verifier for code that a customer can afford: open coding models of 14B and 32B both failed
-  ([judge-pilot](2026-11-11-judge-pilot/README.md)). Classifiers trained on
-  patch agreement or on hidden states get part of the way and no further
-  ([trained-verifier](2026-11-13-trained-verifier/README.md)). What is left is a
-  pinned frontier judge with its cost netted from savings, or tests written for the change.
+- Code: a strong judge works and pays for itself ([api-judge](2026-11-14-api-judge/README.md)); open
+  models and trained classifiers do not. What is missing is more graded tasks, so that a chain
+  with the judge certifies at a 2% limit, and a test on code the judge cannot have seen.
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.

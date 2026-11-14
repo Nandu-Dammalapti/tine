@@ -35,7 +35,7 @@ Sources: [response-check](2026-11-10-response-check/README.md),
 
 ## SWE-bench Verified (500 repository tasks)
 
-No certified Gacrux number yet. What is measured: free checks catch about 69% of wrong
+First numbers with a paid judge (2026-11-14, [api-judge](2026-11-14-api-judge/README.md)): on 274 django and sympy tasks, Gacrux with free checks and a `claude-sonnet-5-5` judge is about a third cheaper than `claude-opus-4.1` net of the judge and 5 points more accurate on held-out tasks; it certifies 22% at a 4% limit when half the tasks are used to certify, and 0% with the default split. Before the judge: What is measured: free checks catch about 69% of wrong
 patches on django, and a frontier-class model reading the patch caught 95% of the
 rest in a 150-case pilot, while open local models of 14B and 32B could not tell right from wrong
 ([judge-pilot](2026-11-11-judge-pilot/README.md)). The
