@@ -14,6 +14,9 @@ executed. Three steps, each a subcommand:
              record the verdict, the tokens used, the cost and the time taken.
 ``score``    Compare one or more verdict files with the key: how many wrong patches
              the judge rejects, how many right ones it rejects, and what it costs.
+``checks``   Turn verdicts into inputs for ``tine cascade --checks``: an answer passes
+             when it passed the free checks and every judge accepted it, and each
+             judge's recorded cost is added to the answers it read.
 
 The judge's own tokens are routing cost (AGENTS.md section 2): ``score`` reports them
 so they can be netted from savings. ``judge`` calls a model; it needs the task's
@@ -289,6 +292,74 @@ def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd:
             "spent_usd": round(state["spent"], 4), "max_cost_usd": max_cost_usd}
 
 
+def chain_inputs(key_path: Path, verdict_paths: list[Path], free_checks: Path, outcomes: Path,
+                 checks_output: Path, outcomes_output: Path, *, threshold: float | None = None) -> dict:
+    """Checks and cost-adjusted outcomes for a chain whose check is "free checks, then
+    the judge(s)".
+
+    With several verdict files the judges run in the order given and each reads only
+    what the ones before it accepted, so a cheap judge can screen for a dearer one:
+    an answer passes when all accept, and a judge's cost is charged only where it was
+    consulted. ``threshold`` accepts on probability >= it instead of the verdict.
+    An answer that failed the free checks stays failed and costs no judge call; one
+    with no free-check result or no verdict stays unknown.
+    """
+    case_models = {}
+    for row in read_csv(key_path):
+        for model in row["models"].split(";"):
+            if model:
+                case_models[(row["task_id"], model)] = row["case_id"]
+    judges = []
+    for path in verdict_paths:
+        rows = {row["case_id"]: row for row in read_csv(path)}
+        if len({row["judge"] for row in rows.values()}) != 1:
+            raise ValueError(f"{path} must hold exactly one judge")
+        judges.append(rows)
+
+    def accepted(row) -> bool:
+        if threshold is None:
+            return row["verdict"] == "accept"
+        return row["probability"] not in ("", None) and float(row["probability"]) >= threshold
+
+    verdicts, judge_cost, counts = {}, {}, {"passed": 0, "failed": 0, "unknown": 0}
+    judge_calls = [0] * len(judges)
+    checks_output, outcomes_output = Path(checks_output), Path(outcomes_output)
+    checks_output.parent.mkdir(parents=True, exist_ok=True)
+    with checks_output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["task_id", "model", "passed"])
+        for row in read_csv(free_checks):
+            key = (row["task_id"], row["model"])
+            free = row["passed"].strip().lower()
+            case_id = case_models.get(key)
+            if free == "false":
+                result = "False"
+            elif free != "true" or case_id is None or any(case_id not in rows for rows in judges):
+                result = ""
+            else:
+                result, cost = "True", 0.0
+                for index, rows in enumerate(judges):
+                    judge_calls[index] += 1
+                    cost += float(rows[case_id].get("cost_usd") or 0)
+                    if not accepted(rows[case_id]):
+                        result = "False"
+                        break
+                judge_cost[key] = cost
+            verdicts[key] = result
+            counts["passed" if result == "True" else "failed" if result == "False" else "unknown"] += 1
+            writer.writerow([row["task_id"], row["model"], result])
+    charged = 0.0
+    outcomes_output.parent.mkdir(parents=True, exist_ok=True)
+    with outcomes_output.open("w", encoding="utf-8") as stream:
+        for row in read_jsonl(outcomes):
+            extra = judge_cost.get((row["task_id"], row["model"]), 0.0)
+            row["cost_usd"] = row["cost_usd"] + extra
+            charged += extra
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return {**counts, "judge_calls": judge_calls, "judge_cost_charged_usd": round(charged, 4),
+            "threshold": threshold}
+
+
 def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_right",
           thresholds=(None, 0.5, 0.7, 0.9)) -> list[dict]:
     """Per judge and threshold: wrong patches rejected, right patches rejected, the
@@ -372,8 +443,20 @@ def main(argv=None) -> None:
     check.add_argument("--verdicts", type=Path, nargs="+", required=True)
     check.add_argument("--grade", choices=("benchmark_right", "run_resolved"), default="benchmark_right")
     check.add_argument("--output", type=Path, help="also write the table as CSV")
+    join = commands.add_parser("checks", help="verdicts -> tine cascade inputs, with judge cost charged")
+    join.add_argument("--key", type=Path, required=True)
+    join.add_argument("--verdicts", type=Path, nargs="+", required=True,
+                      help="one file per judge; several run in order, each on what the earlier ones accepted")
+    join.add_argument("--free-checks", type=Path, required=True, help="CSV (task_id, model, passed)")
+    join.add_argument("--outcomes", type=Path, required=True, help="canonical outcomes JSONL")
+    join.add_argument("--checks-output", type=Path, required=True)
+    join.add_argument("--outcomes-output", type=Path, required=True)
+    join.add_argument("--threshold", type=float, help="accept on probability >= this instead of the verdict")
     args = parser.parse_args(argv)
-    if args.command == "prepare":
+    if args.command == "checks":
+        print(json.dumps(chain_inputs(args.key, args.verdicts, args.free_checks, args.outcomes,
+                                      args.checks_output, args.outcomes_output, threshold=args.threshold)))
+    elif args.command == "prepare":
         print(json.dumps(prepare(args.bench_dir, args.static_checks, args.repo_tests, args.dataset, args.cases,
                                  args.key, models=set(args.models), sample=args.sample, seed=args.seed)))
     elif args.command == "judge" and args.provider == "anthropic":

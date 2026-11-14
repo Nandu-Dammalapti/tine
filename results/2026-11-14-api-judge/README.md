@@ -1,8 +1,10 @@
 # A pinned strong judge for code, and the first chains with it, 2026-11-14
 
-**This folder's judge run called a paid model.** `claude-sonnet-5-5` through the
-Anthropic API, 1,110 requests, **$8.85** in total as reported by the API's usage
-figures, authorised by the team with a $50 cap. No patch was executed here: the grades
+**This folder's judge runs called paid models** through the Anthropic API:
+`claude-sonnet-5-5` on 1,110 cases ($8.85), `claude-haiku-5-5` on 1,110 ($0.59), and
+on the 150 pilot cases `claude-sonnet-5-5` at low effort ($1.13) and `claude-opus-5-5`
+($2.12). **$12.69 in total** as reported by the API's usage figures, authorised by
+the team with a $50 cap. No patch was executed here: the grades
 come from the Colab test run (`results/2026-11-10-swe-static-checks`). Small summary
 tables only; verdicts, issue text and patches stay on the machine that ran it.
 
@@ -88,6 +90,51 @@ stricter judge threshold (certifies 7.7% and 19.7% at epsilon 0.04 on the two sp
 - On all 274 tasks at once (no split, so only descriptive): that chain saves 36.5%,
   solves 55.5% against 48.2%, and loses 2 of the 274 tasks the frontier solves.
 
+## Result 3: cheaper and stronger judges
+
+`judges-pilot-150-own-grades.csv`, `judge-haiku55-1110-own-grades.csv`,
+`cascade-judge-variants.csv`.
+
+On the 150 pilot cases (optimistic for every judge, see Result 1):
+
+| judge | wrong rejected | right rejected | AUC | cost per check |
+| --- | --- | --- | --- | --- |
+| `claude-haiku-5-5` | 76.2% | 4.6% | 0.92 | $0.0005 |
+| `claude-sonnet-5-5`, low effort | 87.3% | 8.0% | 0.96 | $0.0075 |
+| `claude-sonnet-5-5`, medium effort | 88.9% | 5.7% | 0.96 | $0.0078 |
+| `claude-opus-5-5` | 92.1% | 4.6% | 0.98 | $0.0141 |
+
+- Lower effort on Sonnet saves almost nothing (4%) and is no better. Opus is the
+  best judge and costs 1.8 times Sonnet. **Haiku costs a sixteenth of Sonnet** and
+  gives up about 12 points of catch rate.
+
+Haiku on all 1,110 cases: rejects 71.7% of wrong patches and 9.5% of right ones
+(AUC 0.90), against Sonnet's 79.4% and 9.0%. 16 replies had no usable verdict.
+
+Chains on the 274 tasks with each judge (default split unless stated; `haiku, then
+sonnet` means Sonnet reads only what Haiku accepted and both must accept):
+
+| judge in the chain | uncertified at 4%: saved / accuracy vs 50.3% / worst run | runs over 2% / 3% / 4% | certified at 4%, half the tasks certifying |
+| --- | --- | --- | --- |
+| `claude-haiku-5-5` | **39.3%** / 54.8% / 2.6% | 2 / 0 / 0 of 10 | 8.5% |
+| `claude-sonnet-5-5` | 34.0% / 56.1% / 2.6% | 1 / 0 / 0 | 22.2% |
+| haiku, then sonnet | 30.1% / 56.1% / 2.6% | 0 / 0 / 0 | 22.9% |
+| `claude-sonnet-5-5`, probability >= 0.9 | 21.8% / 54.5% / 1.3% | 0 / 0 / 0 | 19.7% |
+
+- **The cheapest judge gives the cheapest chain.** With Haiku the chain saves 39%
+  against Sonnet's 34%, at about one point less accuracy, and never lost more than
+  2.6% of the frontier's tasks in a held-out run. Its check costs 0.16% of a frontier
+  answer.
+- **At the 2%, 3% and 4% limits the picture is the same as before: the chains hold
+  the limit on held-out tasks and cannot yet prove it.** No judge certifies anything
+  at 2%. At 3% only the strictest setting does (Sonnet at probability >= 0.9: 11.5%
+  with half the tasks certifying, in 4 of 10 runs). At 4% the best is 22-23%.
+  A stricter or stronger judge lowers the failure rate, but with 80 to 137 certify
+  tasks the bound cannot go below 2.2-3.6% even with zero failures.
+- So the way to certified savings at 2-4% is more graded tasks, not a better judge:
+  about 150 certify tasks with no failures for 2%, about 500 graded tasks in all.
+  Running Opus on all cases (about $14) was not done for that reason.
+
 ## What this means
 
 For code, Gacrux is: a cheap model writes the patch, the free checks run, a strong
@@ -106,7 +153,7 @@ more graded tasks so that the certify part is large enough for a 2% limit.
   frontier solves only half of them, so there is unusual room for cheap models to add
   accuracy; on tasks the frontier nearly always solves the accuracy gain would vanish
   and only the saving would remain.
-- One model, one effort setting, one prompt. Cheaper and stronger models were not run.
+- One prompt. The stronger judge was run on the pilot cases only.
 - Prices are those of 2026-11-14. Recorded model costs are the benchmark's.
 - Judge calls add latency (5.6 seconds each on average); not counted here.
 
@@ -114,9 +161,7 @@ more graded tasks so that the certify part is large enough for a 2% limit.
 
 1. More graded tasks: the 29 not yet run, then other SWE-bench repositories, to
    certify at 2%.
-2. The same judge at lower effort, and one cheaper and one stronger model, on the
-   pilot cases: find the cheapest judge that holds.
-3. A judge stage type in `tine.policy`, so a frozen policy can carry this chain.
+2. A judge stage type in `tine.policy`, so a frozen policy can carry this chain.
 
 ## Reproduce
 
@@ -130,7 +175,14 @@ python scripts/judge_patches.py judge --provider anthropic --model claude-sonnet
 python scripts/judge_patches.py score --key RUNS/judge/key.csv --verdicts RUNS/judge/verdicts.csv --grade run_resolved
 ```
 
-The checks file for `tine cascade` marks an answer passed when its free check passed
-and its judge verdict was `accept`, and the outcomes file adds each case's `cost_usd`
-to the answers that case covers. That join was done in a notebook-style script and is
-not yet a command.
+```bash
+python scripts/judge_patches.py checks --key RUNS/judge/key.csv --verdicts RUNS/judge/verdicts.csv \
+  --free-checks RUNS/repo-test-checks.csv --outcomes DATA/swe-valid-own-grades.jsonl \
+  --checks-output RUNS/judged-checks.csv --outcomes-output RUNS/judged.jsonl
+python -m tine cascade --input RUNS/judged.jsonl --frontier claude-opus-4.1 --checks RUNS/judged-checks.csv \
+  --epsilon 0.02 0.03 0.04 --fractions 0.3 0.5 0.2 --output RUNS/judge-chain
+```
+
+`checks` marks an answer passed when its free check passed and every judge accepted
+it, and adds each judge's recorded cost to the answers it read. The outcomes file
+here is the 274 valid tasks with this run's grades in place of the benchmark's.

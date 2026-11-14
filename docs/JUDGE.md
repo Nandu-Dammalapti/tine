@@ -146,3 +146,11 @@ python scripts/judge_patches.py judge --provider anthropic --model claude-haiku-
   cost to net from savings.
 - A refusal or a reply with no usable verdict is recorded as `unparsed` and scored as a rejection. No
   fallback model is configured: the point is to measure one named model.
+
+## From verdicts to a chain
+
+`checks` turns verdict files into inputs for `tine cascade`: a checks file in which an answer passes
+when it passed the free checks and every judge accepted it, and an outcomes file with each judge's
+recorded cost added to the answers it read, so savings are net of the judge. Several `--verdicts`
+files are judges in order, each reading only what the earlier ones accepted. Results:
+`results/2026-11-14-api-judge`.

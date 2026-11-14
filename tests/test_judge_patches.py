@@ -184,3 +184,38 @@ def test_claude_judge_stops_before_its_spending_cap(tmp_path):
                                           workers=1, client=client)
     assert report["stopped_at_cap"] and report["judged"] == 3 and report["not_run"] == 2
     assert report["spent_usd"] <= 0.13
+
+
+def test_chain_inputs_charge_each_judge_only_where_it_was_consulted(tmp_path):
+    key = tmp_path / "key.csv"
+    key.write_text("case_id,task_id,instance_id,patch_sha,models,benchmark_right,run_resolved\n"
+                   "c1,t1,i1,s,a;b,True,True\nc2,t2,i2,s,a,False,False\nc3,t3,i3,s,a,True,True\n")
+    def verdicts(name, rows):
+        path = tmp_path / f"{name}.csv"
+        with path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=judge_module.VERDICT_FIELDS)
+            writer.writeheader()
+            for case_id, verdict, probability, cost in rows:
+                writer.writerow({"case_id": case_id, "judge": name, "verdict": verdict,
+                                 "probability": probability, "cost_usd": cost})
+        return path
+    cheap = verdicts("cheap", [("c1", "accept", 0.9, 1), ("c2", "reject", 0.2, 1), ("c3", "accept", 0.6, 1)])
+    strong = verdicts("strong", [("c1", "accept", 0.9, 10), ("c2", "accept", 0.9, 10), ("c3", "reject", 0.1, 10)])
+    free = tmp_path / "free.csv"
+    free.write_text("task_id,model,passed\nt1,a,True\nt1,b,True\nt2,a,True\nt3,a,True\nt4,a,False\nt5,a,\nt6,a,True\n")
+    outcomes = tmp_path / "outcomes.jsonl"
+    outcomes.write_text("".join(json.dumps({"task_id": task, "model": model, "cost_usd": 100.0}) + "\n"
+                                for task, model in [("t1", "a"), ("t1", "b"), ("t2", "a"), ("t3", "a"), ("t4", "a")]))
+    report = judge_module.chain_inputs(key, [cheap, strong], free, outcomes, tmp_path / "checks.csv",
+                                       tmp_path / "judged.jsonl")
+    checks = {(row["task_id"], row["model"]): row["passed"] for row in csv.DictReader((tmp_path / "checks.csv").open())}
+    assert checks == {("t1", "a"): "True", ("t1", "b"): "True", ("t2", "a"): "False", ("t3", "a"): "False",
+                      ("t4", "a"): "False", ("t5", "a"): "", ("t6", "a"): ""}
+    costs = {(row["task_id"], row["model"]): row["cost_usd"]
+             for row in map(json.loads, (tmp_path / "judged.jsonl").read_text().splitlines())}
+    # t2: the cheap judge rejected, so the strong one was never paid. t4 failed the free checks: no judge.
+    assert costs == {("t1", "a"): 111.0, ("t1", "b"): 111.0, ("t2", "a"): 101.0, ("t3", "a"): 111.0, ("t4", "a"): 100.0}
+    assert report["judge_calls"] == [4, 3] and report["passed"] == 2
+    alone = judge_module.chain_inputs(key, [cheap], free, outcomes, tmp_path / "c2.csv", tmp_path / "j2.jsonl",
+                                      threshold=0.7)
+    assert alone["passed"] == 2 and alone["failed"] == 3  # c3 at 0.6 is below the threshold

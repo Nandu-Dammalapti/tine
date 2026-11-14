@@ -43,6 +43,8 @@ def main(argv=None):
                          help="Assumed share of wrong answers the check catches")
     cascade.add_argument("--seeds", type=int, default=10)
     cascade.add_argument("--checks", type=Path, help="Measured check results CSV (task_id, model, passed)")
+    cascade.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
+                         help="Task shares when no gate or response check is fitted (default 0.4 0.3 0.3)")
     cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
     cascade.add_argument("--catch-rates", type=Path,
@@ -138,6 +140,7 @@ def main(argv=None):
                                         catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
                                         response_check=args.response_check,
                                         fit_fractions=args.fit_fractions,
+                                        **({"fractions": tuple(args.fractions)} if args.fractions else {}),
                                         **({"gate_thresholds": args.gate_threshold}
                                            if args.gate_threshold else {}),
                                         **({"response_thresholds": args.response_threshold}
