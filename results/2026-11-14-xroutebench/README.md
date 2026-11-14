@@ -151,3 +151,25 @@ seeds, same encoder on the issue view of each prompt.
   than gpt-5 (65%) and cost 15-19% more: they learn to send SWE-bench tasks to
   `claude-opus-4.1`, which is better there and dearer. That is routing for quality,
   which these routers do well; it is not a saving.
+
+### The library's routers on its own benchmark
+
+`llmrouter-xroutebench-mc-summary.csv`, `llmrouter-xroutebench-mc-curve.csv`. The same
+five routers on the xRouteBench multiple-choice group above (4,762 questions, 18
+models, frontier `cogito-v2-1-671b` at 88.9%), with Qwen3-Embedding-0.6B vectors as in
+the library's pipeline. 5 seeds, weights 1.0, 0.9, 0.8, 0.6, 0.4.
+
+| | saved | accuracy | holds a quality limit |
+| --- | --- | --- | --- |
+| library routers, weight 1.0 | 0-0.6% | 88.7-88.9% | yes, by using the frontier for 97-100% of questions |
+| library routers, any lower weight | 97-98% | 80.0-80.4% | no: 12-13% of questions the frontier gets right are lost |
+| library routers, certified at 2% or 4% | 0-0.6% | 88.7-88.9% | yes |
+| agreement, three models, certified at 2% (above) | 53.5% | 90.1% | yes |
+| agreement, two models, certified at 2% (above) | 45.2% | 89.8% | yes |
+
+- **The same two settings on their own data.** Below weight 1 every router sends
+  essentially every question to one cheap model, which is 97-98% cheaper and 9
+  points less accurate.
+- On the same questions and models, the agreement check certifies 45-53% savings
+  with accuracy above the frontier's. The difference is not the router's skill at
+  reading the prompt; it is checking the answer after it is produced.
