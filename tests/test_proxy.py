@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from tine.ledger import Ledger
-from tine.proxy import ProxyConfig, _cost, create_app
+from tine.proxy import ProxyConfig, _cost, _usage, create_app
 
 
 def config(**changes):
@@ -428,6 +428,50 @@ def test_malformed_usage_never_breaks_provider_answer():
                 assert response.json() == payload
 
     run(scenario())
+
+
+@pytest.mark.parametrize("details", [None, [], [1, 2], False, 0, "", "invalid"])
+def test_malformed_cache_usage_stays_unknown_even_with_valid_token_totals(details):
+    async def scenario():
+        payload = {"choices": [], "usage": {
+            "prompt_tokens": 100, "completion_tokens": 10,
+            "prompt_tokens_details": details,
+        }}
+        cfg = config(prices={"openai:frontier": {
+            "input_per_million": 10, "output_per_million": 20,
+            "cached_input_per_million": 1,
+        }})
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))) as upstream:
+            app = create_app(cfg, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post("/v1/chat/completions", json={"messages": []},
+                                             headers={"authorization": "Bearer tenant-token-a"})
+                assert response.status_code == 200 and response.json() == payload
+                assert response.headers["x-tine-ledger"] == "recorded"
+                record = ledger.get("a", response.headers["x-tine-request-id"])
+                assert record["input_tokens"] == 100 and record["output_tokens"] == 10
+                assert record["cached_tokens"] is None
+                assert record["cost_usd"] is None and record["baseline_cost_usd"] is None
+                ledger.update_outcome("a", record["request_id"], True)
+                assert ledger.report("a")["comparable_verified_requests"] == 0
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("extra,cached,expected_cost", [
+    ({}, 0, 0.0012),
+    ({"prompt_tokens_details": {}}, 0, 0.0012),
+    ({"prompt_tokens_details": {"cached_tokens": 0}}, 0, 0.0012),
+    ({"prompt_tokens_details": {"cached_tokens": 40}}, 40, 0.00084),
+])
+def test_valid_cache_usage_preserves_configured_costs(extra, cached, expected_cost):
+    tokens = _usage("openai", {"usage": {"prompt_tokens": 100, "completion_tokens": 10, **extra}})
+    cfg = config(prices={"openai:frontier": {
+        "input_per_million": 10, "output_per_million": 20, "cached_input_per_million": 1,
+    }})
+    assert tokens["cached_tokens"] == cached
+    assert _cost(cfg, "openai", "frontier", tokens) == pytest.approx(expected_cost)
 
 
 @pytest.mark.parametrize("path,usage", [
