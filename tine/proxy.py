@@ -138,13 +138,13 @@ def _usage(provider: str, payload: dict[str, Any]) -> dict[str, int | None]:
     if not isinstance(raw, dict):
         raw = {}
     if provider == "openai":
-        details = raw.get("prompt_tokens_details") or {}
-        if not isinstance(details, dict):
-            details = {}
+        # Omitted optional details retain the no-cache default. An explicitly
+        # malformed/null breakdown is unknown, not evidence of zero cache use.
+        details = raw.get("prompt_tokens_details", {})
         values = {
             "input_tokens": raw.get("prompt_tokens"),
             "output_tokens": raw.get("completion_tokens"),
-            "cached_tokens": details.get("cached_tokens", 0),
+            "cached_tokens": details.get("cached_tokens", 0) if isinstance(details, dict) else None,
             "cache_write_tokens": 0,
         }
     else:
