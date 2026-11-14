@@ -131,3 +131,16 @@ weight and `beta` is one minus it.
 - This is the library used as its own benchmark pipeline uses it, on our data. Its
   published results are on its own pool of open models with a narrow price range and
   are measured as reward, not as savings under a quality limit.
+
+### The same on the pooled coding data
+
+`llmrouter-lcb-swe-summary.csv`, `llmrouter-lcb-swe-curve.csv`. Pool `lcb-swe`: 1,555
+tasks (LiveCodeBench and SWE-bench Verified), 13 models, frontier `gpt-5` (63.2%), 5
+seeds, same encoder on the issue view of each prompt.
+
+- Same two settings. At any weight below 1 the routers save 79-97% and accuracy falls
+  from 63% to 47-51%. Certified savings: 0% for all five, in every run.
+- At weight 1, kNN, MLP and matrix factorisation are 1.5 to 2 points **more accurate**
+  than gpt-5 (65%) and cost 15-19% more: they learn to send SWE-bench tasks to
+  `claude-opus-4.1`, which is better there and dearer. That is routing for quality,
+  which these routers do well; it is not a saving.
