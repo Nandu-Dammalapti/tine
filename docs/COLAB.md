@@ -22,8 +22,11 @@ Run [`notebooks/tine_colab_step2_coding.ipynb`](../notebooks/tine_colab_step2_co
 
 [`notebooks/tine_colab_swe_repo_tests.ipynb`](../notebooks/tine_colab_swe_repo_tests.ipynb) runs each
 repository's tests on the recorded model patches, on a CPU runtime. **It executes model-written code**:
-use a fresh runtime and delete it afterwards. Read [SWE_CHECKS.md](SWE_CHECKS.md) first. It has not
-been run yet; its first cells are a smoke test for that reason.
+use a fresh runtime and delete it afterwards. Read [SWE_CHECKS.md](SWE_CHECKS.md) first. It has run
+on 277 django and sympy tasks. Since 2026-11-14 it also tries one task from each of the other ten
+SWE-bench repositories (cell 5b) and includes in the long run those whose reference patch passed;
+that part has not been run yet, and some of those repositories may not build without Docker. For
+an overnight run choose Run all and leave it: it resumes from Drive.
 
 ## A larger open model as the verifier
 
