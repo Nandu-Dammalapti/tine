@@ -186,6 +186,38 @@ models, 1,734 answers. **Model-written code was executed on Colab only.**
 
 Still to run: 81 tasks. 219 tasks is still too few to certify a chain, so no savings figure.
 
+## Existing tests: 277 tasks, and chains on them (2026-11-14)
+
+`cascade-swe-274-own-grades-summary.csv`, `cascade-swe-274-benchmark-grades-summary.csv`.
+The Colab run reached 277 of the 306 django and sympy tasks (211 django, 66 sympy; 29
+not yet run). 274 are valid. Over 2,179 answers from the eight models, against the
+benchmark's grades: static checks catch 50.5% of wrong answers, static checks plus
+existing tests 64.2%, 1.4% of right answers are rejected, and 52.3% of accepted
+answers are right. Agreement with the benchmark's grades: 93.4% over 1,366 patches
+run. The picture is the one from 137 and from 222 tasks.
+
+Chains on the 274 valid tasks with these checks as the measured check, frontier
+`claude-opus-4.1` (48-50% on these tasks), eight models, 10 seeds, delta 0.05:
+
+| grades | epsilon | certified savings | uncertified: saved / accuracy vs frontier / runs over the limit |
+| --- | --- | --- | --- |
+| this run's | 0.02 | 0% | 22.3% / 50.0% vs 50.3% / 4 of 10 |
+| this run's | 0.04 | 0% | 53.8% / 51.1% vs 50.3% / 6 of 10 |
+| this run's | 0.05 | 0% | 58.8% / 49.9% vs 50.3% / 6 of 10 |
+| benchmark's | 0.04 | 0% | 9.7% / 47.5% vs 49.3% / 3 of 10 |
+
+- **Nothing certifies with the free checks alone**, at any limit, in any run. Two
+  reasons, both expected: a third of wrong patches still pass, and with 274 tasks the
+  certify part has about 80, where even zero failures gives a bound near 3.6%.
+- **What is at stake is large.** Picked without certification, a chain that tries
+  `deepseek-r1-0528` first and falls back to `claude-opus-4.1` costs about half as
+  much and is as accurate on average, but in most runs it loses more than the limit
+  of the tasks the frontier solves (up to 11%). A check that removed most of the
+  remaining wrong patches would turn this into certified savings; that is the job of
+  the judge (`results/2026-11-11-judge-pilot`).
+- The grades matter: with the benchmark's grades the cheap models look worse than
+  they are (see the dispute above), and the same chains save 10% instead of 54%.
+
 ## What this means
 
 Static checks are worth having: they are free and remove about half the answers.

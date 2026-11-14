@@ -103,7 +103,7 @@ Whether either becomes the default is still a team decision.
 
 ## Open items
 
-- Finish the SWE-bench repository-test run (222 of 303 tasks done as of 2026-11-12) and
+- Finish the SWE-bench repository-test run (277 of 306 tasks done as of 2026-11-14; the free checks alone certify 0%) and
   certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
 - A verifier for code that a customer can afford: open coding models of 14B and 32B both failed
   ([judge-pilot](2026-11-11-judge-pilot/README.md)). Classifiers trained on
