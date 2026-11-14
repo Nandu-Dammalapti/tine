@@ -85,6 +85,7 @@ class Ledger:
                     cached_tokens INTEGER,
                     cost_usd REAL,
                     baseline_cost_usd REAL,
+                    routing_cost_usd REAL,
                     latency_ms REAL,
                     outcome_updated_at TEXT,
                     outcome_sequence INTEGER NOT NULL DEFAULT 0,
@@ -104,6 +105,8 @@ class Ledger:
                     "UPDATE requests SET outcome_updated_at=created_at "
                     "WHERE success IS NOT NULL"
                 )
+            if "routing_cost_usd" not in columns:
+                self._db.execute("ALTER TABLE requests ADD COLUMN routing_cost_usd REAL")
             if "outcome_sequence" not in columns:
                 self._db.execute("ALTER TABLE requests ADD COLUMN outcome_sequence INTEGER NOT NULL DEFAULT 0")
             self._db.execute(
@@ -146,6 +149,7 @@ class Ledger:
         cached_tokens: int | None = None,
         cost_usd: float | None = None,
         baseline_cost_usd: float | None = None,
+        routing_cost_usd: float | None = None,
         latency_ms: float | None = None,
     ) -> str:
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
@@ -155,6 +159,7 @@ class Ledger:
         for name, value in (
             ("cost_usd", cost_usd),
             ("baseline_cost_usd", baseline_cost_usd),
+            ("routing_cost_usd", routing_cost_usd),
             ("latency_ms", latency_ms),
         ):
             _nonnegative(value, name)
@@ -192,6 +197,7 @@ class Ledger:
             "cached_tokens": cached_tokens,
             "cost_usd": cost_usd,
             "baseline_cost_usd": baseline_cost_usd,
+            "routing_cost_usd": routing_cost_usd,
             "latency_ms": latency_ms,
             "outcome_updated_at": now if success is not None else None,
             "outcome_sequence": 0,
@@ -297,7 +303,7 @@ class Ledger:
         """Report known ledger amounts, never extrapolate missing costs."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT success,cost_usd,baseline_cost_usd,cached_from "
+                "SELECT success,cost_usd,baseline_cost_usd,routing_cost_usd,cached_from "
                 "FROM requests WHERE tenant=?",
                 (tenant,),
             ).fetchall()
@@ -310,6 +316,10 @@ class Ledger:
         ]
         verified_cost = sum(row["cost_usd"] for row in comparable)
         verified_baseline = sum(row["baseline_cost_usd"] for row in comparable)
+        # What was spent to make or check the routing decision (second opinions,
+        # escalated attempts, judge calls), separate from the returned answer's cost.
+        # A request recorded without one made no routing calls.
+        verified_routing = sum(row["routing_cost_usd"] or 0.0 for row in comparable)
         known_cost = sum(
             row["cost_usd"] for row in rows if row["cost_usd"] is not None
         )
@@ -329,13 +339,15 @@ class Ledger:
             "comparable_verified_requests": len(comparable),
             "verified_cost_usd": verified_cost,
             "verified_baseline_cost_usd": verified_baseline,
-            "verified_savings_usd": verified_baseline - verified_cost,
+            "verified_routing_cost_usd": verified_routing,
+            "known_routing_cost_total_usd": sum(row["routing_cost_usd"] or 0.0 for row in rows),
+            "verified_savings_usd": verified_baseline - verified_cost - verified_routing,
             "savings_fraction": (
-                1 - verified_cost / verified_baseline if verified_baseline > 0 else None
+                1 - (verified_cost + verified_routing) / verified_baseline if verified_baseline > 0 else None
             ),
             "scope": "development ledger; outcomes and baseline costs are caller-attested",
             "savings_scope": (
-                "comparable successful requests only; failed and pending requests "
-                "are excluded from this subtotal, so it is not a billing amount"
+                "comparable successful requests only, net of recorded routing cost; failed and "
+                "pending requests are excluded from this subtotal, so it is not a billing amount"
             ),
         }

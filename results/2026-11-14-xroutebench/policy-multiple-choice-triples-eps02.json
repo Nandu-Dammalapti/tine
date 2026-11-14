@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "tenant": "benchmark",
+  "task_type": "xroutebench-multiple-choice",
+  "frontier": "cogito-v2-1-671b",
+  "stages": [
+    {
+      "models": [
+        "gemma-2-9b-it",
+        "gpt-oss-20b",
+        "llama-3-8b-instruct-lite"
+      ],
+      "check": "agreement"
+    },
+    {
+      "models": [
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+        "mistral-small-3-24b-instruct"
+      ],
+      "check": "agreement"
+    }
+  ],
+  "guarantee": {
+    "epsilon": 0.02,
+    "delta": 0.05,
+    "certified": true,
+    "statement": "With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks the frontier solves and this policy does not is at most epsilon.",
+    "bound": 0.016151136041472752,
+    "certify_tasks": 1426,
+    "certify_degradation_rate": 0.010518934081346423
+  },
+  "estimate": {
+    "scope": "held-out test tasks, recorded outcomes and costs; includes the cost of every call",
+    "test_tasks": 1414,
+    "savings": 0.5251849252277546,
+    "accuracy": 0.888967468175389,
+    "frontier_accuracy": 0.8698727015558698,
+    "degradation_rate": 0.009900990099009901,
+    "frontier_call_rate": 0.22277227722772278
+  },
+  "provenance": {
+    "created": "2026-11-14T03:20:48+00:00",
+    "seed": 42,
+    "fractions": [
+      0.4,
+      0.3,
+      0.3
+    ],
+    "complete_tasks": 4762,
+    "excluded_tasks": 0,
+    "candidates": 56,
+    "task_ids_sha256": "9b4e52c638a619444ff9b5c13a40eceac44f943908e22ec4b126f6911501d1ee",
+    "check_coverage": {
+      "tenant": "benchmark",
+      "identity_scope": "single-tenant task/model",
+      "source_rows": 266672,
+      "matched_rows": 266672,
+      "ignored_rows": 0,
+      "expected_checks": 271434,
+      "known_checks": 266672,
+      "unknown_checks": 4762,
+      "unknown_policy": "pass_without_evidence",
+      "per_model": {
+        "cogito-v2-1-671b": {
+          "known": 0,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+gpt-oss-20b": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+llama-3-8b-instruct-lite": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-120b+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-20b+llama-3-8b-instruct-lite": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-20b+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-20b+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-20b+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+gpt-oss-20b+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+llama-3-8b-instruct-lite+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+llama-3-8b-instruct-lite+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+llama-3-8b-instruct-lite+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+mistral-7b-instruct-v0.3+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+mistral-7b-instruct-v0.3+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+mistral-small-3-24b-instruct+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+mistral-small-3-24b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gemma-2-9b-it+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+gpt-oss-20b+llama-3-8b-instruct-lite": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+gpt-oss-20b+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+gpt-oss-20b+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+gpt-oss-20b+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+gpt-oss-20b+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+llama-3-8b-instruct-lite+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+llama-3-8b-instruct-lite+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+llama-3-8b-instruct-lite+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+mistral-7b-instruct-v0.3+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+mistral-7b-instruct-v0.3+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+mistral-small-3-24b-instruct+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+mistral-small-3-24b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-120b+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+llama-3-8b-instruct-lite+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+llama-3-8b-instruct-lite+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+llama-3-8b-instruct-lite+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+mistral-7b-instruct-v0.3+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+mistral-7b-instruct-v0.3+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+mistral-small-3-24b-instruct+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+mistral-small-3-24b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "gpt-oss-20b+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+mistral-7b-instruct-v0.3+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+mistral-small-3-24b-instruct+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+mistral-small-3-24b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "llama-3-8b-instruct-lite+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct+qwen2.5-7b-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "mistral-7b-instruct-v0.3+mistral-small-3-24b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "mistral-7b-instruct-v0.3+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        },
+        "mistral-small-3-24b-instruct+qwen2.5-7b-instruct+rnj-1-instruct": {
+          "known": 4762,
+          "expected": 4762
+        }
+      }
+    }
+  }
+}
