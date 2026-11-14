@@ -1,0 +1,7 @@
+catch,epsilon,method,savings_mean,savings_min,savings_max,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs,gated_runs,gate_tau_median,response_runs,response_tau_median,frontier_call_rate,mean_calls,most_common_chain
+measured,0.01,uncertified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b
+measured,0.01,certified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b
+measured,0.02,uncertified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b
+measured,0.02,certified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b
+measured,0.04,uncertified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b
+measured,0.04,certified,0.0,0.0,0.0,0.889294086231374,0.889294086231374,0.0,0.0,0,10,0,,0,,1.0,1.0,cogito-v2-1-671b

@@ -9,8 +9,9 @@ executed. Three steps, each a subcommand:
              the repository's existing tests) and write them as judge cases, with the
              grades kept in a separate key file the judge never sees.
 ``judge``    Send each case, one per request, to any OpenAI-compatible chat endpoint
-             (a customer-hosted open model behind vLLM, Ollama or LM Studio, or a
-             provider API) and record the verdict, the tokens used and the time taken.
+             (a customer-hosted open model behind vLLM, Ollama or LM Studio) or, with
+             ``--provider anthropic``, to a Claude model through the Anthropic SDK, and
+             record the verdict, the tokens used, the cost and the time taken.
 ``score``    Compare one or more verdict files with the key: how many wrong patches
              the judge rejects, how many right ones it rejects, and what it costs.
 
@@ -57,7 +58,12 @@ CASE_TEMPLATE = "<issue>\n{issue}\n</issue>\n\n<patch>\n{patch}\n</patch>"
 MAX_ISSUE_CHARS = 12000
 MAX_PATCH_CHARS = 20000
 VERDICT_FIELDS = ["case_id", "judge", "verdict", "probability", "reason", "prompt_tokens",
-                  "completion_tokens", "tokens_estimated", "seconds", "prompt_version"]
+                  "completion_tokens", "tokens_estimated", "seconds", "prompt_version", "cost_usd"]
+# USD per million tokens (input, output), read from
+# https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-14. Output includes the
+# model's thinking tokens. Used to stop a run at its spending cap; check before relying on it.
+ANTHROPIC_PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0),
+                    "claude-opus-5-5": (4.0, 20.0)}
 
 
 def case_text(case: dict) -> str:
@@ -199,6 +205,82 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
     return counts
 
 
+def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd: float,
+                    judge_name: str | None = None, effort: str = "medium", max_tokens: int = 8000,
+                    style: str = "verdict", workers: int = 4, prices: tuple[float, float] | None = None,
+                    client=None) -> dict:
+    """One request per case to a Claude model. Resumes from ``output``.
+
+    Spending is counted from each reply's reported usage and the run stops before a
+    request that could take the total for this output file past ``max_cost_usd``
+    (assuming the worst case of ``max_tokens`` of output). The API key comes from the
+    environment, read by the SDK; it is never an argument and never written anywhere.
+    A refusal or a reply with no usable verdict is recorded as ``unparsed``."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    price_in, price_out = prices or ANTHROPIC_PRICES[model]
+    if max_cost_usd <= 0:
+        raise ValueError("max_cost_usd must be positive")
+    if client is None:
+        import anthropic
+
+        client = anthropic.Anthropic(max_retries=5)
+    judge_name = judge_name or f"{model} ({effort})"
+    previous = [row for row in read_csv(output) if row["judge"] == judge_name] if Path(output).exists() else []
+    done = {row["case_id"] for row in previous}
+    state = {"spent": sum(float(row.get("cost_usd") or 0) for row in previous), "reserved": 0.0,
+             "judged": 0, "unparsed": 0, "stopped_at_cap": False}
+    lock = threading.Lock()
+
+    def one(case: dict) -> None:
+        messages = build_messages(case, style)
+        worst = (len(messages[0]["content"]) + len(messages[1]["content"])) / 3 * price_in / 1e6 \
+            + max_tokens * price_out / 1e6
+        with lock:
+            if state["spent"] + state["reserved"] + worst > max_cost_usd:
+                state["stopped_at_cap"] = True
+                return
+            state["reserved"] += worst
+        started = time.time()
+        try:
+            response = client.messages.create(
+                model=model, max_tokens=max_tokens, system=messages[0]["content"],
+                messages=[{"role": "user", "content": messages[1]["content"]}],
+                output_config={"effort": effort})
+        except BaseException:
+            with lock:
+                state["reserved"] -= worst
+            raise
+        cost = (response.usage.input_tokens * price_in + response.usage.output_tokens * price_out) / 1e6
+        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": PROMPT_VERSION,
+               "prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
+               "tokens_estimated": False, "seconds": round(time.time() - started, 2), "cost_usd": round(cost, 6)}
+        text = "".join(block.text for block in response.content if block.type == "text")
+        unparsed = False
+        try:
+            if response.stop_reason == "refusal":
+                raise ValueError("refusal")
+            row.update(parse_verdict(text))
+        except ValueError:
+            row.update({"verdict": "unparsed", "probability": "", "reason": str(response.stop_reason)[:200]})
+            unparsed = True
+        with lock:
+            state["reserved"] -= worst
+            state["spent"] += cost
+            state["judged"] += 1
+            state["unparsed"] += unparsed
+            append_verdict(output, row)
+
+    pending = [case for case in read_jsonl(cases_path) if case["case_id"] not in done]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for outcome in [pool.submit(one, case) for case in pending]:
+            outcome.result()
+    return {"judge": judge_name, "judged": state["judged"], "skipped": len(done), "unparsed": state["unparsed"],
+            "not_run": len(pending) - state["judged"], "stopped_at_cap": state["stopped_at_cap"],
+            "spent_usd": round(state["spent"], 4), "max_cost_usd": max_cost_usd}
+
+
 def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_right",
           thresholds=(None, 0.5, 0.7, 0.9)) -> list[dict]:
     """Per judge and threshold: wrong patches rejected, right patches rejected, the
@@ -214,8 +296,8 @@ def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_
     results = []
     for judge_name, verdicts in sorted(by_judge.items()):
         def tokens(field):
-            values = [float(row[field]) for row in verdicts.values() if row[field] not in ("", None)]
-            return round(sum(values) / len(values), 1) if values else None
+            values = [float(row[field]) for row in verdicts.values() if row.get(field) not in ("", None)]
+            return round(sum(values) / len(values), 6 if field == "cost_usd" else 1) if values else None
 
         for threshold in thresholds:
             counts = {"right": 0, "wrong": 0, "right_rejected": 0, "wrong_rejected": 0}
@@ -240,7 +322,7 @@ def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_
                 "unparsed": sum(row["verdict"] == "unparsed" for row in verdicts.values()),
                 "mean_prompt_tokens": tokens("prompt_tokens"), "mean_completion_tokens": tokens("completion_tokens"),
                 "tokens_estimated": any(row["tokens_estimated"] == "True" for row in verdicts.values()),
-                "mean_seconds": tokens("seconds")})
+                "mean_seconds": tokens("seconds"), "mean_cost_usd": tokens("cost_usd")})
     return results
 
 
@@ -260,11 +342,18 @@ def main(argv=None) -> None:
     run = commands.add_parser("judge", help="ask a model for verdicts (calls the model)")
     run.add_argument("--cases", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--base-url", required=True, help="OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1")
+    run.add_argument("--provider", choices=("openai-compatible", "anthropic"), default="openai-compatible")
+    run.add_argument("--base-url", help="OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1")
+    run.add_argument("--effort", choices=("low", "medium", "high"), default="medium",
+                     help="anthropic: how much the model reasons before answering")
+    run.add_argument("--max-cost-usd", type=float,
+                     help="anthropic: stop before spending more than this in total for the output file")
+    run.add_argument("--workers", type=int, default=4, help="anthropic: requests in flight at once")
     run.add_argument("--model", required=True)
     run.add_argument("--judge-name", help="label for this judge in the output (default: the model name)")
     run.add_argument("--api-key-env", help="environment variable holding the API key, if the endpoint needs one")
-    run.add_argument("--max-tokens", type=int, default=400)
+    run.add_argument("--max-tokens", type=int,
+                     help="default 400; 8000 for anthropic, where it also covers the model's reasoning")
     run.add_argument("--style", choices=sorted(STYLES), default="verdict",
                      help="think: have the reviewer reason through the change before its verdict "
                           "(use a larger --max-tokens)")
@@ -277,12 +366,23 @@ def main(argv=None) -> None:
     if args.command == "prepare":
         print(json.dumps(prepare(args.bench_dir, args.static_checks, args.repo_tests, args.dataset, args.cases,
                                  args.key, models=set(args.models), sample=args.sample, seed=args.seed)))
+    elif args.command == "judge" and args.provider == "anthropic":
+        if args.max_cost_usd is None:
+            raise SystemExit("--provider anthropic calls a paid model: pass --max-cost-usd")
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise SystemExit("Environment variable ANTHROPIC_API_KEY is not set")
+        print(json.dumps(judge_anthropic(args.cases, args.output, model=args.model, judge_name=args.judge_name,
+                                         max_cost_usd=args.max_cost_usd, effort=args.effort,
+                                         max_tokens=args.max_tokens or 8000, style=args.style,
+                                         workers=args.workers)))
     elif args.command == "judge":
+        if not args.base_url:
+            raise SystemExit("--base-url is required for an OpenAI-compatible endpoint")
         api_key = os.environ.get(args.api_key_env) if args.api_key_env else None
         if args.api_key_env and not api_key:
             raise SystemExit(f"Environment variable {args.api_key_env} is not set")
         print(json.dumps(judge(args.cases, args.output, base_url=args.base_url, model=args.model,
-                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens,
+                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens or 400,
                                style=args.style)))
     else:
         rows = score(args.key, args.verdicts, grade=args.grade)

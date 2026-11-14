@@ -122,3 +122,27 @@ hidden states for each case as extra features;
 The `agreement` features compare a patch with other models' patches for the same task: using them at
 run time means several cheap calls per request, which is routing cost. Pass the frontier model to
 `--agreement-exclude`. Results: `results/2026-11-13-trained-verifier`.
+
+## A Claude model as the judge, with a spending cap
+
+`judge --provider anthropic` sends each case to a Claude model through the Anthropic SDK with the same
+instructions as every other judge:
+
+```bash
+python scripts/judge_patches.py judge --provider anthropic --model claude-haiku-5-5 \
+  --cases RUNS/judge/cases.jsonl --output RUNS/judge/verdicts-haiku.csv --max-cost-usd 1
+```
+
+- **This spends money.** It needs the task's authorization (AGENTS.md) and refuses to start without
+  `--max-cost-usd`. Spending is counted from each reply's reported usage, at the prices in
+  `ANTHROPIC_PRICES` (read from the provider's price page on 2026-11-14; check them before a run). The
+  run stops before any request whose worst case would pass the cap, and the cap covers everything
+  already recorded in the output file, so a resumed run cannot overspend.
+- The key is read from the `ANTHROPIC_API_KEY` environment variable by the SDK. It is never an
+  argument, never printed and never written to a file by this script.
+- `--effort` (default `medium`) sets how much the model reasons before it answers. Reasoning tokens
+  are billed as output and are included in `completion_tokens` and `cost_usd`.
+- Each verdict row records `cost_usd`; `score` reports `mean_cost_usd` per case. That is the routing
+  cost to net from savings.
+- A refusal or a reply with no usable verdict is recorded as `unparsed` and scored as a rejection. No
+  fallback model is configured: the point is to measure one named model.
