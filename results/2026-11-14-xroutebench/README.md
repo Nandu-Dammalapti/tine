@@ -91,3 +91,43 @@ Certified picks, mean over 10 seeds on held-out tasks:
 - The benchmark's train and test files were pooled and re-split by seed. Its own
   split was not used.
 - Exact-match comparison of extracted answers; see the math note above.
+
+## Result 2: the LLMRouter library's routers on LiveCodeBench
+
+`llmrouter-lcb-summary.csv`, `llmrouter-lcb-curve.csv`. `scripts/llmrouter_baseline.py`
+with the library at commit `c65ee01`: its kNN, SVM, MLP, matrix-factorisation and Elo
+routers and trainers, unmodified, with the hyperparameters of its own benchmark
+pipeline. Pool `lcb`: 1,055 LiveCodeBench tasks, 28 models, frontier `gpt-5` (86.1%).
+Query vectors: Qwen3-Embedding-0.6B, the encoder the library's benchmark uses. 10
+seeds, tasks split 50 / 25 / 25 into train / calibrate / test. Not run: GraphRouter
+(needs `torch_geometric`), RouterDC and CausalLM (they encode text with their own
+large models), AutoMix (needs live model calls), the two-model routers.
+
+The routers have no cost setting of their own. The library's benchmark makes them
+cost-aware by training on `alpha * performance - beta * cost`; here `alpha` is the
+weight and `beta` is one minus it.
+
+| router | weight 1.0: saved / accuracy | weight 0.9: saved / accuracy | certified at 2% or 4% |
+| --- | --- | --- | --- |
+| kNN | 0.1% / 86.1% | 88.6% / 39.4% | 0.2% |
+| SVM | 0% / 86.1% | 98.3% / 41.0% | 0% |
+| MLP | -4.2% / 85.8% | 80.9% / 45.8% | -0.2% to -0.4% |
+| matrix factorisation | -0.5% / 86.1% | 79.9% / 43.8% | 0.0% |
+| Elo | 0% / 86.1% | 99.8% / 46.1% | 0% |
+
+- **On this pool the library's routers have two settings and nothing between them.**
+  At weight 1 they send everything to gpt-5. At any lower weight (0.9 down to 0.2 give
+  the same picture) they send almost everything to a cheap model and accuracy falls
+  from 86% to 39-46%.
+- **Why:** each router is trained to predict one label per query, the model with the
+  highest reward. With right-or-wrong outcomes, any cost term at all makes that label
+  "the cheapest model that got it right", and the router learns which cheap model that
+  usually is. Nothing in the label says how likely the cheap model is to be wrong on
+  this query, so there is nothing to turn down gradually.
+- **Certified savings are zero**, as for every prompt-only router tried on this pool:
+  the only weight that passes the limit is the one that always uses gpt-5. The small
+  negative numbers for MLP are runs where its weight-1 choice passed the test on the
+  calibrate tasks and cost slightly more than gpt-5 on the test tasks.
+- This is the library used as its own benchmark pipeline uses it, on our data. Its
+  published results are on its own pool of open models with a narrow price range and
+  are measured as reward, not as savings under a quality limit.

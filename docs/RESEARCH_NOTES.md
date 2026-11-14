@@ -154,3 +154,6 @@ benchmarks with open models, not cost saved at held quality, and it has no SWE-b
 Reading for us: the "which router" layer is a commodity that anyone can install. That supports
 putting Tine's effort into verification, the guarantee and per-company outcomes, and using this
 library as the baseline set rather than rebuilding those routers.
+
+Follow-up, 2026-11-14: the agreement check was run on xRouteBench and five of the library's routers
+were run on our LiveCodeBench pool. Results: `results/2026-11-14-xroutebench`.
