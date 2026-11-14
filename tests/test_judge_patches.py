@@ -219,3 +219,20 @@ def test_chain_inputs_charge_each_judge_only_where_it_was_consulted(tmp_path):
     alone = judge_module.chain_inputs(key, [cheap], free, outcomes, tmp_path / "c2.csv", tmp_path / "j2.jsonl",
                                       threshold=0.7)
     assert alone["passed"] == 2 and alone["failed"] == 3  # c3 at 0.6 is below the threshold
+
+
+def test_patch_judge_check_accepts_on_the_verdict_or_a_threshold_and_fails_closed():
+    from tine.judge import patch_judge_check
+
+    client = FakeClaude()
+    good = {"repository": "o/r", "issue": "i", "patch": "GOOD"}
+    check = patch_judge_check(client, model="claude-haiku-5-5")
+    verdict = check(good)
+    assert verdict["passed"] and verdict["cost_usd"] == pytest.approx((1000 * 0.10 + 2000 * 0.50) / 1e6)
+    assert not check({**good, "patch": "BAD"})["passed"] and not check({**good, "patch": "REFUSE"})["passed"]
+    assert not patch_judge_check(client, model="claude-haiku-5-5", threshold=0.95)(good)["passed"]
+
+    class Down:
+        messages = property(lambda self: (_ for _ in ()).throw(ConnectionError()))
+    failed = patch_judge_check(Down(), model="claude-haiku-5-5")(good)
+    assert failed == {"passed": False, "cost_usd": None, "detail": "ConnectionError"}

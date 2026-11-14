@@ -29,18 +29,20 @@ from tine.checks import prepare_checks
 from tine.pipeline import complete_tasks, matrix
 
 POLICY_VERSION = 1
-CHECKS = ("agreement", "none")
+BUILT_IN_CHECKS = ("agreement", "none")
 
 
-def _stage(name: str) -> dict:
-    """A candidate named ``A+B`` is a group whose members must agree; a single model
-    has no check of its own and is accepted as it is."""
+def _stage(name: str, single_check: str) -> dict:
+    """A candidate named ``A+B`` is a group whose members must agree. A single model
+    carries ``single_check``: the name of the check the recorded results measured for
+    it, or ``none`` if it is accepted as it is."""
     members = name.split("+")
-    return {"models": members, "check": "agreement" if len(members) > 1 else "none"}
+    return {"models": members, "check": "agreement" if len(members) > 1 else single_check}
 
 
 def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float = 0.05, seed: int = 42,
-                  fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8) -> dict:
+                  fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8,
+                  single_check: str = "none") -> dict:
     """Choose and certify one chain, and describe it as data.
 
     Tasks are split by ``seed`` into choose / certify / test parts. The chain is
@@ -50,8 +52,14 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     certifies, the policy has no stages and every request goes to the frontier.
 
     ``checks`` holds measured check results (task_id, model, passed) for the
-    candidates in ``frame``, as written by ``scripts/agreement_pairs.py``.
+    candidates in ``frame``, as written by ``scripts/agreement_pairs.py`` or
+    ``scripts/judge_patches.py checks``. ``single_check`` names what those results
+    measured for a single model, for example ``tests+judge``; whoever runs the policy
+    must supply a check of that name that does the same thing, or the guarantee does
+    not describe what runs.
     """
+    if not isinstance(single_check, str) or not single_check or single_check == "agreement":
+        raise ValueError("single_check must be a check name other than 'agreement'")
     epsilon = _probability(epsilon, "epsilon")
     delta = _probability(delta, "delta", open_interval=True)
     frame, tasks, excluded = complete_tasks(frame, frontier)
@@ -79,7 +87,7 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
         identity.update(str(task_id).encode("utf-8") + b"\n")
     return {
         "version": POLICY_VERSION, "tenant": str(tasks.tenant.iloc[0]), "task_type": str(tasks.task_type.iloc[0]),
-        "frontier": frontier, "stages": [_stage(models[index]) for index in chain],
+        "frontier": frontier, "stages": [_stage(models[index], single_check) for index in chain],
         "guarantee": {
             "epsilon": epsilon, "delta": delta, "certified": bool(chain),
             "statement": ("With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks "
@@ -112,10 +120,12 @@ def validate_policy(policy: dict) -> dict:
         members = stage.get("models") if isinstance(stage, dict) else None
         if not isinstance(members, list) or not members or not all(isinstance(m, str) and m for m in members):
             raise ValueError("Each stage needs a nonempty list of model names")
-        if stage.get("check") not in CHECKS:
-            raise ValueError(f"Unknown check {stage.get('check')!r}; this version runs {CHECKS}")
+        if not isinstance(stage.get("check"), str) or not stage["check"]:
+            raise ValueError("Each stage needs a check name")
         if stage["check"] == "agreement" and len(set(members)) < 2:
             raise ValueError("An agreement check needs at least two different models")
+        if stage["check"] != "agreement" and len(members) != 1:
+            raise ValueError("Only an agreement stage may have several models")
         if policy["frontier"] in members:
             raise ValueError("The frontier is the final fallback and cannot be a stage member")
     if stages and not (isinstance(policy.get("guarantee"), dict) and policy["guarantee"].get("certified") is True):
@@ -129,7 +139,7 @@ def same_answer(answers) -> bool:
     return len(cleaned) == 1 and None not in cleaned and "" not in cleaned
 
 
-def run_policy(policy: dict, call, *, agree=same_answer) -> dict:
+def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = None) -> dict:
     """Run one request through ``policy``.
 
     ``call(model)`` performs the request on that model and returns a mapping with
@@ -138,6 +148,12 @@ def run_policy(policy: dict, call, *, agree=same_answer) -> dict:
     model that raises is treated as having no answer and the stage is abandoned. A
     frontier failure is raised to the caller: there is nothing left to fall back to.
 
+    A stage whose check is neither ``agreement`` nor ``none`` is decided by
+    ``checks[name](result)``, which returns a mapping with ``passed`` and, if the
+    check itself cost money (a judge call), ``cost_usd``. That cost is routing cost.
+    A check that raises counts as a failure. Every check a policy names must be
+    supplied, or nothing is run.
+
     Returns the accepted call's mapping under ``result``, the model that served it,
     the stage it came from (``"frontier"`` for the fallback), ``answer_cost_usd`` for
     that call and ``routing_cost_usd`` for every other call made, with the calls listed.
@@ -145,7 +161,11 @@ def run_policy(policy: dict, call, *, agree=same_answer) -> dict:
     estimate charges it each time, so live cost can only be lower on that account.
     """
     validate_policy(policy)
-    calls, seen = [], {}
+    checks = checks or {}
+    missing = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS) - set(checks))
+    if missing:
+        raise ValueError(f"No check supplied for: {missing}")
+    calls, seen, check_runs = [], {}, []
 
     def attempt(model: str):
         if model in seen:  # asked in an earlier stage of this request: reuse, do not pay twice
@@ -161,13 +181,25 @@ def run_policy(policy: dict, call, *, agree=same_answer) -> dict:
         return result
 
     def finish(result, model: str, stage):
-        known = [entry["cost_usd"] for entry in calls if entry["cost_usd"] is not None]
+        known = [entry["cost_usd"] for entry in calls + check_runs if entry["cost_usd"] is not None]
         answer_cost = result.get("cost_usd")
         total = sum(known)
-        return {"result": result, "served_by": model, "stage": stage, "calls": calls,
+        return {"result": result, "served_by": model, "stage": stage, "calls": calls, "checks": check_runs,
                 "answer_cost_usd": answer_cost,
                 "routing_cost_usd": total - answer_cost if answer_cost is not None else total,
-                "unknown_cost_calls": sum(entry["cost_usd"] is None for entry in calls)}
+                "unknown_cost_calls": sum(entry["cost_usd"] is None for entry in calls + check_runs)}
+
+    def passes(name: str, model: str, result) -> bool:
+        try:
+            verdict = checks[name](result)
+        except Exception as error:  # a broken check must not accept an answer or fail the request
+            check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
+                               "error": type(error).__name__})
+            return False
+        passed = verdict.get("passed") is True
+        check_runs.append({"check": name, "model": model, "passed": passed, "cost_usd": verdict.get("cost_usd"),
+                           "error": None})
+        return passed
 
     for index, stage in enumerate(policy["stages"]):
         results = []
@@ -178,7 +210,13 @@ def run_policy(policy: dict, call, *, agree=same_answer) -> dict:
             results.append(result)
         if len(results) < len(stage["models"]):
             continue
-        if stage["check"] == "none" or agree([result.get("answer") for result in results]):
+        if stage["check"] == "none":
+            accepted = True
+        elif stage["check"] == "agreement":
+            accepted = agree([result.get("answer") for result in results])
+        else:
+            accepted = passes(stage["check"], stage["models"][0], results[0])
+        if accepted:
             return finish(results[0], stage["models"][0], index)
     result = call(policy["frontier"])
     calls.append({"model": policy["frontier"], "cost_usd": result.get("cost_usd"), "error": None})

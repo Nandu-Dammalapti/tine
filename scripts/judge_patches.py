@@ -31,75 +31,19 @@ import hashlib
 import json
 import os
 import random
-import re
+import sys
 import time
 from pathlib import Path
 
-PROMPT_VERSION = "2026-11-11"
-INSTRUCTIONS = """You are reviewing a proposed code change before it is accepted.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-Below are a GitHub issue from the {repository} repository and a patch that claims to resolve it. The patch already applies cleanly and does not break the project's existing tests. Decide whether it correctly and completely resolves the issue, so that tests written specifically for this issue would pass. You cannot run code; reason from the issue and the patch.
+from tine.judge import (  # noqa: E402,F401
+    ANTHROPIC_PRICES, CASE_TEMPLATE, INSTRUCTIONS, MAX_ISSUE_CHARS, MAX_PATCH_CHARS, PROMPT_VERSION, STYLES,
+    THINK_INSTRUCTIONS, build_messages, case_text, judge_once, parse_verdict, worst_case_cost,
+)
 
-Reply with one JSON object and nothing else:
-{{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
-# A second style for smaller models, which tend to accept everything when asked for a
-# bare verdict: make the reviewer work through the change before deciding.
-THINK_INSTRUCTIONS = """You are a strict code reviewer deciding whether a proposed change may be merged.
-
-Below are a GitHub issue from the {repository} repository and a patch that claims to resolve it. The patch applies cleanly and does not break the project's existing tests, but about half of patches like this do NOT actually fix the issue. You cannot run code.
-
-Work through these steps in a few sentences each:
-1. What exactly must change for the issue to be resolved?
-2. What does the patch change, and where?
-3. Name the most likely way this patch fails: a case from the issue it does not handle, the wrong location, or behaviour that differs from what the issue asks for.
-4. Decide. Accept only if you found no real problem in step 3.
-
-End your reply with one JSON object on its own line:
-{{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
-STYLES = {"verdict": None, "think": THINK_INSTRUCTIONS}
-CASE_TEMPLATE = "<issue>\n{issue}\n</issue>\n\n<patch>\n{patch}\n</patch>"
-MAX_ISSUE_CHARS = 12000
-MAX_PATCH_CHARS = 20000
 VERDICT_FIELDS = ["case_id", "judge", "verdict", "probability", "reason", "prompt_tokens",
                   "completion_tokens", "tokens_estimated", "seconds", "prompt_version", "cost_usd"]
-# USD per million tokens (input, output), read from
-# https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-14. Output includes the
-# model's thinking tokens. Used to stop a run at its spending cap; check before relying on it.
-ANTHROPIC_PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0),
-                    "claude-opus-5-5": (4.0, 20.0)}
-
-
-def case_text(case: dict) -> str:
-    return CASE_TEMPLATE.format(issue=case["issue"][:MAX_ISSUE_CHARS], patch=case["patch"][:MAX_PATCH_CHARS])
-
-
-def build_messages(case: dict, style: str = "verdict") -> list[dict]:
-    if style not in STYLES:
-        raise ValueError(f"style must be one of {sorted(STYLES)}")
-    instructions = STYLES[style] or INSTRUCTIONS
-    return [{"role": "system", "content": instructions.format(repository=case["repository"])},
-            {"role": "user", "content": case_text(case)}]
-
-
-def parse_verdict(text: str) -> dict:
-    """The judge's JSON object from its reply. Raises ValueError if there is none."""
-    for candidate in reversed(re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL)):
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        verdict = str(value.get("verdict", "")).strip().lower()
-        if verdict not in ("accept", "reject"):
-            continue
-        try:
-            probability = float(value.get("probability"))
-        except (TypeError, ValueError):
-            continue
-        if not 0 <= probability <= 1:
-            continue
-        return {"verdict": verdict, "probability": probability,
-                "reason": str(value.get("reason", ""))[:200]}
-    raise ValueError("No verdict object with verdict and probability in the reply")
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -245,9 +189,7 @@ def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd:
     lock = threading.Lock()
 
     def one(case: dict) -> None:
-        messages = build_messages(case, style)
-        worst = (len(messages[0]["content"]) + len(messages[1]["content"])) / 3 * price_in / 1e6 \
-            + max_tokens * price_out / 1e6
+        worst = worst_case_cost(case, model=model, max_tokens=max_tokens, style=style, prices=(price_in, price_out))
         with lock:
             if state["spent"] + state["reserved"] + worst > max_cost_usd:
                 state["stopped_at_cap"] = True
@@ -255,32 +197,23 @@ def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd:
             state["reserved"] += worst
         started = time.time()
         try:
-            response = client.messages.create(
-                model=model, max_tokens=max_tokens, system=messages[0]["content"],
-                messages=[{"role": "user", "content": messages[1]["content"]}],
-                output_config={"effort": effort})
+            verdict = judge_once(client, case, model=model, effort=effort, max_tokens=max_tokens, style=style,
+                                 prices=(price_in, price_out))
         except BaseException:
             with lock:
                 state["reserved"] -= worst
             raise
-        cost = (response.usage.input_tokens * price_in + response.usage.output_tokens * price_out) / 1e6
+        cost = verdict.pop("cost_usd")
         row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": PROMPT_VERSION,
-               "prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
-               "tokens_estimated": False, "seconds": round(time.time() - started, 2), "cost_usd": round(cost, 6)}
-        text = "".join(block.text for block in response.content if block.type == "text")
-        unparsed = False
-        try:
-            if response.stop_reason == "refusal":
-                raise ValueError("refusal")
-            row.update(parse_verdict(text))
-        except ValueError:
-            row.update({"verdict": "unparsed", "probability": "", "reason": str(response.stop_reason)[:200]})
-            unparsed = True
+               "tokens_estimated": False, "seconds": round(time.time() - started, 2), "cost_usd": round(cost, 6),
+               **verdict}
+        if row["probability"] is None:
+            row["probability"] = ""
         with lock:
             state["reserved"] -= worst
             state["spent"] += cost
             state["judged"] += 1
-            state["unparsed"] += unparsed
+            state["unparsed"] += row["verdict"] == "unparsed"
             append_verdict(output, row)
 
     pending = [case for case in read_jsonl(cases_path) if case["case_id"] not in done]

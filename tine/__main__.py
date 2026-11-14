@@ -70,6 +70,10 @@ def main(argv=None):
     freeze.add_argument("--delta", type=float, default=0.05)
     freeze.add_argument("--seed", type=int, default=42)
     freeze.add_argument("--max-length", type=int, default=3)
+    freeze.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
+                        default=[0.4, 0.3, 0.3])
+    freeze.add_argument("--single-check", default="none",
+                        help="Name of the check the results measured for a single model, e.g. tests+judge")
     freeze.add_argument("--output", required=True, type=Path, help="Policy JSON")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
@@ -155,7 +159,8 @@ def main(argv=None):
 
         policy = freeze_policy(read_outcomes(args.input), args.frontier, read_checks(args.checks),
                                epsilon=args.epsilon, delta=args.delta, seed=args.seed,
-                               max_length=args.max_length)
+                               max_length=args.max_length, fractions=tuple(args.fractions),
+                               single_check=args.single_check)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
         print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))

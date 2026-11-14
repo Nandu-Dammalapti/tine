@@ -161,7 +161,14 @@ more graded tasks so that the certify part is large enough for a 2% limit.
 
 1. More graded tasks: the 29 not yet run, then other SWE-bench repositories, to
    certify at 2%.
-2. A judge stage type in `tine.policy`, so a frozen policy can carry this chain.
+2. Done 2026-11-14: a frozen policy can carry this chain (`docs/POLICY.md`).
+   `policy-code-sonnet-judge-eps04.json` is one, frozen at the 4% limit with the default
+   split and seed 42: `kimi-k2-0905`, then `deepseek-r1-0528`, then `glm-4.6`, each behind
+   the free checks and the Sonnet judge, then `claude-opus-4.1`. Bound 3.5% on 84
+   certify tasks; on its 78 test tasks it costs 34.7% less and solves 56.4% against
+   44.9%. One split, so read it as an example of the file, not as a measurement:
+   the ten-seed tables above are the measurement, and at that seed the Haiku chain
+   did not certify.
 
 ## Reproduce
 

@@ -84,7 +84,7 @@ def test_a_frontier_failure_is_raised_and_missing_answers_never_agree():
 
 
 def test_validate_policy_rejects_what_it_cannot_run_faithfully():
-    for broken in [{**POLICY, "version": 2}, {**POLICY, "stages": [{"models": ["a"], "check": "judge"}]},
+    for broken in [{**POLICY, "version": 2}, {**POLICY, "stages": [{"models": ["a", "b"], "check": "judge"}]},
                    {**POLICY, "stages": [{"models": ["a", "a"], "check": "agreement"}]},
                    {**POLICY, "stages": [{"models": ["big", "a"], "check": "agreement"}]},
                    {**POLICY, "guarantee": {"certified": False}}]:
@@ -113,3 +113,44 @@ def test_a_model_in_two_stages_is_called_once_per_request():
     outcome = run_policy(policy, call)
     assert made == ["a", "b", "c"] and outcome["served_by"] == "b" and outcome["stage"] == 1
     assert outcome["answer_cost_usd"] == 1.0 and outcome["routing_cost_usd"] == 2.0
+
+
+JUDGED = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+          "stages": [{"models": ["a"], "check": "tests+judge"}, {"models": ["b"], "check": "tests+judge"}]}
+
+
+def test_a_named_check_decides_a_stage_and_its_cost_is_routing_cost():
+    call, made = caller({"a": "patch-a", "b": "patch-b"}, {"a": 1.0, "b": 2.0, "big": 10.0})
+    judged = []
+
+    def judge(result):
+        judged.append(result["model"])
+        return {"passed": result["model"] == "b", "cost_usd": 0.5}
+    outcome = run_policy(JUDGED, call, checks={"tests+judge": judge})
+    assert made == ["a", "b"] and judged == ["a", "b"] and outcome["served_by"] == "b"
+    assert outcome["answer_cost_usd"] == 2.0 and outcome["routing_cost_usd"] == pytest.approx(1.0 + 0.5 + 0.5)
+    assert [entry["passed"] for entry in outcome["checks"]] == [False, True]
+
+
+def test_a_failing_check_escalates_and_a_missing_check_runs_nothing():
+    call, made = caller({"a": "x", "b": "y", "big": "z"}, {"a": 1.0, "b": 2.0, "big": 10.0})
+
+    def broken(result):
+        raise RuntimeError("judge down")
+    outcome = run_policy(JUDGED, call, checks={"tests+judge": broken})
+    assert outcome["stage"] == "frontier" and outcome["routing_cost_usd"] == 3.0
+    assert outcome["checks"][0]["error"] == "RuntimeError" and outcome["unknown_cost_calls"] == 2
+    call, made = caller({"a": "x"})
+    with pytest.raises(ValueError, match="No check supplied"):
+        run_policy(JUDGED, call)
+    assert made == []
+
+
+def test_freeze_policy_names_the_measured_check_on_single_model_stages():
+    frame, checks = recorded()
+    frame["model"] = frame.model.replace({"a+b": "cheap"})
+    checks["model"] = "cheap"
+    policy = freeze_policy(frame, "frontier", checks, epsilon=0.02, single_check="tests+judge")
+    assert policy["stages"] == [{"models": ["cheap"], "check": "tests+judge"}]
+    with pytest.raises(ValueError):
+        freeze_policy(frame, "frontier", checks, epsilon=0.02, single_check="agreement")

@@ -18,7 +18,9 @@ certify / test parts and picks and certifies a chain exactly as one seed of the
 certified experiment does. The file it writes holds:
 
 - `stages`: the cheaper models to try, in order. A stage with several models passes
-  when all of them give the same answer (`"check": "agreement"`).
+  when all of them give the same answer (`"check": "agreement"`). A stage with one
+  model carries the name given with `--single-check`: `none` (accepted as it is) or
+  the name of the check the recorded results measured, such as `tests+judge:sonnet`.
 - `frontier`: the model every request falls back to.
 - `guarantee`: epsilon, delta, the Clopper-Pearson bound and the number of tasks it
   rests on. If nothing certifies, `stages` is empty and every request goes to the
@@ -27,7 +29,9 @@ certified experiment does. The file it writes holds:
   choice. Savings include the cost of every call.
 - `provenance`: seed, split, task count and a digest of the task ids.
 
-Example: `results/2026-11-14-xroutebench/policy-multiple-choice-triples-eps02.json`.
+Examples: `results/2026-11-14-xroutebench/policy-multiple-choice-triples-eps02.json`
+(agreement) and `results/2026-11-14-api-judge/policy-code-sonnet-judge-eps04.json`
+(code: three cheap models in turn, each behind the free checks and a judge).
 
 A policy describes the tasks it was certified on. It says nothing about traffic that
 differs from them, and it must be re-frozen when the models, prices or tasks change.
@@ -51,6 +55,26 @@ check passes, and otherwise calls the frontier. It reports:
   separately: pass it to `Ledger.record(routing_cost_usd=...)`, and the ledger's
   savings are then net of it.
 
+A stage with a named check is decided by a function the caller supplies:
+
+```python
+from tine.judge import patch_judge_check
+
+judge = patch_judge_check(client, model="claude-sonnet-5-5")       # paid: needs authorisation
+def tests_then_judge(result):
+    if not free_checks_pass(result):                                # the caller's own test run
+        return {"passed": False, "cost_usd": 0.0}
+    return judge(result)                                            # result carries repository, issue, patch
+
+outcome = run_policy(policy, call, checks={"tests+judge:sonnet": tests_then_judge})
+```
+
+The function must do what the recorded check did (the same free checks, the same
+judge model, effort and threshold); the guarantee describes that check and no other.
+What a check costs is added to `routing_cost_usd`. A check that raises counts as a
+failure, and a judge call that fails rejects, so the request escalates. If a policy
+names a check that was not supplied, `run_policy` raises before calling any model.
+
 A cheaper model that fails or times out is treated as having no answer and the
 request moves on. A frontier failure is raised: there is nothing left to fall back to.
 
@@ -58,7 +82,7 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
 
 - The proxy does not load a policy. Wiring `run_policy` into the request path, and
   running it in shadow mode beside the customer's own model, is the next step.
-- Checks other than agreement (repository tests, a judge model) are measured in the
-  experiments and are not yet stage types here.
+- Running a repository's tests on a live patch is the caller's job; `tine.judge`
+  supplies only the judge half of a `tests+judge` check.
 - Members of a stage are called one after another, not in parallel.
 - Extracting the comparable answer from a response is the caller's job.

@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "tenant": "benchmark",
+  "task_type": "coding",
+  "frontier": "claude-opus-4.1",
+  "stages": [
+    {
+      "models": [
+        "kimi-k2-0905"
+      ],
+      "check": "tests+judge:sonnet"
+    },
+    {
+      "models": [
+        "deepseek-r1-0528"
+      ],
+      "check": "tests+judge:sonnet"
+    },
+    {
+      "models": [
+        "glm-4.6"
+      ],
+      "check": "tests+judge:sonnet"
+    }
+  ],
+  "guarantee": {
+    "epsilon": 0.04,
+    "delta": 0.05,
+    "certified": true,
+    "statement": "With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks the frontier solves and this policy does not is at most epsilon.",
+    "bound": 0.03503503060494207,
+    "certify_tasks": 84,
+    "certify_degradation_rate": 0.0
+  },
+  "estimate": {
+    "scope": "held-out test tasks, recorded outcomes and costs; includes the cost of every call",
+    "test_tasks": 78,
+    "savings": 0.34700462935987153,
+    "accuracy": 0.5641025641025641,
+    "frontier_accuracy": 0.44871794871794873,
+    "degradation_rate": 0.02564102564102564,
+    "frontier_call_rate": 0.46153846153846156
+  },
+  "provenance": {
+    "created": "2026-11-14T17:22:39+00:00",
+    "seed": 42,
+    "fractions": [
+      0.4,
+      0.3,
+      0.3
+    ],
+    "complete_tasks": 274,
+    "excluded_tasks": 0,
+    "candidates": 7,
+    "task_ids_sha256": "1f655ff6579d3c659e547588ad92f0498c501463c4baca3e0419c83057f7e649",
+    "check_coverage": {
+      "tenant": "benchmark",
+      "identity_scope": "single-tenant task/model",
+      "source_rows": 7500,
+      "matched_rows": 2192,
+      "ignored_rows": 5308,
+      "expected_checks": 2192,
+      "known_checks": 2179,
+      "unknown_checks": 13,
+      "unknown_policy": "pass_without_evidence",
+      "per_model": {
+        "claude-opus-4.1": {
+          "known": 271,
+          "expected": 274
+        },
+        "claude-sonnet-4": {
+          "known": 271,
+          "expected": 274
+        },
+        "deepseek-r1-0528": {
+          "known": 273,
+          "expected": 274
+        },
+        "deepseek-v3-0324": {
+          "known": 272,
+          "expected": 274
+        },
+        "deepseek-v3.1-terminus": {
+          "known": 272,
+          "expected": 274
+        },
+        "glm-4.6": {
+          "known": 273,
+          "expected": 274
+        },
+        "kimi-k2-0905": {
+          "known": 273,
+          "expected": 274
+        },
+        "qwen3-235b-a22b-2507": {
+          "known": 274,
+          "expected": 274
+        }
+      }
+    }
+  }
+}
