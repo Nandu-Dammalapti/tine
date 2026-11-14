@@ -47,7 +47,7 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-11 | [agreement-check](2026-11-11-agreement-check/README.md) | For exact-answer tasks, does "accept when two or three cheaper models agree" certify savings after paying for every call? | Yes, on MMLU-Pro (3,000 tasks), from measured data only: three models that agree certify 32% at epsilon 0.02 with accuracy at gpt-5's level; two that agree certify 64% at epsilon 0.04. |
 | 2026-11-11 | [router-rules](2026-11-11-router-rules/README.md) | Do a relative routing rule and a net-accuracy guarantee (both opt-in) unblock the prompt-only router? What does a 4% limit change? | On `lcb` neither matters (under 5% at any limit). On `lcb-swe` together they take the router from 4-5% to 18-24% at epsilon 0.04-0.05 with accuracy above gpt-5's, but that pool's gain rests on gpt-5's formatting failures on SWE-bench. Raising epsilon from 0.02 to 0.04 alone moves the router by 2-4 points. |
 | 2026-11-11 | [hidden-states](2026-11-11-hidden-states/README.md) | Does a frozen LLM's internal state work in front of the kNN index where topic embeddings failed? | It predicts difficulty clearly better (kNN AUC 0.81 against 0.70-0.74). That still does not make a prompt-only router save much (2-8% at epsilon 0.04), but as a gate in front of chains it certifies 15% where topic-embedding gates certify 8-11%. |
-| 2026-11-13 | [trained-verifier](2026-11-13-trained-verifier/README.md) | Can a small classifier trained on graded patches verify a cheap model's patch? | First half (no GPU). On 861 accepted patches from 204 tasks, scored on held-out tasks: patch size and wording give AUC about 0.6, no better than a 32B open model. Agreement between cheap models' patches gives 0.76, the best signal found that needs no strong model: it catches 42% of wrong patches while rejecting 10% of right ones. The session judge is at 0.99. Hidden-state features await a Colab run. |
+| 2026-11-13 | [trained-verifier](2026-11-13-trained-verifier/README.md) | Can a small classifier trained on graded patches verify a cheap model's patch? | On 861 accepted patches from 204 tasks, scored on held-out tasks: patch size and wording give AUC about 0.6, no better than a 32B open model. Agreement between cheap models' patches gives 0.76, the best signal found that needs no strong model: it catches 42% of wrong patches while rejecting 10% of right ones. Hidden states of a frozen 7B model give 0.69 and do not add to agreement. The session judge is at 0.99, so training on 861 patches does not replace a strong judge. |
 
 ## How the findings fit together
 
@@ -105,10 +105,10 @@ Whether either becomes the default is still a team decision.
 - Finish the SWE-bench repository-test run (222 of 303 tasks done as of 2026-11-12) and
   certify chains on it: see [docs/SWE_CHECKS.md](../docs/SWE_CHECKS.md).
 - A verifier for code that a customer can afford: open coding models of 14B and 32B both failed
-  ([judge-pilot](2026-11-11-judge-pilot/README.md)). A classifier trained on
-  patch agreement gets part of the way ([trained-verifier](2026-11-13-trained-verifier/README.md));
-  its hidden-state version awaits `notebooks/tine_colab_train_verifier.ipynb`. The fallback is a
-  pinned frontier judge with its cost netted from savings.
+  ([judge-pilot](2026-11-11-judge-pilot/README.md)). Classifiers trained on
+  patch agreement or on hidden states get part of the way and no further
+  ([trained-verifier](2026-11-13-trained-verifier/README.md)). What is left is a
+  pinned frontier judge with its cost netted from savings, or tests written for the change.
 - Per-answer sample-check results for `lcb` exist only on the machine that ran
   `scripts/lcb_sample_checks.py` (Linux, isolated). With them, `tine cascade
   --checks ... --response-check` measures the combined check.

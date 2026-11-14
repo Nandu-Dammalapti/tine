@@ -4,9 +4,8 @@ Offline results on recorded SWE-bench Verified answers. No model was called and 
 patch was executed in this folder's runs: the grades come from the earlier Colab test
 run (`results/2026-11-10-swe-static-checks`). Small summary tables only.
 
-**Status: first half.** The features that need no GPU are measured below. The
-hidden-state features need `notebooks/tine_colab_train_verifier.ipynb`, which has not
-been run yet.
+**Status: complete.** Features that need no GPU first, then the hidden-state features
+from the Colab run.
 
 ## Question
 
@@ -69,6 +68,41 @@ on the pilot cases for the two judges.
 - Agreement is not free. It needs several cheap models' answers per request, and
   their cost is routing cost. Here those answers already exist in the benchmark.
 
+## Result 2: hidden states of a frozen 7B model
+
+`hidden-features-5-seeds.csv`, from `notebooks/tine_colab_train_verifier.ipynb` on Colab
+(repository revision `034ef31`). `Qwen/Qwen2.5-7B-Instruct` (revision `a09a3545`) read each issue
+and patch once, followed by the question "does the patch resolve the issue"; nothing was generated
+or fine-tuned. Kept: the state at the last position and the mean over positions, after layers 12,
+16, 21 and 28 (3,584 numbers each). Same training and scoring as above, regularisation chosen from
+0.0001 to 0.1. Cheap-model cases:
+
+| features | AUC | wrong patches rejected | right patches rejected | accepted patches that are right |
+| --- | --- | --- | --- | --- |
+| last position, layer 12 / 16 / 21 / 28 | 0.59 / 0.65 / 0.69 / 0.68 | 21-27% | 9-10% | 57-59% |
+| mean over positions, layer 12 / 16 / 21 / 28 | 0.63 / 0.69 / 0.66 / 0.63 | 22-26% | 10-11% | 57-59% |
+| `agreement` (rerun there) | 0.76 | 42.1% | 10.3% | 64.0% |
+| best hidden state + `agreement` | 0.70 | 26.9% | 8.8% | 58.9% |
+
+- **Hidden states carry a real but small signal**: AUC up to 0.69, above patch wording (0.58)
+  and above the 32B model's own verdicts (0.62), below agreement (0.76).
+- **Adding them to agreement makes it worse**, not better: four agreement numbers are swamped
+  by 3,584 hidden-state numbers in one linear model. A second-stage model over the two scores
+  could do better than either; not tried, and the ceiling of that is modest.
+- The best layer differs between the two read-outs and the eight variants were compared on the
+  same cases, so read "about 0.69", not a tuned winner.
+- On the 150 pilot cases every variant scores higher (up to 0.79) than on all cases. The pilot is
+  django only; sympy is harder for the verifier as well as for the models.
+
+## What this means
+
+No verifier built from open components reaches the strong judge. In ranking quality on the same
+kind of cases: surface features 0.6, a 32B open model 0.62, hidden states of a 7B model 0.69,
+agreement between cheap models 0.76, a frontier-class model reading the patch 0.99. With 861
+graded patches, training does not close that gap. For code changes the working options are a
+strong judge with its cost netted from savings, or generating and running tests aimed at the
+change. Agreement is worth keeping as a cheap first filter in front of either.
+
 ## Limits
 
 - 204 tasks from two repositories. The 150 pilot cases were also used when choosing
@@ -80,13 +114,16 @@ on the pilot cases for the two judges.
   tasks. Nothing here is certified.
 - Single-shot patches from this benchmark, as in the other SWE-bench folders.
 
+- 861 cases is small for training on 3,584-dimensional features. More graded patches
+  (the rest of the test run, other repositories) could raise the hidden-state number;
+  fine-tuning the reader itself was not tried.
+
 ## Next
 
-1. Run `notebooks/tine_colab_train_verifier.ipynb`: the same training on hidden
-   states of a frozen 7B model reading the issue and patch, alone and with agreement.
-2. If a combination reaches a useful operating point, put it into a chain with
-   `tine cascade --checks` and net the cost of the extra cheap calls.
-3. Otherwise the remaining route for code is a pinned strong judge through an API.
+1. A pinned strong judge through an API with a spending cap, on these same cases: find the
+   cheapest model that still separates right from wrong and net its cost from the savings.
+2. Measure agreement with two or three cheap models only, and as a filter before the judge.
+3. Finish the test run (81 tasks left) so a chain can be certified with `tine cascade --checks`.
 
 ## Reproduce
 
