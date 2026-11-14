@@ -148,6 +148,35 @@ def test_invalid_choice_indices_rejected():
             evaluate(choices, outcomes, costs, 1)
 
 
+@pytest.mark.parametrize("choices", [
+    [True, 0], (0, False), [np.bool_(True), np.int64(0)], np.array([True, 0], dtype=object),
+    [0, 1.0], [0, "1"], [0, 10**100], np.array([0, 2**64 - 1], dtype=np.uint64),
+])
+def test_invalid_choice_values_cannot_silently_select_models(choices):
+    outcomes = np.array([[False, True], [True, False]])
+    with pytest.raises(ValueError, match="choice_indices"):
+        evaluate(choices, outcomes, np.array([[1, 10], [1, 10]]), 1)
+
+
+@pytest.mark.parametrize("choices", [
+    [0, 1], (0, np.int64(1)), np.array([0, 1], dtype=np.uint64),
+    np.array([0, 1], dtype=object),
+])
+def test_integer_choice_containers_preserve_selected_costs_and_quality(choices):
+    result = evaluate(choices, np.array([[False, True], [False, True]]),
+                      np.array([[1, 10], [2, 20]]), 1)
+    assert result["accuracy"] == 0.5
+    assert result["degradations"] == 1
+    assert result["total_cost_usd"] == 21
+    assert result["frontier_count"] == 1
+
+
+def test_empty_choice_sequence_has_no_observations_or_cost():
+    result = evaluate([], np.empty((0, 2), dtype=bool), np.empty((0, 2)), 1)
+    assert result["n"] == 0 and result["total_cost_usd"] == 0
+    assert result["accuracy"] is None and result["savings_fraction"] is None
+
+
 def test_fixed_sequence_stops_at_first_failure():
     # Three models: 0 cheapest (safe), 1 mid (degrades 20%), 2 frontier.
     n = 1000
