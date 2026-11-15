@@ -12,6 +12,9 @@ import hashlib
 import json
 from pathlib import Path
 
+from tine.artifacts import atomic_write_text
+from tine.data import _unique_json_object
+
 
 def _text(record: dict, field: str, location: str) -> str:
     value = record.get(field)
@@ -31,7 +34,7 @@ def _mbpp_split(task_id: int) -> str:
 def load_coding_tasks(
     input_path: str | Path, *, dataset: str, tenant: str = "benchmark"
 ) -> list[dict]:
-    """Return task-only records with dataset-scoped IDs and source checks."""
+    """Return task-only records with dataset-scoped IDs and unambiguous source checks."""
     if dataset not in {"humaneval", "mbpp"}:
         raise ValueError("dataset must be 'humaneval' or 'mbpp'")
     if not isinstance(tenant, str) or not tenant.strip():
@@ -44,12 +47,12 @@ def load_coding_tasks(
         # JSON record separators are physical newlines. Unicode separators
         # inside prompt strings belong to those strings.
         records = (
-            (number, json.loads(line))
+            (number, json.loads(line, object_pairs_hook=_unique_json_object))
             for number, line in enumerate(contents.split(b"\n"), 1)
             if line.strip()
         )
     else:
-        rows = json.loads(raw)
+        rows = json.loads(raw, object_pairs_hook=_unique_json_object)
         if not isinstance(rows, list):
             raise ValueError(f"{path}: expected the sanitized MBPP JSON array")
         records = enumerate(rows, 1)
@@ -101,10 +104,9 @@ def load_coding_tasks(
 
 
 def write_coding_tasks(tasks: list[dict], output_path: str | Path) -> None:
-    """Write prepared task-only rows as UTF-8 JSON Lines."""
+    """Atomically publish prepared task-only rows as UTF-8 JSON Lines."""
     path = Path(output_path)
     if path.suffix.lower() not in {".jsonl", ".ndjson"}:
         raise ValueError("Coding task output must be .jsonl or .ndjson")
     contents = "".join(json.dumps(task, ensure_ascii=False, allow_nan=False) + "\n" for task in tasks)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents, encoding="utf-8")
+    atomic_write_text(path, contents)

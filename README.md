@@ -100,6 +100,8 @@ Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on 
 
 Use the task-only loader when preparing inputs for later model generation and grading. It preserves original splits and check code as text and omits reference solutions. Keep its output separate from graded model outcomes. MBPP here refers to the sanitized subset.
 
+Task JSON must have unique field names; duplicate IDs or check fields within an object are rejected rather than silently replaced. Task exports use atomic file replacement, preserving an existing output if encoding or publication fails. Output-file symlinks are rejected.
+
 ```bash
 python -m tine import-coding-tasks --dataset humaneval --input HumanEval.jsonl.gz \
   --output artifacts/humaneval-tasks.jsonl
