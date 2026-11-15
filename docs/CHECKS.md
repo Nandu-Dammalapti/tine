@@ -84,6 +84,12 @@ only if the score is at least a threshold (`--response-threshold`, default 0.5 t
 strength differ, so each model has its own small classifier, calibrated on held-out
 tasks. It runs no tests and calls no model. An escalated answer has still been paid for.
 
+Direct Python calls require nonempty token matrices containing known, nonnegative
+whole counts. Boolean and complex token values are rejected before conversion.
+When combining checks with response scores, both matrices must have exactly the
+same task/model dimensions; a single check row cannot be reused implicitly across
+tasks. Check results must be Boolean and scores must be real probabilities.
+
 The search covers every chain with the setting's check alone or combined with the
 response check, through the same fixed-sequence certification. `--catch 0` makes the
 response check the only check, so that setting contains no simulated check. With a
