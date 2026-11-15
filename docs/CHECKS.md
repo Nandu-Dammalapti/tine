@@ -110,3 +110,10 @@ train / score-calibration / choose / certify / test parts. The classifier has fo
 features, so most tasks go to certification. Response tokens must be recorded for
 every outcome and must mean the same thing in production as in the fitting data
 (for example, whether reasoning tokens are counted).
+
+`scripts/agreement_pairs.py` refuses data in which members of a group give the same answer and are
+graded differently, because the group's grade is then not defined by the answer. `--grade-conflicts
+wrong` keeps such data and counts the group as wrong on those tasks; the count is in the report. Use
+it for free-form answers extracted from responses, and say so with the result. `--answers` reads
+extracted answers from a CSV in place of a benchmark folder, and `--include-singles` also offers
+each cheaper model alone with no check, the alternative an agreement check has to beat.

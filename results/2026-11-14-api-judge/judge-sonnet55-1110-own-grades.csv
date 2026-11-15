@@ -1,0 +1,5 @@
+judge,threshold,cases,right,wrong,right_rejected,wrong_rejected,catch_rate,false_reject_rate,accepted_share,accuracy_when_accepted,unparsed,mean_prompt_tokens,mean_completion_tokens,tokens_estimated,mean_seconds,mean_cost_usd
+claude-sonnet-5-5 (medium),verdict,1110,644,466,58,370,0.794,0.0901,0.6144,0.8592,18,1015.3,594.5,False,6.1,0.007976
+claude-sonnet-5-5 (medium),0.5,1110,644,466,53,362,0.7768,0.0823,0.6261,0.8504,18,1015.3,594.5,False,6.1,0.007976
+claude-sonnet-5-5 (medium),0.7,1110,644,466,58,375,0.8047,0.0901,0.6099,0.8656,18,1015.3,594.5,False,6.1,0.007976
+claude-sonnet-5-5 (medium),0.9,1110,644,466,153,419,0.8991,0.2376,0.4847,0.9126,18,1015.3,594.5,False,6.1,0.007976

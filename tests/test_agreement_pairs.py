@@ -177,3 +177,28 @@ def test_cli_output_feeds_the_cascade(tmp_path):
                                     checks=read_checks(tmp_path / "agree.csv"), seeds=range(2), epsilons=(0.05,))
     assert result["check_mode"] == "measured" and result["models"] == ["a+b", "big"]
     assert result["check_coverage"]["known_checks"] == 300
+
+
+def test_singles_are_offered_unchecked_and_answers_can_come_from_a_csv(tmp_path):
+    frame, checks, report = agreement.build_pairs(outcomes_frame(), recorded(), "big", max_cost_share=0.3,
+                                                  include_singles=True)
+    assert report["include_singles"] and {"cheap", "small", "tiny"} <= set(frame.model)
+    alone = [row for row in checks if row["model"] == "tiny"]
+    assert len(alone) == 5 and all(row["passed"] for row in alone)
+    path = tmp_path / "answers.csv"
+    pd.DataFrame([{"task_id": task_id, "model": model, "answer": answer or ""}
+                  for (task_id, model), answer in recorded().items()]).to_csv(path, index=False)
+    assert agreement.answers_from_csv(path) == recorded()
+
+
+def test_grade_conflicts_can_be_counted_as_wrong_instead_of_refused():
+    frame = outcomes_frame()
+    # cheap and small both answer "A" on task 1; make their grades disagree.
+    frame.loc[(frame.model == "small") & (frame.task_id == "quiz:test:1"), "success"] = False
+    with pytest.raises(ValueError, match="Conflicting grades"):
+        agreement.build_pairs(frame, recorded(), "big", max_cost_share=0.5)
+    pairs, checks, report = agreement.build_pairs(frame, recorded(), "big", max_cost_share=0.5,
+                                                  grade_conflicts="wrong")
+    assert report["grade_conflicts_counted_wrong"] >= 1
+    row = pairs[(pairs.model == "cheap+small") & (pairs.task_id == "quiz:test:1")].iloc[0]
+    assert not row.success and all("tenant" in check for check in checks)

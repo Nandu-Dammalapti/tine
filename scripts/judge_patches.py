@@ -9,10 +9,14 @@ executed. Three steps, each a subcommand:
              the repository's existing tests) and write them as judge cases, with the
              grades kept in a separate key file the judge never sees.
 ``judge``    Send each case, one per request, to any OpenAI-compatible chat endpoint
-             (a customer-hosted open model behind vLLM, Ollama or LM Studio, or a
-             provider API) and record the verdict, the tokens used and the time taken.
+             (a customer-hosted open model behind vLLM, Ollama or LM Studio) or, with
+             ``--provider anthropic``, to a Claude model through the Anthropic SDK, and
+             record the verdict, the tokens used, the cost and the time taken.
 ``score``    Compare one or more verdict files with the key: how many wrong patches
              the judge rejects, how many right ones it rejects, and what it costs.
+``checks``   Turn verdicts into inputs for ``tine cascade --checks``: an answer passes
+             when it passed the free checks and every judge accepted it, and each
+             judge's recorded cost is added to the answers it read.
 
 The judge's own tokens are routing cost (AGENTS.md section 2): ``score`` reports them
 so they can be netted from savings. ``judge`` calls a model; it needs the task's
@@ -27,70 +31,19 @@ import hashlib
 import json
 import os
 import random
-import re
+import sys
 import time
 from pathlib import Path
 
-PROMPT_VERSION = "2026-11-11"
-INSTRUCTIONS = """You are reviewing a proposed code change before it is accepted.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-Below are a GitHub issue from the {repository} repository and a patch that claims to resolve it. The patch already applies cleanly and does not break the project's existing tests. Decide whether it correctly and completely resolves the issue, so that tests written specifically for this issue would pass. You cannot run code; reason from the issue and the patch.
+from tine.judge import (  # noqa: E402,F401
+    ANTHROPIC_PRICES, CASE_TEMPLATE, INSTRUCTIONS, MAX_ISSUE_CHARS, MAX_PATCH_CHARS, PROMPT_VERSION, STYLES,
+    THINK_INSTRUCTIONS, build_messages, case_text, judge_once, parse_verdict, worst_case_cost,
+)
 
-Reply with one JSON object and nothing else:
-{{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
-# A second style for smaller models, which tend to accept everything when asked for a
-# bare verdict: make the reviewer work through the change before deciding.
-THINK_INSTRUCTIONS = """You are a strict code reviewer deciding whether a proposed change may be merged.
-
-Below are a GitHub issue from the {repository} repository and a patch that claims to resolve it. The patch applies cleanly and does not break the project's existing tests, but about half of patches like this do NOT actually fix the issue. You cannot run code.
-
-Work through these steps in a few sentences each:
-1. What exactly must change for the issue to be resolved?
-2. What does the patch change, and where?
-3. Name the most likely way this patch fails: a case from the issue it does not handle, the wrong location, or behaviour that differs from what the issue asks for.
-4. Decide. Accept only if you found no real problem in step 3.
-
-End your reply with one JSON object on its own line:
-{{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
-STYLES = {"verdict": None, "think": THINK_INSTRUCTIONS}
-CASE_TEMPLATE = "<issue>\n{issue}\n</issue>\n\n<patch>\n{patch}\n</patch>"
-MAX_ISSUE_CHARS = 12000
-MAX_PATCH_CHARS = 20000
 VERDICT_FIELDS = ["case_id", "judge", "verdict", "probability", "reason", "prompt_tokens",
-                  "completion_tokens", "tokens_estimated", "seconds", "prompt_version"]
-
-
-def case_text(case: dict) -> str:
-    return CASE_TEMPLATE.format(issue=case["issue"][:MAX_ISSUE_CHARS], patch=case["patch"][:MAX_PATCH_CHARS])
-
-
-def build_messages(case: dict, style: str = "verdict") -> list[dict]:
-    if style not in STYLES:
-        raise ValueError(f"style must be one of {sorted(STYLES)}")
-    instructions = STYLES[style] or INSTRUCTIONS
-    return [{"role": "system", "content": instructions.format(repository=case["repository"])},
-            {"role": "user", "content": case_text(case)}]
-
-
-def parse_verdict(text: str) -> dict:
-    """The judge's JSON object from its reply. Raises ValueError if there is none."""
-    for candidate in reversed(re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL)):
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        verdict = str(value.get("verdict", "")).strip().lower()
-        if verdict not in ("accept", "reject"):
-            continue
-        try:
-            probability = float(value.get("probability"))
-        except (TypeError, ValueError):
-            continue
-        if not 0 <= probability <= 1:
-            continue
-        return {"verdict": verdict, "probability": probability,
-                "reason": str(value.get("reason", ""))[:200]}
-    raise ValueError("No verdict object with verdict and probability in the reply")
+                  "completion_tokens", "tokens_estimated", "seconds", "prompt_version", "cost_usd"]
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -199,6 +152,147 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
     return counts
 
 
+def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd: float,
+                    judge_name: str | None = None, effort: str = "medium", max_tokens: int = 8000,
+                    style: str = "verdict", workers: int = 4, prices: tuple[float, float] | None = None,
+                    client=None, ca_bundle: str | None = None) -> dict:
+    """One request per case to a Claude model. Resumes from ``output``.
+
+    Spending is counted from each reply's reported usage and the run stops before a
+    request that could take the total for this output file past ``max_cost_usd``
+    (assuming the worst case of ``max_tokens`` of output). The API key comes from the
+    environment, read by the SDK; it is never an argument and never written anywhere.
+    A refusal or a reply with no usable verdict is recorded as ``unparsed``."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    price_in, price_out = prices or ANTHROPIC_PRICES[model]
+    if max_cost_usd <= 0:
+        raise ValueError("max_cost_usd must be positive")
+    if client is None:
+        import anthropic
+
+        if ca_bundle:
+            # Verify TLS against this certificate file instead of the operating system's
+            # store, for environments where the system store cannot be read.
+            import ssl
+
+            http_client = anthropic.DefaultHttpxClient(verify=ssl.create_default_context(cafile=ca_bundle))
+            client = anthropic.Anthropic(max_retries=5, http_client=http_client)
+        else:
+            client = anthropic.Anthropic(max_retries=5)
+    judge_name = judge_name or f"{model} ({effort})"
+    previous = [row for row in read_csv(output) if row["judge"] == judge_name] if Path(output).exists() else []
+    done = {row["case_id"] for row in previous}
+    state = {"spent": sum(float(row.get("cost_usd") or 0) for row in previous), "reserved": 0.0,
+             "judged": 0, "unparsed": 0, "stopped_at_cap": False}
+    lock = threading.Lock()
+
+    def one(case: dict) -> None:
+        worst = worst_case_cost(case, model=model, max_tokens=max_tokens, style=style, prices=(price_in, price_out))
+        with lock:
+            if state["spent"] + state["reserved"] + worst > max_cost_usd:
+                state["stopped_at_cap"] = True
+                return
+            state["reserved"] += worst
+        started = time.time()
+        try:
+            verdict = judge_once(client, case, model=model, effort=effort, max_tokens=max_tokens, style=style,
+                                 prices=(price_in, price_out))
+        except BaseException:
+            with lock:
+                state["reserved"] -= worst
+            raise
+        cost = verdict.pop("cost_usd")
+        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": PROMPT_VERSION,
+               "tokens_estimated": False, "seconds": round(time.time() - started, 2), "cost_usd": round(cost, 6),
+               **verdict}
+        if row["probability"] is None:
+            row["probability"] = ""
+        with lock:
+            state["reserved"] -= worst
+            state["spent"] += cost
+            state["judged"] += 1
+            state["unparsed"] += row["verdict"] == "unparsed"
+            append_verdict(output, row)
+
+    pending = [case for case in read_jsonl(cases_path) if case["case_id"] not in done]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for outcome in [pool.submit(one, case) for case in pending]:
+            outcome.result()
+    return {"judge": judge_name, "judged": state["judged"], "skipped": len(done), "unparsed": state["unparsed"],
+            "not_run": len(pending) - state["judged"], "stopped_at_cap": state["stopped_at_cap"],
+            "spent_usd": round(state["spent"], 4), "max_cost_usd": max_cost_usd}
+
+
+def chain_inputs(key_path: Path, verdict_paths: list[Path], free_checks: Path, outcomes: Path,
+                 checks_output: Path, outcomes_output: Path, *, threshold: float | None = None) -> dict:
+    """Checks and cost-adjusted outcomes for a chain whose check is "free checks, then
+    the judge(s)".
+
+    With several verdict files the judges run in the order given and each reads only
+    what the ones before it accepted, so a cheap judge can screen for a dearer one:
+    an answer passes when all accept, and a judge's cost is charged only where it was
+    consulted. ``threshold`` accepts on probability >= it instead of the verdict.
+    An answer that failed the free checks stays failed and costs no judge call; one
+    with no free-check result or no verdict stays unknown.
+    """
+    case_models = {}
+    for row in read_csv(key_path):
+        for model in row["models"].split(";"):
+            if model:
+                case_models[(row["task_id"], model)] = row["case_id"]
+    judges = []
+    for path in verdict_paths:
+        rows = {row["case_id"]: row for row in read_csv(path)}
+        if len({row["judge"] for row in rows.values()}) != 1:
+            raise ValueError(f"{path} must hold exactly one judge")
+        judges.append(rows)
+
+    def accepted(row) -> bool:
+        if threshold is None:
+            return row["verdict"] == "accept"
+        return row["probability"] not in ("", None) and float(row["probability"]) >= threshold
+
+    verdicts, judge_cost, counts = {}, {}, {"passed": 0, "failed": 0, "unknown": 0}
+    judge_calls = [0] * len(judges)
+    checks_output, outcomes_output = Path(checks_output), Path(outcomes_output)
+    checks_output.parent.mkdir(parents=True, exist_ok=True)
+    with checks_output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["task_id", "model", "passed"])
+        for row in read_csv(free_checks):
+            key = (row["task_id"], row["model"])
+            free = row["passed"].strip().lower()
+            case_id = case_models.get(key)
+            if free == "false":
+                result = "False"
+            elif free != "true" or case_id is None or any(case_id not in rows for rows in judges):
+                result = ""
+            else:
+                result, cost = "True", 0.0
+                for index, rows in enumerate(judges):
+                    judge_calls[index] += 1
+                    cost += float(rows[case_id].get("cost_usd") or 0)
+                    if not accepted(rows[case_id]):
+                        result = "False"
+                        break
+                judge_cost[key] = cost
+            verdicts[key] = result
+            counts["passed" if result == "True" else "failed" if result == "False" else "unknown"] += 1
+            writer.writerow([row["task_id"], row["model"], result])
+    charged = 0.0
+    outcomes_output.parent.mkdir(parents=True, exist_ok=True)
+    with outcomes_output.open("w", encoding="utf-8") as stream:
+        for row in read_jsonl(outcomes):
+            extra = judge_cost.get((row["task_id"], row["model"]), 0.0)
+            row["cost_usd"] = row["cost_usd"] + extra
+            charged += extra
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return {**counts, "judge_calls": judge_calls, "judge_cost_charged_usd": round(charged, 4),
+            "threshold": threshold}
+
+
 def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_right",
           thresholds=(None, 0.5, 0.7, 0.9)) -> list[dict]:
     """Per judge and threshold: wrong patches rejected, right patches rejected, the
@@ -214,8 +308,8 @@ def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_
     results = []
     for judge_name, verdicts in sorted(by_judge.items()):
         def tokens(field):
-            values = [float(row[field]) for row in verdicts.values() if row[field] not in ("", None)]
-            return round(sum(values) / len(values), 1) if values else None
+            values = [float(row[field]) for row in verdicts.values() if row.get(field) not in ("", None)]
+            return round(sum(values) / len(values), 6 if field == "cost_usd" else 1) if values else None
 
         for threshold in thresholds:
             counts = {"right": 0, "wrong": 0, "right_rejected": 0, "wrong_rejected": 0}
@@ -240,7 +334,7 @@ def score(key_path: Path, verdict_paths: list[Path], *, grade: str = "benchmark_
                 "unparsed": sum(row["verdict"] == "unparsed" for row in verdicts.values()),
                 "mean_prompt_tokens": tokens("prompt_tokens"), "mean_completion_tokens": tokens("completion_tokens"),
                 "tokens_estimated": any(row["tokens_estimated"] == "True" for row in verdicts.values()),
-                "mean_seconds": tokens("seconds")})
+                "mean_seconds": tokens("seconds"), "mean_cost_usd": tokens("cost_usd")})
     return results
 
 
@@ -260,11 +354,20 @@ def main(argv=None) -> None:
     run = commands.add_parser("judge", help="ask a model for verdicts (calls the model)")
     run.add_argument("--cases", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--base-url", required=True, help="OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1")
+    run.add_argument("--provider", choices=("openai-compatible", "anthropic"), default="openai-compatible")
+    run.add_argument("--base-url", help="OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1")
+    run.add_argument("--effort", choices=("low", "medium", "high"), default="medium",
+                     help="anthropic: how much the model reasons before answering")
+    run.add_argument("--max-cost-usd", type=float,
+                     help="anthropic: stop before spending more than this in total for the output file")
+    run.add_argument("--workers", type=int, default=4, help="anthropic: requests in flight at once")
+    run.add_argument("--ca-bundle", help="anthropic: certificate file to verify TLS against (e.g. certifi's), "
+                                         "when the system certificate store cannot be read")
     run.add_argument("--model", required=True)
     run.add_argument("--judge-name", help="label for this judge in the output (default: the model name)")
     run.add_argument("--api-key-env", help="environment variable holding the API key, if the endpoint needs one")
-    run.add_argument("--max-tokens", type=int, default=400)
+    run.add_argument("--max-tokens", type=int,
+                     help="default 400; 8000 for anthropic, where it also covers the model's reasoning")
     run.add_argument("--style", choices=sorted(STYLES), default="verdict",
                      help="think: have the reviewer reason through the change before its verdict "
                           "(use a larger --max-tokens)")
@@ -273,16 +376,39 @@ def main(argv=None) -> None:
     check.add_argument("--verdicts", type=Path, nargs="+", required=True)
     check.add_argument("--grade", choices=("benchmark_right", "run_resolved"), default="benchmark_right")
     check.add_argument("--output", type=Path, help="also write the table as CSV")
+    join = commands.add_parser("checks", help="verdicts -> tine cascade inputs, with judge cost charged")
+    join.add_argument("--key", type=Path, required=True)
+    join.add_argument("--verdicts", type=Path, nargs="+", required=True,
+                      help="one file per judge; several run in order, each on what the earlier ones accepted")
+    join.add_argument("--free-checks", type=Path, required=True, help="CSV (task_id, model, passed)")
+    join.add_argument("--outcomes", type=Path, required=True, help="canonical outcomes JSONL")
+    join.add_argument("--checks-output", type=Path, required=True)
+    join.add_argument("--outcomes-output", type=Path, required=True)
+    join.add_argument("--threshold", type=float, help="accept on probability >= this instead of the verdict")
     args = parser.parse_args(argv)
-    if args.command == "prepare":
+    if args.command == "checks":
+        print(json.dumps(chain_inputs(args.key, args.verdicts, args.free_checks, args.outcomes,
+                                      args.checks_output, args.outcomes_output, threshold=args.threshold)))
+    elif args.command == "prepare":
         print(json.dumps(prepare(args.bench_dir, args.static_checks, args.repo_tests, args.dataset, args.cases,
                                  args.key, models=set(args.models), sample=args.sample, seed=args.seed)))
+    elif args.command == "judge" and args.provider == "anthropic":
+        if args.max_cost_usd is None:
+            raise SystemExit("--provider anthropic calls a paid model: pass --max-cost-usd")
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise SystemExit("Environment variable ANTHROPIC_API_KEY is not set")
+        print(json.dumps(judge_anthropic(args.cases, args.output, model=args.model, judge_name=args.judge_name,
+                                         max_cost_usd=args.max_cost_usd, effort=args.effort,
+                                         max_tokens=args.max_tokens or 8000, style=args.style,
+                                         workers=args.workers, ca_bundle=args.ca_bundle)))
     elif args.command == "judge":
+        if not args.base_url:
+            raise SystemExit("--base-url is required for an OpenAI-compatible endpoint")
         api_key = os.environ.get(args.api_key_env) if args.api_key_env else None
         if args.api_key_env and not api_key:
             raise SystemExit(f"Environment variable {args.api_key_env} is not set")
         print(json.dumps(judge(args.cases, args.output, base_url=args.base_url, model=args.model,
-                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens,
+                               judge_name=args.judge_name, api_key=api_key, max_tokens=args.max_tokens or 400,
                                style=args.style)))
     else:
         rows = score(args.key, args.verdicts, grade=args.grade)
