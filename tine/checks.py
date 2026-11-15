@@ -3,13 +3,13 @@
 import numpy as np
 import pandas as pd
 
-from tine.data import _success, _unique_csv_header
+from tine.data import _success, _validate_csv_structure
 
 
 def read_checks(path):
     """Preserve literal task/model IDs and distinguish empty checks from failures."""
     with open(path, encoding="utf-8-sig", newline="") as stream:
-        _unique_csv_header(stream)
+        _validate_csv_structure(stream)
         return pd.read_csv(stream, dtype=str, keep_default_na=False)
 
 

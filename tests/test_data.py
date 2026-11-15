@@ -1,3 +1,4 @@
+import csv
 import json
 
 import numpy as np
@@ -140,6 +141,32 @@ def test_duplicate_columns_fail_before_csv_parsing_or_export(tmp_path, column, p
     with pytest.raises(ValueError, match="unique column"):
         write_outcomes(duplicate, target)
     assert target.read_text() == "preserve previous output"
+
+
+@pytest.mark.parametrize("header,row", [
+    ("tenant,task_id,prompt,task_type,model,success,cost_usd", "ignored,a,id,question,quiz,cheap,true,1"),
+    ("tenant,task_id,prompt,task_type,model,success,cost_usd,timestamp", "a,id,question,quiz,cheap,true,1"),
+])
+def test_csv_outcomes_reject_rows_that_do_not_match_the_header(tmp_path, header, row):
+    path = tmp_path / "outcomes.csv"
+    path.write_text(header + "\n" + row + "\n")
+    with pytest.raises(ValueError, match="CSV.*fields"):
+        read_outcomes(path)
+
+
+def test_csv_structure_validation_preserves_long_prompts_and_field_limit(tmp_path):
+    previous_limit = csv.field_size_limit()
+    frame = synthetic_fixture(1).iloc[[0]].copy()
+    prompt = ('quoted "text",\n' * 20000) + "end"
+    frame["prompt"] = prompt
+    path = tmp_path / "long.csv"
+    write_outcomes(frame, path)
+    assert read_outcomes(path).prompt.tolist() == [prompt]
+    assert csv.field_size_limit() == previous_limit
+    path.write_text("tenant,tenant\na,b\n")
+    with pytest.raises(ValueError, match="unique columns"):
+        read_outcomes(path)
+    assert csv.field_size_limit() == previous_limit
 
 
 @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".ndjson"])
