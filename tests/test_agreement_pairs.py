@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -66,6 +67,90 @@ def test_triples_require_every_member_and_respect_the_cost_cap():
     for bad in [{"frontier": "nobody"}, {"max_cost_share": 0}, {"group_size": 1}]:
         with pytest.raises(ValueError):
             agreement.build_pairs(outcomes_frame(), recorded(), **({"frontier": "big"} | bad))
+
+
+def test_agreement_builder_rejects_task_ids_shared_across_tenants():
+    first = outcomes_frame()
+    second = first.assign(tenant="another-tenant")
+    with pytest.raises(ValueError, match="one tenant"):
+        agreement.build_pairs(pd.concat([first, second]), recorded(), "big")
+
+
+def test_agreeing_answers_with_conflicting_grades_are_rejected():
+    frame = outcomes_frame()
+    frame.loc[(frame.model == "cheap") & (frame.task_id == "quiz:test:1"), "success"] = False
+    with pytest.raises(ValueError, match="Conflicting grades"):
+        agreement.build_pairs(frame, recorded(), "big")
+
+
+def test_check_rows_carry_the_evaluated_tenant():
+    _, checks, _ = agreement.build_pairs(outcomes_frame(), recorded(), "big")
+    assert {row["tenant"] for row in checks} == {"t"}
+
+
+def test_pending_group_grade_is_not_filled_from_another_model():
+    frame = outcomes_frame()
+    frame["success"] = frame.success.astype(object)
+    frame.loc[(frame.model == "cheap") & (frame.task_id == "quiz:test:1"), "success"] = None
+    paired, checks, _ = agreement.build_pairs(frame, recorded(), "big")
+    row = paired[(paired.model == "cheap+small") & (paired.task_id == "quiz:test:1")].iloc[0]
+    assert pd.isna(row.success)
+    assert next(row["passed"] for row in checks if row["task_id"] == "quiz:test:1" and row["model"] == "cheap+small")
+
+
+def test_recorded_answers_must_match_the_graded_source_hash(tmp_path):
+    folder = tmp_path / "cheap"
+    folder.mkdir()
+    path = folder / "run.json"
+    data = {"dataset_name": "quiz", "split": "test", "model_name": "cheap",
+            "records": [{"index": 1, "prediction": "A"}]}
+    path.write_text(json.dumps(data))
+    frame = outcomes_frame()
+    frame["source_sha256"] = None
+    frame.loc[frame.model == "cheap", "source_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert agreement.recorded_answers(tmp_path, outcomes=frame)[("quiz:test:1", "cheap")] == "A"
+    data["records"][0]["prediction"] = "B"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="source_sha256"):
+        agreement.recorded_answers(tmp_path, outcomes=frame)
+
+
+def test_duplicate_recorded_answers_cannot_overwrite_each_other(tmp_path):
+    folder = tmp_path / "cheap"
+    folder.mkdir()
+    (folder / "run.json").write_text(json.dumps({
+        "dataset_name": "quiz", "split": "test", "model_name": "cheap",
+        "records": [{"index": 1, "prediction": "A"}, {"index": 1, "prediction": "B"}]}))
+    with pytest.raises(ValueError, match="Duplicate recorded answer"):
+        agreement.recorded_answers(tmp_path)
+
+
+@pytest.mark.parametrize("collision", ["frontier", "another-group"])
+def test_generated_group_identifiers_must_not_collide(collision):
+    frame = outcomes_frame()
+    frontier = "big"
+    if collision == "frontier":
+        frontier = "cheap+small"
+        frame["model"] = frame.model.replace({"big": frontier})
+    else:
+        extra = frame.loc[frame.model == "tiny"].assign(model="c")
+        frame["model"] = frame.model.replace({"cheap": "a", "small": "b+c", "tiny": "a+b"})
+        frame = pd.concat([frame, extra])
+    with pytest.raises(ValueError, match="collid"):
+        agreement.build_pairs(frame, {}, frontier)
+
+
+@pytest.mark.parametrize("pair", [("input", "output"), ("input", "checks"), ("output", "checks")])
+def test_cli_refuses_output_paths_that_overwrite_inputs_or_each_other(tmp_path, pair):
+    paths = {name: tmp_path / f"{name}.jsonl" for name in ["input", "output", "checks"]}
+    paths[pair[1]] = paths[pair[0]]
+    paths["input"].write_text("preserve source")
+    with pytest.raises(SystemExit) as error:
+        agreement.main(["--input", str(paths["input"]), "--bench-dir", str(tmp_path / "bench"),
+                        "--frontier", "big", "--output", str(paths["output"]),
+                        "--checks", str(paths["checks"])])
+    assert error.value.code == 2
+    assert paths["input"].read_text() == "preserve source"
 
 
 def test_cli_output_feeds_the_cascade(tmp_path):

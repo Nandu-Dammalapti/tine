@@ -74,6 +74,14 @@ members' calls on every task and whose check passes when their recorded answers 
 identical. Certification and savings then include the second and third opinions.
 See `results/2026-11-11-agreement-check`.
 
+Build groups for one tenant at a time. The builder rejects conflicting known grades
+for agreeing answers, duplicate recorded answers, and group names that collide with
+existing models or other groups. Check rows include the tenant. The answer reader
+uses the latest JSON file in each model directory and verifies its bytes against
+the outcomes' `source_sha256` when present; a mismatch requires a matching benchmark
+run. Without source hashes, callers must verify that answers and grades came from
+the same run. Input outcomes, output outcomes, and checks must use distinct paths.
+
 ## Response check
 
 `tine cascade --response-check` adds a `response_certified` pick. A response check
