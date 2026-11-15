@@ -74,3 +74,55 @@ def test_reject_duplicate_tasks_and_missing_checks(tmp_path):
     path.write_text(json.dumps([dict(row, test_list=[])]), encoding="utf-8")
     with pytest.raises(ValueError, match="test_list"):
         load_coding_tasks(path, dataset="mbpp")
+
+
+@pytest.mark.parametrize("format", ["humaneval", "humaneval-gzip", "mbpp"])
+@pytest.mark.parametrize("field", ["task_id", "checks"])
+def test_conflicting_json_fields_cannot_replace_task_identity_or_checks(tmp_path, format, field):
+    if format.startswith("humaneval"):
+        record = {"task_id": "HumanEval/0", "prompt": "def one():", "entry_point": "one",
+                  "test": "assert candidate() == 1"}
+        duplicate = {"task_id": "HumanEval/1"} if field == "task_id" else {"test": "assert candidate() == 2"}
+    else:
+        record = {"task_id": 11, "prompt": "Return one.", "test_imports": [],
+                  "test_list": ["assert one() == 1"]}
+        duplicate = {"task_id": 12} if field == "task_id" else {"test_list": ["assert one() == 2"]}
+    raw = json.dumps(record)[:-1] + "," + json.dumps(duplicate)[1:]
+    raw = ("[" + raw + "]" if format == "mbpp" else raw + "\n").encode()
+    path = tmp_path / ("tasks.jsonl.gz" if format == "humaneval-gzip" else "tasks.json")
+    path.write_bytes(gzip.compress(raw) if format == "humaneval-gzip" else raw)
+    with pytest.raises(ValueError, match="Duplicate JSON field"):
+        load_coding_tasks(path, dataset="mbpp" if format == "mbpp" else "humaneval")
+
+
+def test_failed_task_encoding_preserves_existing_output(tmp_path):
+    path = tmp_path / "tasks.jsonl"
+    path.write_text("previous tasks\n")
+    with pytest.raises(UnicodeEncodeError):
+        write_coding_tasks([{"prompt": "invalid surrogate: \ud800"}], path)
+    assert path.read_text() == "previous tasks\n"
+
+
+def test_failed_task_publication_preserves_output_and_cleans_temporary_file(tmp_path, monkeypatch):
+    path = tmp_path / "tasks.ndjson"
+    path.write_text("previous tasks\n")
+
+    def fail_replace(*args):
+        raise OSError("publication failed")
+
+    monkeypatch.setattr("tine.artifacts.os.replace", fail_replace)
+    with pytest.raises(OSError, match="publication failed"):
+        write_coding_tasks([{"prompt": "new task"}], path)
+    assert path.read_text() == "previous tasks\n"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_task_writer_rejects_symlinks_without_overwriting_the_target(tmp_path):
+    target = tmp_path / "original.jsonl"
+    target.write_text("preserve original\n")
+    alias = tmp_path / "tasks.jsonl"
+    alias.symlink_to(target)
+    with pytest.raises(ValueError, match="symbolic links"):
+        write_coding_tasks([{"prompt": "new task"}], alias)
+    assert target.read_text() == "preserve original\n"
+    assert alias.is_symlink()
