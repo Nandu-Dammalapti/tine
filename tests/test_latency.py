@@ -76,3 +76,27 @@ def test_latency_requires_tenant_isolation_and_policy_coverage(setup):
     with pytest.raises(ValueError, match="tenant"):
         benchmark_routing(router, tasks, {"coding": {"tau": 0, "force_frontier": False}},
                           "cluster", samples=1)
+
+
+@pytest.mark.parametrize("force_frontier", [False, True])
+def test_relative_latency_uses_relative_scores_and_preserves_fallback(setup, monkeypatch, force_frontier):
+    router, tasks = setup
+    scores = np.full((1, len(router.model_names)), 0.1)
+    scores[0, router.model_names.index("cheap")] = 0.3
+    scores[0, router.frontier_index] = 0.2
+    monkeypatch.setattr(router, "predict_scores", lambda task, method: scores)
+    policies = {"coding": {"tau": 0.5, "force_frontier": force_frontier}}
+    absolute = benchmark_routing(router, tasks, policies, "knn", samples=2, rule="absolute")
+    relative = benchmark_routing(router, tasks, policies, "knn", samples=2, rule="relative")
+    assert {item["selected_model"] for item in absolute["observations"]} == {"frontier"}
+    assert {item["selected_model"] for item in relative["observations"]} == (
+        {"frontier"} if force_frontier else {"cheap"})
+    assert absolute["rule"] == "absolute" and relative["rule"] == "relative"
+    assert [item["task_id"] for item in absolute["observations"]] == [
+        item["task_id"] for item in relative["observations"]]
+
+
+def test_latency_rejects_an_unknown_rule(setup):
+    router, tasks = setup
+    with pytest.raises(ValueError, match="rule"):
+        benchmark_routing(router, tasks, {}, "knn", samples=1, rule="best")

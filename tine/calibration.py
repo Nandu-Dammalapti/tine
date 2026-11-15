@@ -183,8 +183,9 @@ def calibrate(
         "thresholds_tested": 0,
         "family_size": family_size,
         "corrected_alpha": alpha,
-        "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); "
-                 "Bonferroni across groups and methods",
+        "bound": ("one-sided Clopper-Pearson" if loss == "degradation" else
+                  "difference of one-sided Clopper-Pearson bounds, each at half the corrected level")
+                 + "; fixed-sequence over thresholds (high to low); Bonferroni across groups and methods",
         "loss": ("frontier_success_and_selected_failure" if loss == "degradation"
                  else "net_accuracy_loss: degradation upper bound minus gain lower bound, "
                       "each at half the corrected level"),

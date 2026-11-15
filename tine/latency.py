@@ -4,19 +4,19 @@ import time
 
 import numpy as np
 
-from tine.routing import route_indices
+from tine.routing import RULES, relative_scores, route_indices
 
 
 LATENCY_SCOPE = (
     "Warm single-request CPU routing, including task validation, feature lookup/"
-    "transformation, calibrated scoring, estimated costs, and policy selection. "
+    "transformation, calibrated scoring, any relative-score comparison, estimated costs, and policy selection. "
     "Excludes input DataFrame construction, embedding generation, verified-cache "
     "lookup, network, and provider latency. Sample percentiles are descriptive, "
     "not production latency guarantees."
 )
 
 
-def benchmark_routing(router, tasks, policies, method, *, samples, seed=42):
+def benchmark_routing(router, tasks, policies, method, *, samples, seed=42, rule="absolute"):
     """Time a fixed policy on a reproducible sample of distinct tasks.
 
     Warm up on three calls before timing. Sample without replacement, capped by
@@ -25,6 +25,8 @@ def benchmark_routing(router, tasks, policies, method, *, samples, seed=42):
     """
     if isinstance(samples, bool) or not isinstance(samples, int) or samples < 1:
         raise ValueError("latency samples must be a positive integer")
+    if rule not in RULES:
+        raise ValueError(f"rule must be one of {RULES}")
     tasks = router._prediction_tasks(tasks).sort_values("task_id").reset_index(drop=True)
     if set(tasks.task_type) - set(policies):
         raise ValueError("Every latency task type needs a frozen calibration policy")
@@ -32,6 +34,8 @@ def benchmark_routing(router, tasks, policies, method, *, samples, seed=42):
 
     def decide(task):
         scores = router.predict_scores(task, method=method)
+        if rule == "relative":
+            scores = relative_scores(scores, router.frontier_index)
         costs = router.estimated_costs(task)
         policy = policies[task.task_type.iloc[0]]
         return int(route_indices(
@@ -54,7 +58,7 @@ def benchmark_routing(router, tasks, policies, method, *, samples, seed=42):
         })
     durations = [item["latency_ms"] for item in observations]
     return {
-        "tenant": tasks.tenant.iloc[0], "method": method,
+        "tenant": tasks.tenant.iloc[0], "method": method, "rule": rule,
         "requested_samples": samples, "samples": len(observations), "warmup_calls": 3,
         "seed": seed, "p50_ms": float(np.percentile(durations, 50)),
         "p99_ms": float(np.percentile(durations, 99)), "max_ms": max(durations),
