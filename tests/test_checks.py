@@ -38,6 +38,30 @@ def test_check_csv_rejects_duplicate_headers_before_pandas_renames_them(tmp_path
         read_checks(path)
 
 
+@pytest.mark.parametrize("row", ["ignored,NA,cheap,true", "NA,cheap,true,extra", "NA,cheap"])
+def test_check_csv_rejects_extra_or_missing_fields(tmp_path, row):
+    path = tmp_path / "checks.csv"
+    path.write_text("task_id,model,passed\n" + row + "\n")
+    with pytest.raises(ValueError, match="CSV.*fields"):
+        read_checks(path)
+
+
+def test_check_csv_rejects_malformed_quotes(tmp_path):
+    path = tmp_path / "checks.csv"
+    path.write_text('task_id,model,passed\n"NA"unexpected,cheap,true\n')
+    with pytest.raises(ValueError, match="Malformed CSV"):
+        read_checks(path)
+
+
+def test_check_csv_keeps_quoted_fields_and_explicit_unknowns(tmp_path):
+    path = tmp_path / "checks.csv"
+    path.write_text('\ufeff\n \ntask_id,model,passed\n"task,one","model\nname",false\n\n001,cheap,\n')
+    frame = read_checks(path)
+    assert frame.task_id.tolist() == ["task,one", "001"]
+    assert frame.model.tolist() == ["model\nname", "cheap"]
+    assert frame.passed.tolist() == ["false", ""]
+
+
 @pytest.mark.parametrize("value", ["ERROR", "unknown", 2, -1])
 def test_invalid_labels_cannot_silently_turn_into_caught_failures(value):
     frame = pd.DataFrame({"task_id": ["NA"], "model": ["cheap"], "passed": [value]})
