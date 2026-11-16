@@ -1,0 +1,48 @@
+# Tine development proxy, one container.
+# NOT YET BUILT OR RUN BY ANYONE. See docs/DEPLOY.md.
+#
+# Before the first start:
+#   cp deploy/tine.env.example deploy/tine.env            (then fill it in)
+#   mkdir -p deploy/config
+#   cp deploy/checks.example.json deploy/config/checks.json
+#   cp deploy/shadow-policies.example.json deploy/config/shadow-policies.json
+# deploy/tine.env and deploy/config/ are ignored by git. Keep them that way.
+
+services:
+  tine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tine-proxy:dev
+    # Provider keys and tenant tokens. This file is not committed.
+    env_file:
+      - deploy/tine.env
+    # Published on this host's loopback only. The proxy does not terminate TLS:
+    # put your own gateway in front of it and do not publish this port wider.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # The ledger (prompts, responses, costs, outcomes).
+      - tine-ledger:/data
+      # Policy and checks JSON, read-only.
+      - ./deploy/config:/config:ro
+    # The app writes only to /data and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  tine-ledger:
