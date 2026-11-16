@@ -428,6 +428,79 @@ def test_broken_ledger_does_not_discard_provider_answer():
     run(scenario())
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_required_ledger_withholds_an_answer_it_cannot_record(stream):
+    class BrokenLedger(Ledger):
+        def record(self, **kwargs):
+            raise RuntimeError("local path and internal details")
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "the answer"}}]})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(ledger_required=True), ledger=BrokenLedger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                return await client.post("/v1/chat/completions", json={"messages": [], "stream": stream},
+                                         headers={"authorization": "Bearer tenant-token-a"})
+    response = run(scenario())
+    assert len(calls) == 1 and response.status_code == 503
+    assert response.headers["x-tine-ledger"] == "unavailable" and response.headers["x-tine-request-id"]
+    assert response.json()["error"]["type"] == "ledger_unavailable"
+    assert "the answer" not in response.text and "internal details" not in response.text
+    with pytest.raises(ValueError, match="ledger_required"):
+        create_app(config(ledger_required="1"), ledger=Ledger())
+
+
+def test_a_required_ledger_withholds_cached_and_routed_answers_it_cannot_record():
+    class FailingLedger(Ledger):
+        broken = False
+
+        def record(self, **kwargs):
+            if self.broken:
+                raise RuntimeError("disk full")
+            return super().record(**kwargs)
+    policy = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+              "stages": [{"models": ["cheap"], "check": "none"}]}
+
+    def provider(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "answer"}}]})
+
+    async def scenario(app_config):
+        ledger = FailingLedger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(app_config, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                auth = {"authorization": "Bearer tenant-token-a"}
+                body = {"messages": [{"role": "user", "content": "q"}]}
+                first = await client.post("/v1/chat/completions", json=body, headers=auth)
+                await client.patch(f"/v1/outcomes/{first.headers['x-tine-request-id']}", json={"success": True},
+                                   headers=auth)
+                ledger.broken = True
+                return first, await client.post("/v1/chat/completions", json=body, headers=auth)
+    first, cached = run(scenario(config(ledger_required=True)))
+    assert first.status_code == 200 and cached.status_code == 503 and "x-tine-cache" not in cached.headers
+    routed = config(ledger_required=True, verified_cache=False, route_policies={"a": {"openai": policy}})
+    first, second = run(scenario(routed))
+    assert first.headers["x-tine-route"] == "stage-0" and second.status_code == 503
+    # By default the answer is still served, marked as unrecorded.
+    _, served = run(scenario(config()))
+    assert served.status_code == 200 and served.headers["x-tine-ledger"] == "unavailable"
+
+
+def test_the_ledger_requirement_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES"):
+        monkeypatch.delenv(name, raising=False)
+    for value, expected in (("1", True), ("true", True), ("0", False), ("", False)):
+        monkeypatch.setenv("TINE_LEDGER_REQUIRED", value)
+        assert ProxyConfig.from_env().ledger_required is expected
+    monkeypatch.delenv("TINE_LEDGER_REQUIRED")
+    assert ProxyConfig.from_env().ledger_required is False
+
+
 def test_malformed_usage_never_breaks_provider_answer():
     async def scenario():
         payload = {"choices": [], "usage": {"prompt_tokens_details": [1, 2]}}
