@@ -233,7 +233,7 @@ def test_stages_stop_at_the_deadline_and_keep_what_was_already_spent():
 
 
 def test_a_check_that_cannot_pass_skips_its_stage_before_any_model_is_paid():
-    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
               "stages": [{"models": ["a"], "check": "judge"}, {"models": ["a"], "check": "none"}]}
     made = []
 
