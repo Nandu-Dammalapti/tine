@@ -147,7 +147,8 @@ def main(argv=None) -> None:
     source.add_argument("--ledger", type=Path, help="ledger SQLite file; opened read-only")
     source.add_argument("--report-json", type=Path,
                         help="JSON with a shadow_report and/or ledger_report object, in place of a ledger")
-    parser.add_argument("--tenant", required=True)
+    parser.add_argument("--tenant", required=True,
+                        help="tenant the page is for; a saved report or policy for another tenant is refused")
     parser.add_argument("--policy", type=Path, help="frozen policy JSON to describe on the page")
     parser.add_argument("--generated-at", help="time to print on the page; default is now, in UTC")
     parser.add_argument("--note", help="one line to show under the headline, for example where the figures came from")
