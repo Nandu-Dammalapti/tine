@@ -23,6 +23,9 @@ What the report can and cannot say:
 - A stage with a named check (tests, a judge) is shadowed only when the proxy has
   been given a way to run that check (``tine.runtime_checks``). For such stages the
   answer is not compared with the frontier's: two right patches rarely match.
+- A sampled request that carries tool definitions is not run through a policy with
+  agreement stages: cheaper models cannot agree on tool calls. It is recorded as
+  sent to the frontier, with no shadow calls and the reason, as routing would do.
 
 No prompt or response text is stored by this module; the ledger's request record
 already holds the customer's request and the frontier's response.
@@ -92,6 +95,27 @@ def _blocks(provider: str, payload: Any) -> tuple[list, list, Any]:
         return [], [], None
 
 
+# An answer pattern that reads a whole reply as its answer, for replies that are the
+# answer and nothing else (a recorded answer, a constrained label). It reads exactly
+# what no pattern reads, but is a reader chosen on purpose.
+WHOLE_REPLY_PATTERN = r"(?s).+"
+TOOLS_SKIP_REASON ="tools: the request carries tool definitions, and agreement cannot compare tool calls"
+
+
+def carries_tools(body: Any) -> bool:
+    """Whether a request defines tools or functions the model may call."""
+    return isinstance(body, dict) and any(body.get(key) for key in ("tools", "functions"))
+
+
+def skips_for_tools(policy: dict, body: Any) -> bool:
+    """Whether a request goes straight to the frontier instead of through ``policy``:
+    it carries tool definitions and the policy has an agreement stage. Agreement was
+    certified on final answers, and replies that call tools have none to compare. The
+    rest of the chain is not run either: without a stage it is not the chain that was
+    certified."""
+    return carries_tools(body) and any(stage["check"] == "agreement" for stage in policy["stages"])
+
+
 def has_answer(provider: str, payload: Any) -> bool:
     """Whether a 200 reply is an answer at all: text or a tool call, and not withheld.
 
@@ -135,11 +159,6 @@ def validate_shadow_policy(policy: dict, frontier: str, available_checks=()) -> 
     validate_policy(policy)
     if policy["frontier"] != frontier:
         raise ValueError("A policy's frontier must be the provider's configured frontier model")
-    if policy.get("answer_pattern") is not None:
-        try:
-            re.compile(policy["answer_pattern"])
-        except (re.error, TypeError):
-            raise ValueError("A policy's answer_pattern must be a valid regular expression") from None
     unsupported = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS)
                          - set(available_checks))
     if unsupported:
@@ -188,6 +207,10 @@ def _known_part(entry: dict) -> float:
     return cost if cost is not None else (known_cost(entry.get("known_cost_usd")) or 0.0)
 
 
+def _columns(ledger) -> set[str]:
+    return {row["name"] for row in ledger._db.execute("PRAGMA table_info(shadow_runs)")}
+
+
 class ShadowStore:
     """Shadow results beside the ledger's requests, in the same database."""
 
@@ -207,15 +230,20 @@ class ShadowStore:
                     matches_frontier INTEGER CHECK(matches_frontier IN (0, 1) OR matches_frontier IS NULL),
                     calls_json TEXT NOT NULL,
                     shadow_cost_usd REAL,
-                    frontier_cost_usd REAL
+                    frontier_cost_usd REAL,
+                    skip_reason TEXT
                 )"""
             )
             ledger._db.execute("CREATE INDEX IF NOT EXISTS shadow_tenant ON shadow_runs(tenant)")
+            if "skip_reason" not in _columns(ledger):
+                ledger._db.execute("ALTER TABLE shadow_runs ADD COLUMN skip_reason TEXT")
         # Per tenant: what the spending cap has counted so far (see ``admit``).
         self._budgets: dict[str, dict] = {}
 
     def record(self, *, request_id: str, tenant: str, provider: str, policy: dict, outcome: dict,
-               frontier_answer: str | None, frontier_cost_usd: float | None) -> None:
+               frontier_answer: str | None, frontier_cost_usd: float | None, skip_reason: str | None = None) -> None:
+        """Store one shadow run. ``skip_reason`` marks a request the policy would have
+        sent to the frontier without trying its stages; ``outcome`` then has no calls."""
         matches = None
         if outcome["accepted"] and outcome.get("comparable", True):
             matches = int(frontier_answer is not None and same_answer([outcome["answer"], frontier_answer]))
@@ -223,11 +251,13 @@ class ShadowStore:
         digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         with self._ledger._lock, self._ledger._db:
             self._ledger._db.execute(
-                "INSERT INTO shadow_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO shadow_runs (request_id, tenant, provider, created_at, policy_sha256, accepted, stage, "
+                "served_by, matches_frontier, calls_json, shadow_cost_usd, frontier_cost_usd, skip_reason) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, tenant, provider, datetime.now(timezone.utc).isoformat(), digest,
                  int(outcome["accepted"]), outcome["stage"], outcome["served_by"], matches,
                  json.dumps(spent, allow_nan=False),
-                 _known_sum(entry["cost_usd"] for entry in spent), frontier_cost_usd))
+                 _known_sum(entry["cost_usd"] for entry in spent), frontier_cost_usd, skip_reason))
 
     def _runs(self, tenant: str) -> list[list[dict]]:
         """The stored entries of every shadow run of a tenant. Reads the whole table."""
@@ -294,8 +324,10 @@ class ShadowStore:
 
     def report(self, tenant: str) -> dict[str, Any]:
         with self._ledger._lock:
+            # A ledger opened read-only may predate the column: nothing in it was skipped.
+            skipped = "skip_reason" if "skip_reason" in _columns(self._ledger) else "NULL AS skip_reason"
             rows = self._ledger._db.execute(
-                "SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json "
+                f"SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json,{skipped} "
                 "FROM shadow_runs WHERE tenant=?", (tenant,)).fetchall()
         accepted = [row for row in rows if row["accepted"]]
         compared = [row for row in accepted if row["matches_frontier"] is not None]
@@ -309,6 +341,8 @@ class ShadowStore:
         calls = [entry for row in rows for entry in json.loads(row["calls_json"])]
         return {
             "tenant": tenant, "shadowed_requests": len(rows),
+            # Included in shadowed_requests, as requests the policy sends to the frontier.
+            "sent_to_frontier_for_tools": sum(row["skip_reason"] == TOOLS_SKIP_REASON for row in rows),
             "policy_would_accept": len(accepted),
             "policy_would_accept_share": len(accepted) / len(rows) if rows else None,
             "accepted_compared_with_frontier": len(compared),

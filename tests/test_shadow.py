@@ -1,14 +1,16 @@
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
 
 from tine.ledger import Ledger
+from tine.policy import DIGEST_FIELD, FREEZE_EDITED, FREEZE_UNCHANGED, policy_digest
 from tine.proxy import ProxyConfig, create_app
 from tine.shadow import ShadowStore, extract_answer, sampled, shadow_stages, validate_shadow_policy
 
-POLICY = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+POLICY = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
           "stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}
 PRICES = {f"openai:{name}": {"input_per_million": rate, "output_per_million": rate}
           for name, rate in (("frontier", 100.0), ("small-a", 1.0), ("small-b", 2.0))}
@@ -40,14 +42,15 @@ def serve(answers, seen, fail=(), delay=0.0, unmetered=()):
     return provider
 
 
-def ask(app_config, provider, token="token-a", count=1, together=False):
+def ask(app_config, provider, token="token-a", count=1, together=False, extra=None):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
             app = create_app(app_config, ledger=Ledger(), client=upstream)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
                 headers = {"authorization": f"Bearer {token}"}
                 posts = [client.post("/v1/chat/completions", headers=headers,
-                                     json={"model": "frontier", "messages": [{"role": "user", "content": f"q{i}"}]})
+                                     json={"model": "frontier", "messages": [{"role": "user", "content": f"q{i}"}],
+                                           **(extra or {})})
                          for i in range(count)]
                 answers = await asyncio.gather(*posts) if together else [await post for post in posts]
                 report = await client.get("/v1/shadow", headers=headers)
@@ -256,3 +259,58 @@ def test_shadow_store_counts_the_known_part_of_a_check_and_never_stores_a_cost_i
     report = store.report("a")
     assert store.spend("a") == pytest.approx(0.26) and report["shadow_spend_usd"] == pytest.approx(0.26)
     assert report["unknown_cost_shadow_calls"] == 2 and report["unknown_cost_requests"] == 1
+
+
+def test_a_shadow_policy_without_a_reader_runs_but_says_so(caplog):
+    """Shadow mode only reports, so it starts; the log and the report name the reader."""
+    caplog.set_level(logging.INFO, logger="tine.proxy")
+    _, report, _ = ask(config(), serve(SAME, []))
+    reader = report.json()["policies"]["openai"]
+    assert reader["answer_reader"] == {"answer_pattern": None, "source": "none: whole reply texts are compared"}
+    assert "no answer reader" in reader["warning"] and reader["cheaper_stages"] == 1
+    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert any("shadow policy for tenant 'a' on openai: agreement stages with no answer reader" in line
+               for line in warnings), warnings
+    _, report, _ = ask(config(answer_pattern=r"\(([A-Z])\)"), serve(SAME, []))
+    assert report.json()["policies"]["openai"]["answer_reader"] == {
+        "answer_pattern": r"\(([A-Z])\)", "source": "TINE_ANSWER_PATTERN"}
+    assert "warning" not in report.json()["policies"]["openai"]
+    # The policy's own reader wins over the proxy's: it is part of what was frozen.
+    own = {**POLICY, "answer_pattern": r"^(\w)"}
+    _, report, _ = ask(config(answer_pattern=r"\(([A-Z])\)", shadow_policies={"a": {"openai": own}}), serve(SAME, []))
+    assert report.json()["policies"]["openai"]["answer_reader"] == {"answer_pattern": r"^(\w)", "source": "policy file"}
+    _, report, _ = ask(config(), serve(SAME, []), token="token-b")
+    assert report.json()["policies"] == {}
+
+
+def test_a_policy_edited_after_freezing_still_loads_and_is_marked(caplog):
+    frozen = {**POLICY, "answer_pattern": r"(\w)", "provenance": {"seed": 42}}
+    frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
+    _, report, _ = ask(config(shadow_policies={"a": {"openai": frozen}}), serve(SAME, []))
+    assert report.json()["policies"]["openai"]["freeze_digest"] == FREEZE_UNCHANGED
+    caplog.set_level(logging.INFO, logger="tine.proxy")
+    edited = {**frozen, "guarantee": {**frozen["guarantee"], "epsilon": 0.2}}
+    _, report, _ = ask(config(shadow_policies={"a": {"openai": edited}}), serve(SAME, []))
+    assert report.json()["policies"]["openai"]["freeze_digest"] == FREEZE_EDITED
+    assert report.json()["shadowed_requests"] == 1
+    assert any("was edited after freezing" in record.getMessage() for record in caplog.records
+               if record.levelno == logging.WARNING)
+
+
+def test_a_sampled_request_with_tools_is_counted_at_the_frontier_without_shadow_calls():
+    seen = []
+    tools = {"tools": [{"type": "function", "function": {"name": "lookup"}}]}
+    _, report, _ = ask(config(), serve(SAME, seen), count=2, extra=tools)
+    assert seen == ["frontier", "frontier"]  # nothing spent on cheaper models
+    body = report.json()
+    assert body["shadowed_requests"] == 2 and body["sent_to_frontier_for_tools"] == 2
+    assert body["policy_would_accept"] == 0 and body["shadow_calls"] == 0
+    assert body["projected_policy_cost_usd"] == pytest.approx(body["frontier_cost_usd"])
+    assert body["projected_savings_usd"] == pytest.approx(0.0)
+    seen = []
+    _, report, _ = ask(config(), serve(SAME, seen))
+    assert report.json()["sent_to_frontier_for_tools"] == 0 and seen == ["frontier", "small-a", "small-b"]
+    # A stopped tenant records nothing more, tools or not.
+    seen = []
+    _, report, _ = ask(config(shadow_max_cost_usd=0.0), serve(SAME, seen), extra=tools)
+    assert report.json()["shadowed_requests"] == 0

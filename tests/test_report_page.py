@@ -2,12 +2,14 @@ import html
 import importlib.util
 import json
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from tine.ledger import Ledger
+from tine.policy import DIGEST_FIELD, FREEZE_EDITED, FREEZE_UNCHANGED, policy_digest
 from tine.report_page import NOT_KNOWN, count, headline, headline_sentences, money, percent, render
 from tine.shadow import SHADOW_SCOPE, ShadowStore
 
@@ -391,6 +393,43 @@ def test_policy_is_described_in_plain_words():
     assert "Quality limit not known" in empty
 
 
+def test_the_page_names_the_tenant_as_the_file_does_and_says_how_answers_are_read():
+    text = text_of(render(None, None, tenant="acme", generated_at="now", policy=POLICY))
+    assert "Tenant named in the policy file: acme ." in text and "frozen for: acme" not in text
+    assert "The policy file names no pattern for reading answers" in text
+    read = text_of(render(None, None, tenant="acme", generated_at="now",
+                          policy={**POLICY, "answer_pattern": "Answer: ([A-D])"}))
+    assert "Agreement compares the answer the pattern Answer: ([A-D]) reads from each reply." in read
+    assert "The policy file is not signed." in text
+
+
+def test_a_policy_edited_after_freezing_is_not_shown_as_certified():
+    frozen = {**POLICY, "provenance": {"seed": 42}}
+    frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
+    text = text_of(render(None, None, tenant="acme", generated_at="now", policy=frozen))
+    assert f"Policy file {FREEZE_UNCHANGED}" in text and "Certified at this limit yes" in text
+    relabelled = {**frozen, "tenant": "someone-else"}
+    page = render(None, None, tenant="acme", generated_at="now", policy=relabelled)
+    text = text_of(page)
+    assert "Certified at this limit yes" not in text
+    assert "Certified at this limit not confirmed: the file was edited after freezing" in text
+    assert f"Policy file {FREEZE_EDITED}" in text and '<p class="warn">This policy file was edited' in page
+    # A file from before digests is not called edited.
+    for path in sorted((Path(__file__).parents[1] / "results").glob("*/policy-*.json")):
+        shipped = json.loads(path.read_text(encoding="utf-8"))
+        text = text_of(render(None, None, tenant="benchmark", generated_at="now", policy=shipped))
+        assert "Policy file no digest (frozen before digests)" in text and "Certified at this limit yes" in text
+
+
+def test_requests_sent_to_the_frontier_for_tools_are_counted_on_the_page():
+    ledger = Ledger()
+    store = add_shadow_rows(ledger)
+    shadow = {**store.report("acme"), "sent_to_frontier_for_tools": 2}
+    text = text_of(render(None, shadow, tenant="acme", generated_at="now"))
+    assert "Sent to the frontier model untried, because the request defined tools 2" in text
+    assert "untried" not in text_of(render(None, store.report("acme"), tenant="acme", generated_at="now"))
+
+
 def test_every_caveat_from_the_scope_texts_is_carried():
     ledger = filled_ledger()
     ledger_report, shadow_report = ledger.report("acme"), add_shadow_rows(ledger).report("acme")
@@ -576,6 +615,40 @@ def test_cli_says_so_when_shadow_rows_were_run_with_another_policy(tmp_path, cap
     same.write_text(json.dumps(POLICY, indent=2), encoding="utf-8")  # layout of the file does not matter
     assert "Note." not in text_of(cli.build(tenant="acme", ledger=path, policy=same))
     assert "Note." not in text_of(cli.build(tenant="nobody", ledger=path))
+
+
+def test_cli_warns_about_an_edited_policy_and_refuses_a_bound_written_as_text(tmp_path, capsys):
+    frozen = {**POLICY, "provenance": {"seed": 42}}
+    frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
+    edited = tmp_path / "edited.json"
+    edited.write_text(json.dumps({**frozen, "estimate": {**POLICY["estimate"], "savings": 0.9}}), encoding="utf-8")
+    saved = tmp_path / "report.json"
+    saved.write_text(json.dumps({"shadow_report": None}), encoding="utf-8")
+    text = text_of(cli.build(tenant="acme", report_json=saved, policy=edited))
+    assert "edited after freezing" in capsys.readouterr().err and "Certified at this limit not confirmed" in text
+    for guarantee in ({"bound": "0.01"}, {"epsilon": 1.5}, {"bound": None}):
+        broken = tmp_path / "broken.json"
+        broken.write_text(json.dumps({**POLICY, "guarantee": {**POLICY["guarantee"], **guarantee}}), encoding="utf-8")
+        with pytest.raises(ValueError):
+            cli.read_policy(broken, "acme")
+
+
+def test_a_ledger_from_before_skip_reasons_still_reports_and_is_upgraded(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    Ledger(path).close()
+    with sqlite3.connect(path) as old:
+        old.execute("CREATE TABLE shadow_runs (request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, provider TEXT NOT "
+                    "NULL, created_at TEXT NOT NULL, policy_sha256 TEXT NOT NULL, accepted INTEGER NOT NULL, stage "
+                    "INTEGER, served_by TEXT, matches_frontier INTEGER, calls_json TEXT NOT NULL, shadow_cost_usd "
+                    "REAL, frontier_cost_usd REAL)")
+        old.execute("INSERT INTO shadow_runs VALUES ('r1','acme','openai','t','d',0,NULL,NULL,NULL,'[]',0.0,1.0)")
+    _, shadow = cli.reports_from_ledger(path, "acme")  # read-only: no column is added
+    assert shadow["shadowed_requests"] == 1 and shadow["sent_to_frontier_for_tools"] == 0
+    ledger = Ledger(path)
+    ShadowStore(ledger)
+    columns = {row["name"] for row in ledger._db.execute("PRAGMA table_info(shadow_runs)")}
+    assert "skip_reason" in columns and ShadowStore(ledger).report("acme")["shadowed_requests"] == 1
+    ledger.close()
 
 
 def test_cli_leaves_out_the_shadow_report_when_the_ledger_has_no_shadow_table(tmp_path):

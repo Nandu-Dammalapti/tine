@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location(
 replay_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(replay_module)
 
-POLICY = {"version": 1, "tenant": "acme", "frontier": "big", "guarantee": {"certified": True},
+POLICY = {"version": 1, "tenant": "acme", "frontier": "big", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
           "stages": [{"models": ["a", "b"], "check": "agreement"}]}
 PRICES = {"big": {"input_per_million": 10.0, "output_per_million": 10.0},
           "a": {"input_per_million": 1.0, "output_per_million": 1.0},

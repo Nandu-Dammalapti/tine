@@ -99,7 +99,8 @@ class Ledger:
                     outcome_updated_at TEXT,
                     outcome_sequence INTEGER NOT NULL DEFAULT 0,
                     success INTEGER CHECK(success IN (0, 1) OR success IS NULL),
-                    baseline_estimated INTEGER NOT NULL DEFAULT 0
+                    baseline_estimated INTEGER NOT NULL DEFAULT 0,
+                    route_skip_reason TEXT
                 )"""
             )
             self._db.execute(
@@ -123,6 +124,8 @@ class Ledger:
             if "baseline_estimated" not in columns:
                 # Older records hold baselines that were measured or supplied by the caller.
                 self._db.execute("ALTER TABLE requests ADD COLUMN baseline_estimated INTEGER NOT NULL DEFAULT 0")
+            if "route_skip_reason" not in columns:
+                self._db.execute("ALTER TABLE requests ADD COLUMN route_skip_reason TEXT")
             self._db.execute(
                 "CREATE TABLE IF NOT EXISTS ledger_state "
                 "(id INTEGER PRIMARY KEY CHECK(id=1), outcome_sequence INTEGER NOT NULL)"
@@ -166,16 +169,20 @@ class Ledger:
         baseline_cost_usd: float | None = None,
         latency_ms: float | None = None,
         baseline_estimated: bool = False,
+        route_skip_reason: str | None = None,
     ) -> str:
         """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
         was worked out, not measured: the frontier model was not called for this
-        request. The report keeps such rows out of verified savings."""
+        request. The report keeps such rows out of verified savings.
+        ``route_skip_reason`` says why a route policy's cheaper stages were not tried."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
         if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
             raise ValueError("baseline_estimated must be a bool and needs a baseline_cost_usd")
         if success is not None and not isinstance(success, bool):
             raise ValueError("success must be bool or None")
+        if route_skip_reason is not None and (not isinstance(route_skip_reason, str) or not route_skip_reason):
+            raise ValueError("route_skip_reason must be a nonempty string or None")
         for name, value in (
             ("cost_usd", cost_usd),
             ("routing_cost_usd", routing_cost_usd),
@@ -223,6 +230,7 @@ class Ledger:
             "outcome_sequence": 0,
             "success": None if success is None else int(success),
             "baseline_estimated": int(baseline_estimated),
+            "route_skip_reason": route_skip_reason,
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
