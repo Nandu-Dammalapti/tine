@@ -18,8 +18,19 @@ What the report can and cannot say:
 - Shadow calls cost money on the customer's account. That spend is reported and
   capped. The cap counts known costs: it is held in memory per tenant, a run in
   flight reserves room under it, and calls whose cost is not known are counted
-  and stop shadowing when there are too many. Projected savings are computed only
-  from requests whose costs are all known.
+  and stop shadowing when there are both more of them than a set number and more
+  than a set share of all shadow calls and checks. Projected savings are computed
+  only from requests whose costs are all known.
+- Not every sampled request is shadowed. A sampled request is skipped when too many
+  runs are in flight or the spending cap has no room for it yet, or when shadowing
+  has stopped; a streamed request is never shadowed. Each of these is counted per
+  tenant, and the report gives the share of sampled requests that were shadowed, so
+  the projection says what it left out.
+- When too many accepted cheaper answers differ from the frontier's answer (more
+  than the policy's quality limit, on at least ``DRIFT_MIN_COMPARED`` compared
+  answers), the report carries a warning: such traffic cannot confirm the
+  certification. A different answer is not always a wrong one, so this is a reason
+  to grade a sample, not a measured loss.
 - A stage with a named check (tests, a judge) is shadowed only when the proxy has
   been given a way to run that check (``tine.runtime_checks``). For such stages the
   answer is not compared with the frontier's: two right patches rarely match.
@@ -37,6 +48,7 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -48,6 +60,12 @@ SHADOW_SCOPE = (
     "background and never returned to the caller. Equal answers are not proof of correctness. "
     "Projected figures cover only requests whose costs are all known and are not a billing amount."
 )
+# Below this many accepted answers compared with the frontier's, the share that differ
+# says too little to warn on.
+DRIFT_MIN_COMPARED = 30
+# What became of a sampled request that has no shadow row, counted per tenant
+# (``ShadowStore.count``). A shadowed request is counted by its row.
+COUNTED = ("skipped_busy", "skipped_stopped", "failed", "streamed")
 
 
 def sampled(request_id: str, rate: float) -> bool:
@@ -238,6 +256,13 @@ class ShadowStore:
             ledger._db.execute("CREATE INDEX IF NOT EXISTS shadow_tenant ON shadow_runs(tenant)")
             if "skip_reason" not in _columns(ledger):
                 ledger._db.execute("ALTER TABLE shadow_runs ADD COLUMN skip_reason TEXT")
+            ledger._db.execute(
+                """CREATE TABLE IF NOT EXISTS shadow_counts (
+                    tenant TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    PRIMARY KEY (tenant, name)
+                )""")
         # Per tenant: what the spending cap has counted so far (see ``admit``).
         self._budgets: dict[str, dict] = {}
 
@@ -260,6 +285,28 @@ class ShadowStore:
                  json.dumps(spent, allow_nan=False),
                  _known_sum(entry["cost_usd"] for entry in spent), frontier_cost_usd, skip_reason))
 
+    def count(self, tenant: str, name: str) -> None:
+        """Count one sampled request that has no row of its own: it was skipped
+        (``skipped_busy``, ``skipped_stopped``), its run failed before its row was
+        written (``failed``), or it was streamed (``streamed``)."""
+        if name not in COUNTED:
+            raise ValueError(f"Not a shadow count: {name!r}")
+        with self._ledger._lock, self._ledger._db:
+            self._ledger._db.execute(
+                "INSERT INTO shadow_counts VALUES (?,?,1) ON CONFLICT(tenant, name) DO UPDATE SET count=count+1",
+                (tenant, name))
+
+    def counts(self, tenant: str) -> dict[str, int] | None:
+        """The tenant's counts, or None for a ledger written before they were kept."""
+        try:
+            with self._ledger._lock:
+                rows = self._ledger._db.execute(
+                    "SELECT name, count FROM shadow_counts WHERE tenant=?", (tenant,)).fetchall()
+        except sqlite3.OperationalError:  # a read-only copy of an older ledger has no such table
+            return None
+        found = {row["name"]: row["count"] for row in rows}
+        return {name: found.get(name, 0) for name in COUNTED}
+
     def _runs(self, tenant: str) -> list[list[dict]]:
         """The stored entries of every shadow run of a tenant. Reads the whole table."""
         with self._ledger._lock:
@@ -279,20 +326,36 @@ class ShadowStore:
             self._budgets[tenant] = {
                 "spent": math.fsum(_known_part(entry) for run in runs for entry in run),
                 "unknown": sum(entry["cost_usd"] is None for run in runs for entry in run),
+                "calls": sum(len(run) for run in runs),
+                "why": Counter(_why_unknown(entry) for run in runs for entry in run if entry["cost_usd"] is None),
                 "largest": max((math.fsum(_known_part(entry) for entry in run) for run in runs), default=None),
                 "running": 0}
         return self._budgets[tenant]
 
-    def state(self, tenant: str, cap: float, max_unknown_cost_calls: int) -> str:
-        """Whether a new shadow run may start for a tenant, in words for the report."""
+    def state(self, tenant: str, cap: float, max_unknown_cost_calls: int,
+              max_unknown_cost_share: float = 0.0) -> str:
+        """Whether a new shadow run may start for a tenant, in words for the report.
+
+        Calls and checks of unknown cost stop shadowing only when there are more than
+        ``max_unknown_cost_calls`` of them and they are also more than
+        ``max_unknown_cost_share`` of all the tenant's shadow calls and checks, so
+        that occasional failures (a flaky CI run, a provider's bad minute) do not end
+        shadow mode. The figures are read from the shadow rows, so a stop holds
+        across restarts; the stop reason names the most common failures.
+        """
         budget = self._budget(tenant)
-        if budget["unknown"] > max_unknown_cost_calls:
-            return "stopped: too many shadow calls of unknown cost"
+        unknown, calls = budget["unknown"], budget["calls"]
+        if unknown > max_unknown_cost_calls and unknown > max_unknown_cost_share * calls:
+            causes = "; ".join(f"{why} ({times:,})" for why, times in budget["why"].most_common(3))
+            return (f"stopped: too many shadow calls of unknown cost: {unknown:,} of {calls:,} calls and checks "
+                    f"({unknown / calls:.1%}), more than {max_unknown_cost_calls:,} and more than "
+                    f"{max_unknown_cost_share:.1%} of them. Most common: {causes}")
         if budget["spent"] >= cap:
             return "stopped: the spending cap is reached"
         return "on"
 
-    def admit(self, tenant: str, cap: float, max_unknown_cost_calls: int) -> bool:
+    def admit(self, tenant: str, cap: float, max_unknown_cost_calls: int,
+              max_unknown_cost_share: float = 0.0) -> bool:
         """Reserve room under the cap for one more shadow run, or refuse it.
 
         A run's cost is known only when it ends, so a run in flight is held to cost
@@ -303,7 +366,7 @@ class ShadowStore:
         Every admitted run must be followed by ``settle``.
         """
         budget = self._budget(tenant)
-        if self.state(tenant, cap, max_unknown_cost_calls) != "on":
+        if self.state(tenant, cap, max_unknown_cost_calls, max_unknown_cost_share) != "on":
             return False
         if budget["running"] and budget["largest"] is None:
             return False
@@ -320,10 +383,16 @@ class ShadowStore:
         budget["running"] -= 1
         budget["spent"] += cost
         budget["unknown"] += sum(entry["cost_usd"] is None for entry in entries)
+        budget["calls"] += len(entries)
+        budget["why"].update(_why_unknown(entry) for entry in entries if entry["cost_usd"] is None)
         if entries:
             budget["largest"] = max(budget["largest"] or 0.0, cost)
 
-    def report(self, tenant: str) -> dict[str, Any]:
+    def report(self, tenant: str, epsilon: float | None = None,
+               min_compared: int = DRIFT_MIN_COMPARED) -> dict[str, Any]:
+        """The tenant's shadow figures. ``epsilon`` is the quality limit of the policy
+        being shadowed; with it, the share of accepted answers that differ from the
+        frontier's is checked against that limit (``drift``)."""
         with self._ledger._lock:
             # A ledger opened read-only may predate the column: nothing in it was skipped.
             skipped = "skip_reason" if "skip_reason" in _columns(self._ledger) else "NULL AS skip_reason"
@@ -365,5 +434,74 @@ class ShadowStore:
             # a request too long for the judge to read (its stage then calls no model).
             "check_rejection_reasons": dict(sorted(Counter(
                 entry["reason"] for entry in calls if isinstance(entry.get("reason"), str)).items())),
+            **coverage(len(rows), self.counts(tenant)),
+            **drift(len(compared), len(compared) - matching, epsilon, min_compared),
             "scope": SHADOW_SCOPE,
         }
+
+
+def _why_unknown(entry: dict) -> str:
+    """Why one call or check has no known cost, in a few words for a stop reason."""
+    if entry.get("status") is not None:
+        why = f"HTTP {entry['status']}"
+    elif entry.get("error"):
+        why = str(entry["error"])
+    else:
+        why = "no usage or no price in the reply"
+    return f"{entry.get('model')}: {why}"
+
+
+def coverage(shadowed: int, counts: dict[str, int] | None) -> dict[str, Any]:
+    """What became of the sampled requests: how many were shadowed, and why the rest
+    were not.
+
+    ``sampled_requests`` counts the sampled requests a shadow run could have taken
+    (answered by the frontier without streaming) once their run ended or was skipped:
+    the ``shadowed`` ones, which have a row, and the skipped and failed ones, which
+    are counted. ``shadow_coverage`` is the share of them that were shadowed. Busy
+    periods lose more of their sample, so a coverage below one means the projection
+    leans to quieter ones. Streamed requests are counted apart: they were sampled,
+    but shadow mode cannot run them. The counts start when a ledger is first opened
+    by a proxy that keeps them; all are None for a ledger that has none to read.
+    """
+    if counts is None:
+        return dict.fromkeys(("sampled_requests", "skipped_busy", "skipped_stopped", "failed_shadow_runs",
+                              "streamed_not_shadowed", "shadow_coverage"))
+    sampled = shadowed + counts["skipped_busy"] + counts["skipped_stopped"] + counts["failed"]
+    return {"sampled_requests": sampled, "skipped_busy": counts["skipped_busy"],
+            "skipped_stopped": counts["skipped_stopped"], "failed_shadow_runs": counts["failed"],
+            "streamed_not_shadowed": counts["streamed"],
+            "shadow_coverage": shadowed / sampled if sampled else None}
+
+
+def drift(compared: int, differing: int, epsilon: float | None, min_compared: int = DRIFT_MIN_COMPARED) -> dict:
+    """Whether so many accepted answers differ from the frontier's that this traffic
+    cannot confirm the policy's certification.
+
+    The policy is certified to lose at most ``epsilon`` of the tasks against the
+    frontier. An accepted answer equal to the frontier's loses nothing against it,
+    so a differing share at or below ``epsilon`` is consistent with the
+    certification, and one above it cannot confirm it. Cheaper models that agree on
+    wrong answers push this share up while they push the projected saving up too. A
+    different answer is not always a wrong one (the frontier can be the one that is
+    wrong), so the warning asks for grading; it is not a measured loss.
+    """
+    share = differing / compared if compared else None
+    result = {"accepted_differing_from_frontier": differing, "accepted_differing_from_frontier_share": share,
+              "drift_epsilon": epsilon, "drift_min_compared": min_compared, "drift_warning": None}
+    if epsilon is None:
+        result["drift_check"] = "not checked: the policy's quality limit was not given"
+    elif compared < min_compared:
+        result["drift_check"] = (f"not checked yet: {compared:,} accepted answers compared with the frontier's, "
+                                 f"{min_compared:,} needed")
+    elif share > epsilon:
+        result["drift_check"] = "warning"
+        result["drift_warning"] = (
+            f"Cannot confirm the certification on this traffic: {differing:,} of {compared:,} accepted cheaper "
+            f"answers ({share:.2%}) differ from the frontier model's answer, more than the policy's quality limit "
+            f"of {epsilon:.2%}. A different answer is not always a wrong one; grade a sample of these requests "
+            "before relying on the policy or its projected saving.")
+    else:
+        result["drift_check"] = (f"within the limit: {differing:,} of {compared:,} accepted answers ({share:.2%}) "
+                                 f"differ from the frontier's, at most the policy's quality limit of {epsilon:.2%}")
+    return result

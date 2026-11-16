@@ -52,7 +52,7 @@ import re
 from urllib.parse import urlsplit
 
 from tine.judge import MAX_ISSUE_CHARS, MAX_PATCH_CHARS, build_messages, parse_verdict
-from tine.policy import known_cost
+from tine.policy import describe_failure, known_cost
 from tine.shadow import response_text
 
 STEP_TYPES = ("webhook", "judge")
@@ -206,7 +206,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
 
     def make(steps: list[dict]):
         async def check(result: dict) -> dict:
-            costs, passed, tested, reason = [], True, False, None
+            costs, passed, tested, reason, failure = [], True, False, None, {}
             for step in steps:
                 try:
                     if step["type"] == "webhook":
@@ -214,8 +214,11 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
                     else:
                         # The judge is told the tests passed only if a test step did, just before.
                         verdict = await judge(step, result, tested)
-                except Exception:  # fail closed: an unusable check rejects
+                except Exception as error:  # fail closed: an unusable check rejects
                     verdict = {"passed": False, "cost_usd": None}
+                    # Kept so that a report can say which step failed and how (an HTTP status, if any).
+                    failure = describe_failure(error)
+                    failure["error"] = f"{step['type']} {failure['error']}"
                 costs.append(verdict["cost_usd"])
                 if not verdict["passed"]:
                     passed, reason = False, verdict.get("reason")
@@ -225,7 +228,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
             # steps cost is still reported, so known spending is not lost with it.
             known = math.fsum(cost for cost in costs if cost is not None)
             return {"passed": passed, "cost_usd": None if any(cost is None for cost in costs) else known,
-                    "known_cost_usd": known, **({"reason": reason} if reason else {})}
+                    "known_cost_usd": known, **({"reason": reason} if reason else {}), **failure}
         # Every step must pass, so a judge that cannot read the whole request rejects
         # whatever a model answers: the stage need not call one (tine.policy).
         check.skip_reason = ("request_too_long" if request_too_long

@@ -221,6 +221,35 @@ def _projection_sentence(shadow: dict | None) -> str | None:
     return f"Projected, not measured: on {where}, shadow mode puts the policy at {clause}."
 
 
+def _coverage_sentence(shadow: dict | None) -> str | None:
+    """What the shadow figures leave out of the sample, or None when they leave out
+    nothing, or the report does not count it (a report from before the counts)."""
+    if not _shadow_has_data(shadow):
+        return None
+    sampled, streamed = _whole(shadow.get("sampled_requests")), _whole(shadow.get("streamed_not_shadowed"))
+    shadowed = _whole(shadow.get("shadowed_requests"))
+    parts = []
+    if sampled is not None and shadowed is not None and shadowed < sampled:
+        reasons = [f"{count(number)} {why}" for number, why in (
+            (_whole(shadow.get("skipped_busy")), "while shadow runs were busy"),
+            (_whole(shadow.get("skipped_stopped")), "after shadowing had stopped"),
+            (_whole(shadow.get("failed_shadow_runs")), "because the shadow run failed")) if number]
+        skipped = f" ({_listed(reasons)})" if reasons else ""
+        parts.append(f"Shadow mode ran on {count(shadowed)} of {_plural(sampled, 'sampled request')} "
+                     f"({percent(shadow.get('shadow_coverage'), rounding='down')}); the rest were skipped{skipped}, "
+                     "so busy periods count for less than they should")
+    if streamed:
+        parts.append(f"{count(streamed)} more sampled {'request was' if streamed == 1 else 'requests were'} "
+                     "streamed, and shadow mode does not run streamed requests")
+    return ". ".join(parts) + "." if parts else None
+
+
+def _drift_warning(shadow: dict | None) -> str | None:
+    """The shadow report's warning that its traffic cannot confirm the certification."""
+    warning = _get(shadow, "drift_warning")
+    return warning.strip() if _shadow_has_data(shadow) and isinstance(warning, str) and warning.strip() else None
+
+
 def _live_headline(ledger: dict, shadow: dict | None) -> list[str]:
     clause = _saving_clause(ledger.get("verified_savings_usd"), ledger.get("savings_fraction"),
                             word="net saving", against="the baseline")
@@ -289,12 +318,25 @@ def headline_sentences(ledger_report: dict | None, shadow_report: dict | None) -
     measured saving leaves out confirmed successes, the sentences say so and point to
     the estimated and projected figures. When neither report has anything to stand
     on, the sentence says so instead of showing a zero.
+
+    A shadow report that cannot confirm the policy's certification (too many accepted
+    answers differ from the frontier's) puts its warning first, before any saving.
     """
+    warning = _drift_warning(shadow_report)
+    return [*([warning] if warning else []), *_headline_figures(ledger_report, shadow_report)]
+
+
+def _headline_figures(ledger_report: dict | None, shadow_report: dict | None) -> list[str]:
+    coverage = _coverage_sentence(shadow_report)
     if _live(ledger_report):
-        return _live_headline(ledger_report, shadow_report)
+        sentences = _live_headline(ledger_report, shadow_report)
+        projection = _projection_sentence(shadow_report)
+        if coverage and projection in sentences:
+            sentences.insert(sentences.index(projection) + 1, coverage)
+        return sentences
     estimated = _estimated_sentence(ledger_report)
     if _shadow_has_data(shadow_report):
-        return [_shadow_headline(shadow_report), *([estimated] if estimated else [])]
+        return [_shadow_headline(shadow_report), *([coverage] if coverage else []), *([estimated] if estimated else [])]
     if _ledger_has_requests(ledger_report):
         recorded = _plural(_whole(ledger_report.get("requests")), "recorded request")
         if estimated:
@@ -403,6 +445,30 @@ def _shadow_section(shadow: dict | None) -> str:
         ("Projected policy cost, on the same requests", money(shadow.get("projected_policy_cost_usd"))),
         ("Projected saving", _money_with_share(shadow.get("projected_savings_usd"),
                                                shadow.get("projected_savings_fraction"))),
+    ]
+    if "sampled_requests" in shadow:  # reports from before these counts do not hold them
+        coverage = count(shadow.get("sampled_requests"))
+        if coverage != NOT_KNOWN and _number(shadow.get("shadow_coverage")) is not None:
+            coverage = f"{coverage} ({percent(shadow.get('shadow_coverage'), rounding='down')} shadowed)"
+        pairs += [
+            ("Sampled requests shadow mode could have run", coverage),
+            ("Skipped because shadow runs were busy", count(shadow.get("skipped_busy"))),
+            ("Skipped because shadowing had stopped", count(shadow.get("skipped_stopped"))),
+            ("Shadow runs that failed before they were recorded", count(shadow.get("failed_shadow_runs"))),
+            ("Sampled requests that were streamed, never shadowed", count(shadow.get("streamed_not_shadowed"))),
+        ]
+    if "drift_check" in shadow:
+        differing = count(shadow.get("accepted_differing_from_frontier"))
+        if differing != NOT_KNOWN and _number(shadow.get("accepted_differing_from_frontier_share")) is not None:
+            differing = (f"{differing} ({percent(shadow.get('accepted_differing_from_frontier_share'), rounding='up')}"
+                         " of those compared)")
+        check = shadow.get("drift_check")
+        pairs += [
+            ("Accepted answers that differ from the frontier model's", differing),
+            ("Checked against the policy's quality limit",
+             _esc(check) if isinstance(check, str) and check.strip() else NOT_KNOWN),
+        ]
+    pairs += [
         ("What shadow mode itself cost, on calls with a known cost", _shadow_spend(shadow)),
         ("Shadow calls and checks whose cost is not known", count(shadow.get("unknown_cost_shadow_calls"))),
         ("Shadow calls made", count(shadow.get("shadow_calls"))),
@@ -415,6 +481,11 @@ def _shadow_section(shadow: dict | None) -> str:
     saving = _number(shadow.get("projected_savings_usd"))
     warning = ('<p class="warn">On these requests the policy would have cost more than the frontier model.</p>'
                if saving is not None and saving < 0 else "")
+    if _drift_warning(shadow):
+        warning += f'<p class="warn">{_esc(_drift_warning(shadow))}</p>'
+    coverage = _coverage_sentence(shadow)
+    if coverage:
+        warning += f'<p class="warn">{_esc(coverage)}</p>'
     return ("<section><h2>Shadow mode: what the policy would have done</h2>"
             "<p>Each of these requests was answered by the frontier model, as before. The policy's cheaper "
             "models then ran in the background. Their answers were never returned to the caller.</p>"
@@ -616,7 +687,9 @@ def _caveats(ledger: dict | None, shadow: dict | None, policy: dict | None) -> l
             "They are not a billing amount.",
             "<strong>Only some requests are shadowed.</strong> A request is shadowed only if the frontier model "
             "answered it without streaming, without a cache hit and without an error, and only if the sample rate "
-            "and the spending cap let it through. The figures describe the shadowed requests, not all traffic.",
+            "and the spending cap let it through. The figures describe the shadowed requests, not all traffic. "
+            "Where the report counts them, sampled requests that were skipped or streamed are shown beside the "
+            "projection.",
             "<strong>Shadow mode is not free.</strong> Its calls are real calls on the tenant's own provider "
             "account, and they send the tenant's prompt to the cheaper models on that account.",
         ]
@@ -707,6 +780,8 @@ li{margin:.4rem 0}
 code{font:.9em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
 .small{font-size:.875rem;color:var(--muted)}
 .warn{color:var(--warn);font-weight:600}
+.alarm{margin:0 0 1rem;padding:.75rem 1rem;border:2px solid var(--warn);border-radius:6px;color:var(--warn);
+font-weight:600;overflow-wrap:anywhere}
 .limits{background:var(--note);border-left:4px solid var(--accent)}
 .source{font-weight:600}
 .bars{margin:1rem 0 .25rem}
@@ -744,7 +819,13 @@ def render(ledger_report: dict | None, shadow_report: dict | None, *, tenant: st
     that the policy described is not the one some figures were produced with.
     """
     noted = f'<p class="note"><strong>Note.</strong> {_esc(note)}</p>' if isinstance(note, str) and note.strip() else ""
-    first, *rest = headline_sentences(ledger_report, shadow_report)
+    sentences = headline_sentences(ledger_report, shadow_report)
+    # The drift warning heads the headline; it is shown above the title line, set apart.
+    alarm = _drift_warning(shadow_report)
+    if alarm:
+        sentences = sentences[1:]
+    alarmed = f'<p class="alarm" role="alert"><strong>Warning.</strong> {_esc(alarm)}</p>' if alarm else ""
+    first, *rest = sentences
     lead = f'<p class="lead">{_esc(" ".join(rest))}</p>' if rest else ""
     sections = (_shadow_section(shadow_report), _ledger_section(ledger_report), _policy_section(policy),
                 _limits_section(ledger_report, shadow_report, policy))
@@ -753,7 +834,7 @@ def render(ledger_report: dict | None, shadow_report: dict | None, *, tenant: st
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
         f"<title>Savings report: {_esc(tenant)}</title><style>{STYLE}</style></head><body><main>"
-        '<header><p class="kicker">Tine savings report</p>'
+        f'<header><p class="kicker">Tine savings report</p>{alarmed}'
         f"<h1>{_esc(first)}</h1>{lead}"
         f'<p class="meta">Tenant <strong>{_esc(tenant)}</strong>. Generated {_esc(_when(generated_at))}.</p>'
         f"{noted}</header>"

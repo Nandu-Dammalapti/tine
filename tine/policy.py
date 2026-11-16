@@ -319,7 +319,7 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
             verdict = checks[name](result)
         except Exception as error:  # a broken check must not accept an answer or fail the request
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
-                               "error": type(error).__name__})
+                               **describe_failure(error)})
             return False
         check_runs.append(_check_run(name, model, verdict))
         return check_runs[-1]["passed"]
@@ -346,20 +346,38 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
     return finish(result, policy["frontier"], "frontier")
 
 
+def _status(value) -> dict:
+    """``{"status": code}`` for an HTTP status code, else nothing."""
+    return {"status": value} if type(value) is int and 100 <= value <= 599 else {}
+
+
+def describe_failure(error: Exception) -> dict:
+    """What went wrong, for the record: the kind of error and, when the error carries
+    an HTTP reply (a provider or webhook answered with an error status), its status."""
+    try:
+        status = error.response.status_code
+    except Exception:  # no reply attached, or not an HTTP error at all
+        status = None
+    return {"error": type(error).__name__, **_status(status)}
+
+
 def _failed_call(model: str, error: Exception) -> dict:
     """The record of a call that gave no usable result. A failure that knows what the
     call cost (a paid reply with nothing in it) carries it as ``cost_usd``."""
-    return {"model": model, "cost_usd": known_cost(getattr(error, "cost_usd", None)), "error": type(error).__name__}
+    return {"model": model, "cost_usd": known_cost(getattr(error, "cost_usd", None)), **describe_failure(error)}
 
 
 def _check_run(name: str, model: str, verdict: dict) -> dict:
     """The record of one check. A check of several steps may know only part of its
     cost; it then reports that part as ``known_cost_usd`` and it is kept beside the
     unknown total, so spending that is known is not lost with the rest. A check that
-    says why it did not pass (a short ``reason`` such as ``request_too_long``) keeps
-    that reason."""
+    failed closed may say why (``error``, and ``status`` for an HTTP reply). A check
+    that says why it did not pass (a short ``reason`` such as ``request_too_long``)
+    keeps that reason."""
     run = {"check": name, "model": model, "passed": verdict.get("passed") is True,
-           "cost_usd": known_cost(verdict.get("cost_usd")), "error": None}
+           "cost_usd": known_cost(verdict.get("cost_usd")),
+           "error": verdict["error"] if isinstance(verdict.get("error"), str) and verdict["error"] else None,
+           **_status(verdict.get("status"))}
     partial = known_cost(verdict.get("known_cost_usd"))
     if run["cost_usd"] is None and partial is not None:
         run["known_cost_usd"] = partial
@@ -427,7 +445,7 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
         except Exception as error:
             checking.remove((name, model))
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
-                               "error": type(error).__name__})
+                               **describe_failure(error)})
             return False
         checking.remove((name, model))
         check_runs.append(_check_run(name, model, verdict))

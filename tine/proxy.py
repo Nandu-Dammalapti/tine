@@ -79,12 +79,17 @@ class ProxyConfig:
     checks: dict[str, list] = field(default_factory=dict)
     tenant_checks: dict[str, dict[str, list]] = field(default_factory=dict)
     answer_pattern: str | None = None
-    # Shadow runs in flight at once, for the whole proxy. A sampled request that
-    # arrives when all are busy is not shadowed.
+    # Shadow runs in flight at once, for the whole proxy, and optionally for any one
+    # tenant (None: no limit of its own), so that one busy tenant cannot take every
+    # slot. A sampled request that arrives when either limit is reached is not
+    # shadowed; it is counted as skipped in the tenant's shadow report.
     shadow_max_concurrent: int = 8
-    # Shadow calls and checks of unknown cost a tenant may have before its shadowing
-    # stops: the spending cap cannot count them.
+    shadow_max_concurrent_per_tenant: int | None = None
+    # Shadowing stops for a tenant when its shadow calls and checks of unknown cost
+    # (the spending cap cannot count them) are more than this number and also more
+    # than this share of all its shadow calls and checks.
     shadow_max_unknown_cost_calls: int = 20
+    shadow_max_unknown_cost_share: float = 0.2
     # How long a route policy's cheaper stages may take together before the request
     # goes to the frontier. None means timeout_seconds.
     route_deadline_seconds: float | None = None
@@ -124,7 +129,10 @@ class ProxyConfig:
                            if os.environ.get("TINE_TENANT_CHECKS") else {}),
             answer_pattern=os.environ.get("TINE_ANSWER_PATTERN") or None,
             shadow_max_concurrent=int(os.environ.get("TINE_SHADOW_MAX_CONCURRENT", "8")),
+            shadow_max_concurrent_per_tenant=(int(os.environ["TINE_SHADOW_MAX_CONCURRENT_PER_TENANT"])
+                                              if os.environ.get("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT") else None),
             shadow_max_unknown_cost_calls=int(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20")),
+            shadow_max_unknown_cost_share=float(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", "0.2")),
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
         )
@@ -191,6 +199,13 @@ class ProxyConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < least:
                 raise ValueError(f"{name} must be a whole number of at least {least}")
+        per_tenant = self.shadow_max_concurrent_per_tenant
+        if per_tenant is not None and (isinstance(per_tenant, bool) or not isinstance(per_tenant, int)
+                                       or per_tenant < 1):
+            raise ValueError("shadow_max_concurrent_per_tenant must be a whole number of at least 1, or unset")
+        if (not _finite_number(self.shadow_max_unknown_cost_share)
+                or not 0 <= self.shadow_max_unknown_cost_share <= 1):
+            raise ValueError("shadow_max_unknown_cost_share must be between 0 and 1")
         if not isinstance(self.tenant_checks, dict) or any(
                 name not in self.tenant_keys.values() for name in self.tenant_checks):
             raise ValueError("tenant_checks must map configured tenants to their named checks")
@@ -426,6 +441,7 @@ def create_app(
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
     shadow_running = 0
+    shadow_running_by_tenant: dict[str, int] = {}
     route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
                       else config.timeout_seconds)
     # One line per loaded policy, so an operator can see which policy runs on which
@@ -484,11 +500,17 @@ def create_app(
     async def shadow_report(identity: str = Depends(tenant)):
         if shadow_store is None:
             raise HTTPException(status_code=404, detail="Shadow mode is not configured")
-        sampling = (shadow_store.state(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls)
+        sampling = (shadow_store.state(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls,
+                                       config.shadow_max_unknown_cost_share)
                     if identity in config.shadow_policies else "no shadow policy for this tenant")
         policies = {provider: _policy_summary(policy, config)
                     for provider, policy in config.shadow_policies.get(identity, {}).items()}
-        return {**shadow_store.report(identity), "sampling": sampling, "policies": policies}
+        # Differing answers are checked against the strictest quality limit among the
+        # tenant's shadow policies: the report adds all of its shadowed requests together.
+        limits = [policy["guarantee"]["epsilon"] for policy in config.shadow_policies.get(identity, {}).values()
+                  if policy["stages"] and _finite_number(policy["guarantee"].get("epsilon"))]
+        return {**shadow_store.report(identity, epsilon=min(limits, default=None)), "sampling": sampling,
+                "policies": policies}
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None
@@ -533,16 +555,30 @@ def create_app(
 
         A run starts only if the tenant's cap has room for it (``ShadowStore.admit``),
         and what it spent is counted when it ends even if its row cannot be written.
+        A sampled request that is not shadowed is counted with the reason.
         """
         nonlocal shadow_running
-        if shadow_running >= config.shadow_max_concurrent:
+        mine = shadow_running_by_tenant.get(identity, 0)
+        if shadow_running >= config.shadow_max_concurrent or (
+                config.shadow_max_concurrent_per_tenant is not None and mine >= config.shadow_max_concurrent_per_tenant):
+            count_safely(identity, "skipped_busy")
             return
         try:
-            if not shadow_store.admit(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls):
+            limits = (config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls,
+                      config.shadow_max_unknown_cost_share)
+            if shadow_store.state(identity, *limits) != "on":
+                count_safely(identity, "skipped_stopped")
+                return
+            if not shadow_store.admit(identity, *limits):
+                # The cap's room is held by runs in flight, or no run has finished yet
+                # to say what one costs.
+                count_safely(identity, "skipped_busy")
                 return
         except Exception:
+            count_safely(identity, "failed")
             return
         shadow_running += 1
+        shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
         try:
             call, checks = stage_tools(identity, provider, policy, body, url, headers)
@@ -553,18 +589,29 @@ def create_app(
                 frontier_answer=extract_answer(provider, frontier_payload, answer_pattern(policy)),
                 frontier_cost_usd=frontier_cost)
         except Exception:
+            count_safely(identity, "failed")
             return
         finally:
             shadow_running -= 1
+            shadow_running_by_tenant[identity] -= 1
             shadow_store.settle(identity, entries)
+
+    def count_safely(identity: str, name: str) -> None:
+        # A count that cannot be written must not reach the caller or the shadow run.
+        try:
+            shadow_store.count(identity, name)
+        except Exception:
+            pass
 
     async def record_skipped(*, request_id: str, identity: str, provider: str, policy: dict,
                              frontier_cost: float | None, reason: str) -> None:
         """A sampled request the policy would send straight to the frontier. Nothing is
-        called; the run is stored so the projection counts it at the frontier's cost."""
+        called; the run is stored so the projection counts it at the frontier's cost.
+        Once shadowing has stopped it is counted as skipped, like any other sampled request."""
         try:
-            if shadow_store.state(identity, config.shadow_max_cost_usd,
-                                  config.shadow_max_unknown_cost_calls) != "on":
+            if shadow_store.state(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls,
+                                  config.shadow_max_unknown_cost_share) != "on":
+                count_safely(identity, "skipped_stopped")
                 return
             shadow_store.record(
                 request_id=request_id, tenant=identity, provider=provider, policy=policy,
@@ -572,7 +619,7 @@ def create_app(
                          "checks": []},
                 frontier_answer=None, frontier_cost_usd=frontier_cost, skip_reason=reason)
         except Exception:
-            return
+            count_safely(identity, "failed")
 
     async def forward(request: Request, provider: str, identity: str):
         try:
@@ -741,11 +788,18 @@ def create_app(
             if key in response.headers:
                 result_headers[key] = response.headers[key]
 
+        shadow_policy = config.shadow_policies.get(identity, {}).get(provider) if shadow_on else None
+        # Whether a shadow run would have been started for this request, had it not streamed.
+        shadow_due = (shadow_policy is not None and shadow_policy["stages"] and selected == frontier
+                      and not fallback and response.status_code < 400 and sampled(request_id, config.shadow_sample_rate))
         if stream and response.status_code < 400:
             # Streaming never enters the verified answer cache. Costs stay unknown
             # until actual usage/cost is supplied through the outcome endpoint.
             recorded = record_safely(**common, upstream_status=response.status_code)
             result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
+            # Shadow mode does not run streamed requests. A sampled one is counted, so
+            # that the shadow report says how much of the sample it could not see.
+            streamed = BackgroundTask(count_safely, identity, "streamed") if shadow_due else None
 
             async def chunks():
                 try:
@@ -757,7 +811,7 @@ def create_app(
             return StreamingResponse(
                 chunks(), status_code=response.status_code,
                 media_type=response.headers.get("content-type", "text/event-stream"),
-                headers=result_headers,
+                headers=result_headers, background=streamed,
             )
 
         raw = await response.aread()
@@ -791,18 +845,15 @@ def create_app(
             result_headers["x-tine-route-skipped"] = "tools"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
         background = None
-        policy = config.shadow_policies.get(identity, {}).get(provider) if shadow_on else None
-        if (policy is not None and policy["stages"] and selected == frontier and not fallback
-                and response.status_code < 400 and isinstance(payload, dict)
-                and sampled(request_id, config.shadow_sample_rate)):
+        if shadow_due and isinstance(payload, dict):
             # After the response has been sent: the caller never waits for shadow calls.
-            if skips_for_tools(policy, body):
+            if skips_for_tools(shadow_policy, body):
                 background = BackgroundTask(
-                    record_skipped, request_id=request_id, identity=identity, provider=provider, policy=policy,
-                    frontier_cost=cost, reason=TOOLS_SKIP_REASON)
+                    record_skipped, request_id=request_id, identity=identity, provider=provider,
+                    policy=shadow_policy, frontier_cost=cost, reason=TOOLS_SKIP_REASON)
             else:
                 background = BackgroundTask(
-                    run_shadow, request_id=request_id, identity=identity, provider=provider, policy=policy,
+                    run_shadow, request_id=request_id, identity=identity, provider=provider, policy=shadow_policy,
                     body=dict(body), url=url, headers=dict(headers), frontier_payload=payload, frontier_cost=cost)
         return Response(
             raw, status_code=response.status_code,

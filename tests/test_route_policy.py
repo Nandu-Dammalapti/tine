@@ -636,6 +636,39 @@ def test_shadow_keeps_the_known_part_of_a_check_and_a_webhook_cost_cannot_switch
     assert report["shadow_spend_usd"] == pytest.approx(0.02)
 
 
+def test_a_failed_check_records_its_step_and_http_status_and_the_stop_reason_names_it():
+    """A CI webhook that answers 503: the check fails closed with an unknown cost, the
+    record says which step failed and how, and a stop says what kept failing."""
+    seen = []
+    healthy = world({"coder": "patch", "frontier": "frontier patch"}, seen)
+
+    def handler(request):
+        if request.url.host == "ci.example":
+            seen.append("webhook")
+            return httpx.Response(503, json={"error": "runner lost"})
+        return healthy(request)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            ledger = Ledger()
+            app = create_app(config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0,
+                                    shadow_max_cost_usd=1.0, checks=CHECKS, shadow_max_unknown_cost_calls=0),
+                             ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                for index in range(2):
+                    await client.post("/v1/chat/completions", headers=headers, json={
+                        "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                report = (await client.get("/v1/shadow", headers=headers)).json()
+                return report, json.loads(ledger._db.execute("SELECT calls_json FROM shadow_runs").fetchone()[0])
+    report, entries = asyncio.run(scenario())
+    assert seen == ["frontier", "coder", "webhook", "frontier"]  # stopped after the first: 1 of 2 is unknown
+    assert entries[1] == {"model": "check:tests+judge", "check": "tests+judge", "passed": False, "cost_usd": None,
+                          "error": "webhook HTTPStatusError", "status": 503, "known_cost_usd": 0.0}
+    assert report["failed_shadow_calls"] == 1 and report["skipped_stopped"] == 1
+    assert report["sampling"].endswith("Most common: check:tests+judge: HTTP 503 (1)")
+
+
 def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     own = tmp_path / "tenant-checks.json"
     own.write_text(json.dumps({"a": tenant_webhook("a")}), encoding="utf-8")
