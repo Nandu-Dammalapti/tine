@@ -1,0 +1,26 @@
+judge,agreement,verdict,cases,right,share_right
+none,all patches,any,966,548,0.5673
+none,no agreement at 0.5,any,502,187,0.3725
+none,agreement at 0.5,any,464,361,0.778
+none,agreement at 0.8,any,334,277,0.8293
+none,identical patch,any,21,18,0.8571
+haiku,all patches,accept,603,493,0.8176
+haiku,all patches,reject,363,55,0.1515
+haiku,no agreement at 0.5,accept,210,145,0.6905
+haiku,no agreement at 0.5,reject,292,42,0.1438
+haiku,agreement at 0.5,accept,393,348,0.8855
+haiku,agreement at 0.5,reject,71,13,0.1831
+haiku,agreement at 0.8,accept,300,271,0.9033
+haiku,agreement at 0.8,reject,34,6,0.1765
+haiku,identical patch,accept,18,16,0.8889
+haiku,identical patch,reject,3,2,0.6667
+sonnet,all patches,accept,577,497,0.8614
+sonnet,all patches,reject,389,51,0.1311
+sonnet,no agreement at 0.5,accept,204,157,0.7696
+sonnet,no agreement at 0.5,reject,298,30,0.1007
+sonnet,agreement at 0.5,accept,373,340,0.9115
+sonnet,agreement at 0.5,reject,91,21,0.2308
+sonnet,agreement at 0.8,accept,288,266,0.9236
+sonnet,agreement at 0.8,reject,46,11,0.2391
+sonnet,identical patch,accept,19,17,0.8947
+sonnet,identical patch,reject,2,1,0.5

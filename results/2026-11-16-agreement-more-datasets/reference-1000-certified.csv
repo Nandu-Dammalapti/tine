@@ -1,0 +1,49 @@
+dataset,kind,epsilon,savings_mean,savings_min,savings_max,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs,frontier_call_rate,most_common_chain,tasks_used
+mmlupro-3000-1000-sample0,pairs,0.02,0.0,0.0,0.0,0.8779,0.8779,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample0,pairs,0.04,0.1709,0.0,0.6411,0.8783,0.8779,0.0066,0.0298,0,7,0.7402,gpt-5,1000
+mmlupro-3000-1000-sample0,triples,0.02,0.1019,0.0,0.3845,0.8775,0.8779,0.0037,0.0132,0,7,0.7692,gpt-5,1000
+mmlupro-3000-1000-sample0,triples,0.04,0.3195,0.0,0.4927,0.8818,0.8779,0.0077,0.0173,0,2,0.3753,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample0,pairs+singles,0.02,0.0,0.0,0.0,0.8779,0.8779,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample0,pairs+singles,0.04,0.1834,0.0,0.7158,0.8732,0.8779,0.0097,0.0464,1,7,0.7365,gpt-5,1000
+mmlupro-3000-1000-sample0,singles,0.02,0.0,0.0,0.0,0.8779,0.8779,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample0,singles,0.04,0.0,0.0,0.0,0.8779,0.8779,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample1,pairs,0.02,0.0,0.0,0.0,0.889,0.889,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample1,pairs,0.04,0.262,0.0,0.7297,0.8904,0.889,0.0074,0.0205,0,5,0.5761,gpt-5,1000
+mmlupro-3000-1000-sample1,triples,0.02,0.0301,0.0,0.3006,0.8894,0.889,0.0018,0.0181,0,9,0.9254,gpt-5,1000
+mmlupro-3000-1000-sample1,triples,0.04,0.3693,0.2804,0.4694,0.8956,0.889,0.0111,0.0181,0,0,0.2144,deepseek-v3.1-terminus+kimi-k2-0905+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample1,pairs+singles,0.02,0.0,0.0,0.0,0.889,0.889,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample1,pairs+singles,0.04,0.1946,0.0,0.7297,0.888,0.889,0.0071,0.0264,0,7,0.7399,gpt-5,1000
+mmlupro-3000-1000-sample1,singles,0.02,0.0,0.0,0.0,0.889,0.889,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample1,singles,0.04,0.0,0.0,0.0,0.889,0.889,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample2,pairs,0.02,0.0695,0.0,0.6946,0.8614,0.8607,0.0022,0.0217,1,9,0.9134,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,pairs,0.04,0.4375,0.0,0.8215,0.8688,0.8607,0.0123,0.0351,0,4,0.4723,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,triples,0.02,0.0616,0.0,0.6163,0.8611,0.8607,0.0018,0.0181,0,9,0.9181,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,triples,0.04,0.6349,0.5655,0.7236,0.8745,0.8607,0.0131,0.0362,0,0,0.1543,intern-s1+intern-s1-new+qwen3-235b-a22b-2507 > intern-s1+intern-s1-new+kimi-k2-0905 > gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,pairs+singles,0.02,0.0,0.0,0.0,0.8607,0.8607,0.0,0.0,0,10,1.0,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,pairs+singles,0.04,0.3812,0.0,0.8301,0.867,0.8607,0.0113,0.0383,0,5,0.5601,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,singles,0.02,0.0,0.0,0.0,0.8607,0.8607,0.0,0.0,0,10,1.0,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample2,singles,0.04,0.0,0.0,0.0,0.8607,0.8607,0.0,0.0,0,10,1.0,gemini-2.5-pro,1000
+mmlupro-3000-1000-sample3,pairs,0.02,0.0,0.0,0.0,0.8725,0.8725,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample3,pairs,0.04,0.4908,0.0,0.7467,0.8774,0.8725,0.015,0.0396,0,1,0.2451,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample3,triples,0.02,0.1053,0.0,0.4493,0.8774,0.8725,0.0017,0.0069,0,7,0.7696,gpt-5,1000
+mmlupro-3000-1000-sample3,triples,0.04,0.3576,0.0,0.4799,0.8797,0.8725,0.0104,0.0264,0,1,0.2422,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > deepseek-v3.1-terminus+intern-s1-new+kimi-k2-0905 > gpt-5,1000
+mmlupro-3000-1000-sample3,pairs+singles,0.02,0.0,0.0,0.0,0.8725,0.8725,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample3,pairs+singles,0.04,0.5488,0.0,0.7467,0.8805,0.8725,0.0143,0.0269,0,1,0.2132,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample3,singles,0.02,0.0,0.0,0.0,0.8725,0.8725,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample3,singles,0.04,0.0,0.0,0.0,0.8725,0.8725,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample4,pairs,0.02,0.0,0.0,0.0,0.8683,0.8683,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample4,pairs,0.04,0.462,0.0,0.6684,0.8663,0.8683,0.0195,0.0415,2,2,0.3083,deepseek-v3.1-terminus+kimi-k2-0905 > gpt-5,1000
+mmlupro-3000-1000-sample4,triples,0.02,0.0774,0.0,0.4067,0.8676,0.8683,0.0017,0.0138,0,8,0.8541,gpt-5,1000
+mmlupro-3000-1000-sample4,triples,0.04,0.3991,0.2926,0.4599,0.875,0.8683,0.0107,0.0208,0,0,0.1782,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > deepseek-v3.1-terminus+intern-s1-new+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample4,pairs+singles,0.02,0.0,0.0,0.0,0.8683,0.8683,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample4,pairs+singles,0.04,0.3601,0.0,0.6823,0.8641,0.8683,0.0126,0.0381,0,4,0.5013,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample4,singles,0.02,0.0,0.0,0.0,0.8683,0.8683,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample4,singles,0.04,0.0,0.0,0.0,0.8683,0.8683,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample5,pairs,0.02,0.113,0.0,0.6601,0.8843,0.8836,0.003,0.0172,0,8,0.8299,gpt-5,1000
+mmlupro-3000-1000-sample5,pairs,0.04,0.5738,0.0,0.708,0.8813,0.8836,0.0165,0.0303,0,1,0.1875,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample5,triples,0.02,0.2579,0.0,0.4174,0.8883,0.8836,0.0023,0.0101,0,3,0.4427,deepseek-v3.1-terminus+intern-s1+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample5,triples,0.04,0.4388,0.3305,0.5237,0.8829,0.8836,0.0114,0.0236,0,0,0.1524,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > deepseek-v3.1-terminus+intern-s1-new+kimi-k2-0905 > gpt-5,1000
+mmlupro-3000-1000-sample5,pairs+singles,0.02,0.1779,0.0,0.6601,0.885,0.8836,0.0041,0.0172,0,7,0.7406,gpt-5,1000
+mmlupro-3000-1000-sample5,pairs+singles,0.04,0.586,0.0,0.7116,0.8829,0.8836,0.015,0.0309,0,1,0.1895,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,1000
+mmlupro-3000-1000-sample5,singles,0.02,0.0,0.0,0.0,0.8836,0.8836,0.0,0.0,0,10,1.0,gpt-5,1000
+mmlupro-3000-1000-sample5,singles,0.04,0.0,0.0,0.0,0.8836,0.8836,0.0,0.0,0,10,1.0,gpt-5,1000
