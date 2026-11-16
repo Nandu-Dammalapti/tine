@@ -20,6 +20,12 @@ No model is called and no response is executed. Needs ``pyarrow`` to read parque
 Tasks scored with a fractional metric (``squad``, F1) are left out: canonical
 outcomes are success or failure, and turning a fraction into one would be inventing
 a threshold.
+
+Token counts must be finite nonnegative whole numbers; model prices must be finite,
+nonnegative, and unique by model. Repeated task/model rows are deduplicated only
+when their answers, grades, references, metrics, and measurements agree (source
+splits may differ). Conflicting runs require an explicit choice before import.
+Outcome and answer output paths must differ from each other and all source files.
 """
 
 from __future__ import annotations
@@ -32,9 +38,12 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tine.data import write_outcomes  # noqa: E402
+from tine.data import validate_outcomes, write_outcomes  # noqa: E402
+from tine.numeric import real_array  # noqa: E402
 
 GROUPS = {
     "multiple-choice": ["arc_challenge", "boolq", "commonsense_qa", "hellaswag", "mmlu", "mmlu_pro", "openbook_qa"],
@@ -85,6 +94,16 @@ def task_key(task_name: str, query: str) -> str:
     return f"xroutebench:{task_name}:{hashlib.sha256(query.encode('utf-8')).hexdigest()[:12]}"
 
 
+def _measurements(values, name: str, *, whole: bool = False, nullable: bool = False):
+    numbers = real_array(values, name)
+    known = numbers[~np.isnan(numbers)] if nullable else numbers
+    if not np.isfinite(known).all() or (known < 0).any():
+        raise ValueError(f"{name} must contain finite nonnegative measurements")
+    if whole and (numbers != np.floor(numbers)).any():
+        raise ValueError(f"{name} must contain whole token counts")
+    return numbers
+
+
 def convert(frame, prices, *, tasks: list[str], task_type: str):
     """Returns (canonical outcomes frame, answer rows, report)."""
     import pandas as pd
@@ -98,16 +117,30 @@ def convert(frame, prices, *, tasks: list[str], task_type: str):
     frame["performance"] = frame.performance.astype(float)
     if not frame.performance.isin([0.0, 1.0]).all():
         raise ValueError("A chosen task has scores other than 0 and 1")
+    for column in ("input_tokens", "output_tokens"):
+        frame[column] = _measurements(frame[column], column, whole=True)
+    frame["response_time"] = _measurements(frame.response_time, "response_time", nullable=True)
     frame["task_id"] = [task_key(name, query) for name, query in zip(frame.task_name, frame["query"])]
     before = len(frame)
+    evidence = ["task_id", "model_name", "query", "metric", "response", "ground_truth",
+                "performance", "input_tokens", "output_tokens", "response_time"]
+    # Repeated identical evidence across source splits is harmless. Different
+    # answers, grades or measurements require an explicit choice of recorded run.
+    if frame.drop_duplicates(evidence).duplicated(["task_id", "model_name"]).any():
+        raise ValueError("Conflicting evidence for the same task/model; choose one recorded run explicitly")
     frame = frame.drop_duplicates(["task_id", "model_name"], keep="first")
-    price = prices.set_index("model_name")
+    price = prices.copy()
+    if price.model_name.duplicated().any():
+        raise ValueError("Price table must contain unique model names")
+    for column in ("input_price_per_1m", "output_price_per_1m"):
+        price[column] = _measurements(price[column], column)
+    price = price.set_index("model_name")
     missing = sorted(set(frame.model_name) - set(price.index))
     if missing:
         raise ValueError(f"No price for models: {missing}")
-    tokens_in, tokens_out = frame.input_tokens.astype(int), frame.output_tokens.astype(int)
-    cost = (tokens_in.to_numpy() * price.loc[frame.model_name, "input_price_per_1m"].to_numpy()
-            + tokens_out.to_numpy() * price.loc[frame.model_name, "output_price_per_1m"].to_numpy()) / 1e6
+    tokens_in, tokens_out = frame.input_tokens, frame.output_tokens
+    cost = ((tokens_in.to_numpy() / 1e6) * price.loc[frame.model_name, "input_price_per_1m"].to_numpy()
+            + (tokens_out.to_numpy() / 1e6) * price.loc[frame.model_name, "output_price_per_1m"].to_numpy())
     outcomes = pd.DataFrame({
         "tenant": "benchmark", "task_id": frame.task_id.to_numpy(), "prompt": frame["query"].to_numpy(),
         "task_type": task_type, "model": frame.model_name.to_numpy(),
@@ -128,7 +161,7 @@ def convert(frame, prices, *, tasks: list[str], task_type: str):
               "models": int(frame.model_name.nunique()), "rows": len(frame), "duplicate_rows_dropped": before - len(frame),
               "answers_extracted": round(sum(bool(row["answer"]) for row in answers) / len(answers), 4),
               "multiple_choice_extraction_matches_score": round(matched / checked, 4) if checked else None}
-    return outcomes, answers, report
+    return validate_outcomes(outcomes), answers, report
 
 
 def main(argv=None) -> None:
@@ -144,6 +177,10 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     if bool(args.group) == bool(args.tasks):
         raise SystemExit("Pass exactly one of --group and --tasks")
+    inputs = {path.resolve() for path in [*args.routing, args.candidates]}
+    outputs = {args.output.resolve(), args.answers.resolve()}
+    if len(outputs) != 2 or inputs & outputs:
+        parser.error("Outcome and answer outputs must be distinct from each other and all input files")
     import pandas as pd
 
     frames = []

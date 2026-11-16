@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import pytest
 
 spec = importlib.util.spec_from_file_location(
@@ -55,3 +56,74 @@ def test_convert_refuses_fractional_scores_and_unpriced_models():
         importer.convert(rows(), PRICES, tasks=["squad"], task_type="x")
     with pytest.raises(ValueError, match="No price"):
         importer.convert(rows(), PRICES[PRICES.model_name == "small"], tasks=["mmlu"], task_type="x")
+
+
+@pytest.mark.parametrize("column,value", [
+    ("input_tokens", 100.9), ("output_tokens", 10.9), ("input_tokens", True),
+    ("input_tokens", -1), ("output_tokens", float("inf")),
+])
+def test_invalid_token_counts_cannot_produce_recorded_costs(column, value):
+    frame = rows()
+    frame[column] = frame[column].astype(object)
+    frame.loc[0, column] = value
+    with pytest.raises(ValueError, match=column):
+        importer.convert(frame, PRICES, tasks=["mmlu"], task_type="x")
+
+
+@pytest.mark.parametrize("column,value", [
+    ("performance", "1.0"), ("response", "a different answer (B)"),
+    ("input_tokens", "101"), ("ground_truth", "A"), ("metric", "GSM8K"),
+    ("response_time", "1.1"),
+])
+def test_conflicting_duplicate_evidence_is_not_selected_by_row_order(column, value):
+    frame = rows()
+    frame.loc[2, column] = value
+    with pytest.raises(ValueError, match="Conflicting.*task.*model"):
+        importer.convert(frame, PRICES, tasks=["mmlu"], task_type="x")
+
+
+@pytest.mark.parametrize("value", [-1, np.nan, np.inf, True])
+def test_invalid_model_prices_are_rejected(value):
+    prices = PRICES.astype(object)
+    prices.loc[0, "input_price_per_1m"] = value
+    with pytest.raises(ValueError, match="input_price_per_1m"):
+        importer.convert(rows(), prices, tasks=["mmlu"], task_type="x")
+
+
+def test_duplicate_price_rows_are_rejected_explicitly():
+    prices = pd.concat([PRICES, PRICES.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="unique model"):
+        importer.convert(rows(), prices, tasks=["mmlu"], task_type="x")
+
+
+def test_identical_evidence_across_source_splits_is_deduplicated():
+    frame = rows()
+    frame.loc[2, "split"] = "test"
+    outcomes, _, report = importer.convert(frame, PRICES, tasks=["mmlu"], task_type="x")
+    assert len(outcomes) == 2 and report["duplicate_rows_dropped"] == 1
+
+
+def test_unknown_latency_is_preserved_and_representable_large_costs_stay_finite():
+    frame = rows()
+    frame.loc[0, "response_time"] = None
+    prices = PRICES.copy()
+    prices.loc[0, ["input_price_per_1m", "output_price_per_1m"]] = 1e308
+    outcomes, _, _ = importer.convert(frame, prices, tasks=["mmlu"], task_type="x")
+    small = outcomes[outcomes.model == "small"].iloc[0]
+    assert pd.isna(small.latency_ms)
+    assert small.cost_usd == pytest.approx(1.1e304)
+
+
+@pytest.mark.parametrize("output,source", [
+    ("output", "answers"), ("output", "routing"),
+    ("answers", "candidates"), ("answers", "routing"),
+])
+def test_cli_refuses_paths_that_can_overwrite_input_or_other_output(tmp_path, output, source):
+    paths = {name: tmp_path / name for name in ["routing", "candidates", "output", "answers"]}
+    paths[output] = paths[source]
+    paths[source].write_text("preserve source")
+    with pytest.raises(SystemExit) as error:
+        importer.main(["--routing", str(paths["routing"]), "--candidates", str(paths["candidates"]),
+                       "--tasks", "mmlu", "--output", str(paths["output"]), "--answers", str(paths["answers"])])
+    assert error.value.code == 2
+    assert paths[source].read_text() == "preserve source"
