@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -29,12 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
 from .ledger import MAX_TOKEN_COUNT, Ledger
-from .policy import run_stages_async
+from .policy import FREEZE_EDITED, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
-    NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries, shadow_stages,
-    validate_shadow_policy,
+    TOOLS_SKIP_REASON, NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries,
+    shadow_stages, skips_for_tools, validate_shadow_policy,
 )
+
+log = logging.getLogger("tine.proxy")
 
 
 def _finite_number(value: Any) -> bool:
@@ -71,7 +74,8 @@ class ProxyConfig:
     # answer is read from a response for agreement stages. ``checks`` is for every
     # tenant; ``tenant_checks`` (tenant -> name -> steps) belongs to one tenant and
     # wins over a shared check of the same name. A policy may carry its own
-    # ``answer_pattern``, which wins over this one.
+    # ``answer_pattern``, which wins over this one: it is part of what was frozen.
+    # This one is the fallback for policies without.
     checks: dict[str, list] = field(default_factory=dict)
     tenant_checks: dict[str, dict[str, list]] = field(default_factory=dict)
     answer_pattern: str | None = None
@@ -222,6 +226,14 @@ class ProxyConfig:
                     if policy.get("tenant") != name:
                         raise ValueError(f"{label}: a policy must name the tenant it was frozen for, "
                                          "and cannot be used for another tenant")
+                    if (label == "route_policies" and any(stage["check"] == "agreement" for stage in policy["stages"])
+                            and not (policy.get("answer_pattern") or self.answer_pattern)):
+                        # Whole replies of free text almost never agree: every request would
+                        # pay for the cheaper models and then the frontier.
+                        raise ValueError(
+                            f"route_policies: tenant {name!r}'s {provider} policy has agreement stages but no answer "
+                            "reader, so whole reply texts would be compared. Freeze it with "
+                            "'tine freeze-policy --answer-pattern REGEX', or set TINE_ANSWER_PATTERN")
                     for stage in policy["stages"]:
                         if stage["check"] in self.checks and stage["check"] not in self.tenant_checks.get(name, {}):
                             shared_users.setdefault(stage["check"], set()).add(name)
@@ -349,6 +361,27 @@ def _cost(config: ProxyConfig, provider: str, model: str, tokens: dict) -> float
     return cost if math.isfinite(cost) else None
 
 
+def _answer_reader(policy: dict, config: ProxyConfig) -> dict:
+    """How a policy's agreement stages read a comparable answer, and where that came from."""
+    if policy.get("answer_pattern"):
+        return {"answer_pattern": policy["answer_pattern"], "source": "policy file"}
+    if config.answer_pattern:
+        return {"answer_pattern": config.answer_pattern, "source": "TINE_ANSWER_PATTERN"}
+    return {"answer_pattern": None, "source": "none: whole reply texts are compared"}
+
+
+def _policy_summary(policy: dict, config: ProxyConfig) -> dict:
+    """What an operator needs to know about a loaded policy, for the log and /v1/shadow."""
+    reader = _answer_reader(policy, config)
+    summary = {"task_type": policy.get("task_type"), "cheaper_stages": len(policy["stages"]),
+               "answer_reader": reader, "freeze_digest": freeze_state(policy)}
+    if reader["answer_pattern"] is None and any(stage["check"] == "agreement" for stage in policy["stages"]):
+        summary["warning"] = ("agreement stages with no answer reader: whole reply texts are compared, so cheaper "
+                              "answers are rarely accepted and the projection is low; set the policy's "
+                              "answer_pattern (tine freeze-policy --answer-pattern) or TINE_ANSWER_PATTERN")
+    return summary
+
+
 def _upstream_url(base: str, path: str) -> str:
     base = base.rstrip("/")
     return base + (path[3:] if base.endswith("/v1") and path.startswith("/v1/") else path)
@@ -395,6 +428,23 @@ def create_app(
     shadow_running = 0
     route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
                       else config.timeout_seconds)
+    # One line per loaded policy, so an operator can see which policy runs on which
+    # tenant's traffic, of what kind, and how its answers are read.
+    for label, policies in (("shadow", config.shadow_policies), ("route", config.route_policies)):
+        for name, by_provider in policies.items():
+            for provider, policy in by_provider.items():
+                summary = _policy_summary(policy, config)
+                reader = summary["answer_reader"]
+                log.info("%s policy for tenant %r on %s: task_type %r, %d cheaper stage(s), answer reader %s (%s), "
+                         "policy file %s", label, name, provider, summary["task_type"], summary["cheaper_stages"],
+                         repr(reader["answer_pattern"]) if reader["answer_pattern"] else "none", reader["source"],
+                         summary["freeze_digest"])
+                if "warning" in summary:
+                    log.warning("%s policy for tenant %r on %s: %s", label, name, provider, summary["warning"])
+                if summary["freeze_digest"] == FREEZE_EDITED:
+                    log.warning("%s policy for tenant %r on %s was edited after freezing: its content does not "
+                                "match the digest tine freeze-policy wrote, so its guarantee is only what the file "
+                                "says", label, name, provider)
 
     def record_safely(**values) -> bool:
         # Persistence failure must not discard a provider's answer. The response
@@ -436,7 +486,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="Shadow mode is not configured")
         sampling = (shadow_store.state(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls)
                     if identity in config.shadow_policies else "no shadow policy for this tenant")
-        return {**shadow_store.report(identity), "sampling": sampling}
+        policies = {provider: _policy_summary(policy, config)
+                    for provider, policy in config.shadow_policies.get(identity, {}).items()}
+        return {**shadow_store.report(identity), "sampling": sampling, "policies": policies}
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None
@@ -505,6 +557,22 @@ def create_app(
         finally:
             shadow_running -= 1
             shadow_store.settle(identity, entries)
+
+    async def record_skipped(*, request_id: str, identity: str, provider: str, policy: dict,
+                             frontier_cost: float | None, reason: str) -> None:
+        """A sampled request the policy would send straight to the frontier. Nothing is
+        called; the run is stored so the projection counts it at the frontier's cost."""
+        try:
+            if shadow_store.state(identity, config.shadow_max_cost_usd,
+                                  config.shadow_max_unknown_cost_calls) != "on":
+                return
+            shadow_store.record(
+                request_id=request_id, tenant=identity, provider=provider, policy=policy,
+                outcome={"accepted": False, "stage": None, "served_by": None, "answer": None, "calls": [],
+                         "checks": []},
+                frontier_answer=None, frontier_cost_usd=frontier_cost, skip_reason=reason)
+        except Exception:
+            return
 
     async def forward(request: Request, provider: str, identity: str):
         try:
@@ -586,7 +654,14 @@ def create_app(
         # goes wrong here leaves the request on the ordinary frontier path below.
         routing_spent: float | None = None
         route = config.route_policies.get(identity, {}).get(provider)
-        if route is not None and route["stages"] and not stream and selected == frontier:
+        routable = route is not None and route["stages"] and not stream and selected == frontier
+        # A request with tool definitions goes straight to the frontier when the policy
+        # has an agreement stage: cheaper models cannot agree on tool calls. Nothing is
+        # spent on the way, and the ledger row says why.
+        route_skip = TOOLS_SKIP_REASON if routable and skips_for_tools(route, body) else None
+        if route_skip is not None:
+            routing_spent = 0.0
+        if routable and route_skip is None:
             try:
                 call, named_checks = stage_tools(identity, provider, route, body, url, headers)
                 routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
@@ -650,7 +725,7 @@ def create_app(
         common = dict(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
-            stream=stream, fallback_used=fallback, cache_context=cache_context,
+            stream=stream, fallback_used=fallback, cache_context=cache_context, route_skip_reason=route_skip,
         )
         if response is None:
             # What a route policy spent before the frontier failed is still known.
@@ -712,6 +787,8 @@ def create_app(
         )
         if route is not None and route["stages"] and not stream:
             result_headers["x-tine-route"] = "frontier"
+        if route_skip is not None:
+            result_headers["x-tine-route-skipped"] = "tools"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
         background = None
         policy = config.shadow_policies.get(identity, {}).get(provider) if shadow_on else None
@@ -719,9 +796,14 @@ def create_app(
                 and response.status_code < 400 and isinstance(payload, dict)
                 and sampled(request_id, config.shadow_sample_rate)):
             # After the response has been sent: the caller never waits for shadow calls.
-            background = BackgroundTask(
-                run_shadow, request_id=request_id, identity=identity, provider=provider, policy=policy,
-                body=dict(body), url=url, headers=dict(headers), frontier_payload=payload, frontier_cost=cost)
+            if skips_for_tools(policy, body):
+                background = BackgroundTask(
+                    record_skipped, request_id=request_id, identity=identity, provider=provider, policy=policy,
+                    frontier_cost=cost, reason=TOOLS_SKIP_REASON)
+            else:
+                background = BackgroundTask(
+                    run_shadow, request_id=request_id, identity=identity, provider=provider, policy=policy,
+                    body=dict(body), url=url, headers=dict(headers), frontier_payload=payload, frontier_cost=cost)
         return Response(
             raw, status_code=response.status_code,
             media_type=response.headers.get("content-type", "application/json"),

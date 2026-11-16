@@ -198,6 +198,24 @@ def test_routing_cost_schema_upgrade_preserves_unknowns_and_updates(tmp_path):
     reopened.close()
 
 
+def test_route_skip_reason_column_is_added_to_an_older_ledger(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger, success=True, cost_usd=0.25)
+    ledger.close()
+    with sqlite3.connect(path) as database:
+        database.execute("ALTER TABLE requests DROP COLUMN route_skip_reason")
+    migrated = Ledger(path)
+    assert migrated.get("a", request_id)["route_skip_reason"] is None
+    skipped = row(migrated, route_skip_reason="tools: why")
+    assert migrated.get("a", skipped)["route_skip_reason"] == "tools: why"
+    with pytest.raises(ValueError, match="route_skip_reason"):
+        row(migrated, route_skip_reason="")
+    migrated.close()
+
+
 def test_net_cost_overflow_stays_unknown_and_report_remains_json_serializable():
     import json
 

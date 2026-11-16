@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.ledger import Ledger  # noqa: E402
-from tine.policy import validate_policy  # noqa: E402
+from tine.policy import FREEZE_EDITED, freeze_state, validate_policy  # noqa: E402
 from tine.report_page import render  # noqa: E402
 from tine.shadow import ShadowStore  # noqa: E402
 
@@ -112,11 +112,15 @@ def reports_from_json(path: Path) -> tuple[dict | None, dict | None]:
 
 
 def read_policy(path: Path, tenant: str) -> dict:
-    """A valid policy frozen for this tenant. A policy frozen for one tenant must not
-    be shown beside another tenant's figures."""
+    """A valid policy that names this tenant. A policy for one tenant must not be shown
+    beside another tenant's figures. A file edited after freezing still loads; the
+    page says so, and so does a warning here."""
     policy = validate_policy(json.loads(path.read_text(encoding="utf-8")))
     if policy.get("tenant") not in (None, tenant):
-        raise ValueError(f"The policy was frozen for tenant {policy.get('tenant')!r}, not {tenant!r}")
+        raise ValueError(f"The policy file names tenant {policy.get('tenant')!r}, not {tenant!r}")
+    if freeze_state(policy) == FREEZE_EDITED:
+        print(f"savings_report: warning: {path} was {FREEZE_EDITED}: it does not match its freeze digest",
+              file=sys.stderr)
     return policy
 
 

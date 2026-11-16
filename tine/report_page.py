@@ -38,6 +38,8 @@ from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
+from tine.policy import FREEZE_EDITED, freeze_state
+
 NOT_KNOWN = "not known"
 SMALLEST_SHOWN_USD = 1e-6
 ROUNDING = {"nearest": ROUND_HALF_EVEN, "down": ROUND_FLOOR, "up": ROUND_CEILING}
@@ -388,6 +390,9 @@ def _shadow_section(shadow: dict | None) -> str:
         ("Policy would have answered with cheaper models", accepted),
         ("Of those, same answer as the frontier model", _matching_frontier(shadow)),
     ]
+    if _whole(shadow.get("sent_to_frontier_for_tools")):
+        pairs.append(("Sent to the frontier model untried, because the request defined tools",
+                      count(shadow.get("sent_to_frontier_for_tools"))))
     skipped = _not_compared(shadow)
     if skipped:
         pairs.append(("Accepted by a code check, not compared", count(skipped)))
@@ -528,7 +533,9 @@ def _stage_words(stage: Any) -> str:
     return f"{asked} Accept the answer only if the check named <code>{_esc(check)}</code> passes."
 
 
-def _guarantee_rows(guarantee: dict) -> list[tuple[str, str]]:
+def _guarantee_rows(guarantee: dict, frozen: str) -> list[tuple[str, str]]:
+    """The guarantee as rows. ``frozen`` is ``freeze_state`` of the policy file: a file
+    edited after freezing is not shown as certified, whatever it says."""
     epsilon, delta = _number(guarantee.get("epsilon")), _number(guarantee.get("delta"))
     limit, confidence = NOT_KNOWN, NOT_KNOWN
     if epsilon is not None:
@@ -538,7 +545,10 @@ def _guarantee_rows(guarantee: dict) -> list[tuple[str, str]]:
         confidence = f"{percent(1 - delta)} (delta = {_esc(delta)})"
     certified = guarantee.get("certified")
     state = "yes" if certified is True else "no" if certified is False else NOT_KNOWN
+    if certified is True and frozen == FREEZE_EDITED:
+        state = "not confirmed: the file was edited after freezing"
     return [
+        ("Policy file", frozen),
         ("Quality limit", limit),
         ("Confidence", confidence),
         ("Certified at this limit", state),
@@ -564,13 +574,23 @@ def _policy_section(policy: dict | None) -> str:
     if policy.get("task_type"):
         about.append(f"Kind of work it was frozen for: <code>{_esc(policy.get('task_type'))}</code>.")
     if policy.get("tenant"):
-        about.append(f"Tenant it was frozen for: <code>{_esc(policy.get('tenant'))}</code>.")
+        about.append(f"Tenant named in the policy file: <code>{_esc(policy.get('tenant'))}</code>.")
+    if any(isinstance(stage, dict) and stage.get("check") == "agreement" for stage in stages):
+        pattern = policy.get("answer_pattern")
+        about.append(f"Agreement compares the answer the pattern <code>{_esc(pattern)}</code> reads from each "
+                     "reply." if isinstance(pattern, str) and pattern else
+                     "The policy file names no pattern for reading answers: the proxy uses its own, if one is "
+                     "set, and otherwise compares whole replies, which free text rarely matches.")
     guarantee = policy.get("guarantee") if isinstance(policy.get("guarantee"), dict) else {}
+    frozen = freeze_state(policy)
+    edited = ('<p class="warn">This policy file was edited after it was frozen: its content does not match the '
+              "digest <code>tine freeze-policy</code> wrote into it. The guarantee below is what the file says, not "
+              "what was certified.</p>" if frozen == FREEZE_EDITED else "")
     parts = ["<section><h2>The policy in plain words</h2>",
              "<p class=\"small\">This describes the policy file supplied when the page was made. The reports do not "
              "name the policy behind each figure, so the page cannot confirm that every figure above came from "
-             "it.</p>",
-             f"<p>{' '.join(about)}</p>" if about else "", plan, _rows(_guarantee_rows(guarantee))]
+             "it.</p>", edited,
+             f"<p>{' '.join(about)}</p>" if about else "", plan, _rows(_guarantee_rows(guarantee, frozen))]
     if isinstance(guarantee.get("statement"), str):
         parts.append(f"<p class=\"small\">The guarantee as the policy file states it: "
                      f"<q>{_esc(guarantee['statement'])}</q></p>")
@@ -628,6 +648,9 @@ def _caveats(ledger: dict | None, shadow: dict | None, policy: dict | None) -> l
             "<strong>The quality limit describes the graded tasks the policy was certified on.</strong> It says "
             "nothing about traffic that differs from them. The quality guarantee comes from that certification, "
             "not from any comparison on this page.")
+        items.append(
+            "<strong>The policy file is not signed.</strong> The digest written when it was frozen shows whether "
+            "the file has changed since, but anyone who can edit the file can also write a new digest.")
     items.append("<strong>\"Not known\" means not measured.</strong> A missing cost or outcome is never counted "
                  "as zero.")
     items.append("<strong>Rounding.</strong> Percentages of savings and shares are rounded down. The loss bound "

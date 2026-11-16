@@ -13,6 +13,7 @@
         "certified": true,
         "epsilon": 0.04,
         "delta": 0.05,
+        "bound": 0.03,
         "statement": "EXAMPLE ONLY. This policy was written by hand to show the file format. Nothing in it was measured or certified. Replace it with a policy frozen by 'python -m tine freeze-policy' from your own graded tasks."
       }
     }

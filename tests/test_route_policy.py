@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -7,10 +8,11 @@ import pytest
 from tine.ledger import Ledger
 from tine.proxy import ProxyConfig, create_app
 from tine.runtime_checks import request_text, validate_checks
+from tine.shadow import TOOLS_SKIP_REASON, WHOLE_REPLY_PATTERN
 
-AGREE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+AGREE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
          "stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}
-CODE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+CODE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
         "stages": [{"models": ["coder"], "check": "tests+judge"}]}
 PLAIN = {**CODE, "stages": [{"models": ["coder"], "check": "none"}]}
 PRICES = {**{f"openai:{name}": {"input_per_million": rate, "output_per_million": rate}
@@ -22,7 +24,8 @@ CHECKS = {"tests+judge": [{"type": "webhook", "url": "https://ci.example/check"}
 
 def config(**changes):
     values = dict(tenant_keys={"token-a": "a"}, openai_api_key="secret", anthropic_api_key="secret-a",
-                  openai_frontier_model="frontier", prices=PRICES, verified_cache=False)
+                  openai_frontier_model="frontier", prices=PRICES, verified_cache=False,
+                  answer_pattern=WHOLE_REPLY_PATTERN)
     values.update(changes)
     return ProxyConfig(**values)
 
@@ -652,3 +655,55 @@ def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     defaults = ProxyConfig.from_env()
     assert (defaults.tenant_checks, defaults.route_deadline_seconds, defaults.shadow_max_concurrent,
             defaults.shadow_max_unknown_cost_calls) == ({}, None, 8, 20)
+
+
+def test_an_agreement_route_policy_needs_an_answer_reader():
+    """Without one, whole replies are compared: free text almost never agrees, so every
+    request pays for the cheaper models and then the frontier."""
+    with pytest.raises(ValueError, match="no answer reader"):
+        create_app(config(answer_pattern=None, route_policies={"a": {"openai": AGREE}}), ledger=Ledger())
+    for policy, pattern in (({**AGREE, "answer_pattern": r"\(([A-D])\)"}, None), (AGREE, r"\(([A-D])\)"),
+                            (CODE, None)):  # a code check reads no answer
+        create_app(config(answer_pattern=pattern, checks=CHECKS, route_policies={"a": {"openai": policy}}),
+                   ledger=Ledger())
+
+
+def test_each_loaded_policy_is_logged_with_its_tenant_task_type_and_reader(caplog):
+    caplog.set_level(logging.INFO, logger="tine.proxy")
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={
+        "a": {"openai": {**AGREE, "task_type": "ticket-labels", "answer_pattern": r"\(([A-D])\)"}},
+        "b": {"openai": {**CODE, "tenant": "b", "task_type": "coding"}}},
+        tenant_checks={"b": CHECKS}), ledger=Ledger())
+    lines = [record.getMessage() for record in caplog.records]
+    assert any("route policy for tenant 'a' on openai: task_type 'ticket-labels'" in line
+               and "answer reader '\\\\(([A-D])\\\\)' (policy file)" in line for line in lines), lines
+    assert any("tenant 'b'" in line and "task_type 'coding'" in line and "(TINE_ANSWER_PATTERN)" in line
+               and "no digest (frozen before digests)" in line for line in lines), lines
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize("tools", [{"tools": [{"type": "function", "function": {"name": "lookup"}}]},
+                                   {"functions": [{"name": "lookup", "parameters": {}}]}])
+def test_a_request_with_tools_skips_an_agreement_policy_and_says_why(tools):
+    routed = config(route_policies={"a": {"openai": AGREE}})
+    seen = []
+    body = {"model": "frontier", "messages": [{"role": "user", "content": "q"}], **tools}
+    response, row = ask(routed, world({"small-a": "42", "small-b": "42", "frontier": "42"}, seen), body=body)
+    assert seen == ["frontier"]  # no cheaper model was paid for
+    assert response.headers["x-tine-route"] == "frontier" and response.headers["x-tine-route-skipped"] == "tools"
+    assert row["route_skip_reason"] == TOOLS_SKIP_REASON and row["routing_cost_usd"] == 0.0
+    # Empty tool lists define no tools: the request goes through the policy, unmarked.
+    seen = []
+    response, row = ask(routed, world({"small-a": "42", "small-b": "42"}, seen),
+                        body={**body, "tools": [], "functions": []})
+    assert seen == ["small-a", "small-b"] and "x-tine-route-skipped" not in response.headers
+    assert row["route_skip_reason"] is None
+
+
+def test_a_code_policy_still_runs_on_a_request_with_tools():
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": CODE}}, checks=CHECKS),
+                        world({"coder": "patch"}, seen),
+                        body={"model": "frontier", "messages": [{"role": "user", "content": "fix"}],
+                              "tools": [{"type": "function", "function": {"name": "run_tests"}}]})
+    assert seen[0] == "coder" and response.headers["x-tine-route"] == "stage-0" and row["route_skip_reason"] is None

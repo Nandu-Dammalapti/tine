@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timezone
 
 import numpy as np
@@ -36,6 +37,11 @@ BUILT_IN_CHECKS = ("agreement", "none")
 MAX_COST_USD = 1_000_000.0
 # What recorded answers hold where a model gave none (``scripts/agreement_pairs.py``).
 NO_ANSWER_WORDS = ("None", "[None]", "null")
+# Where ``freeze_policy`` writes the digest of everything else in the file.
+DIGEST_FIELD = "content_sha256"
+FREEZE_UNCHANGED = "matches the digest written when it was frozen"
+FREEZE_EDITED = "edited after freezing"
+FREEZE_NO_DIGEST = "no digest (frozen before digests)"
 
 
 def known_cost(value) -> float | None:
@@ -64,7 +70,8 @@ def _stage(name: str, single_check: str) -> dict:
 
 def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float = 0.05, seed: int = 42,
                   fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8,
-                  single_check: str = "none", shortlist: str = "savings") -> dict:
+                  single_check: str = "none", shortlist: str = "savings", tenant: str | None = None,
+                  answer_pattern: str | None = None) -> dict:
     """Choose and certify one chain, and describe it as data.
 
     Tasks are split by ``seed`` into choose / certify / test parts. The chain is
@@ -82,10 +89,24 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
 
     ``shortlist`` is the candidate rule of ``candidate_chains``; ``measured`` ranks
     candidates by their check results on the choose part at this ``epsilon``.
+
+    ``tenant`` names the tenant the policy is for when it differs from the tenant in
+    the outcomes; the outcomes' tenant is then kept in provenance. ``answer_pattern``
+    is the regular expression the proxy reads a comparable answer with (the last
+    match, its first group if it has one). It must read the same answer the recorded
+    answers behind ``checks`` held, or agreement live is not the agreement measured.
+
+    The digest of the policy's content is written to ``provenance`` last, so a file
+    edited afterwards can be told apart (``freeze_state``). It is not a signature:
+    anyone who edits the file can write a new one.
     """
     if not isinstance(single_check, str) or not single_check or single_check == "agreement":
         raise ValueError("single_check must be a check name other than 'agreement'")
-    epsilon = _probability(epsilon, "epsilon")
+    if tenant is not None and (not isinstance(tenant, str) or not tenant.strip()):
+        raise ValueError("tenant must be a nonempty name")
+    if answer_pattern is not None:
+        check_answer_pattern(answer_pattern)
+    epsilon = _probability(epsilon, "epsilon", open_interval=True)
     delta = _probability(delta, "delta", open_interval=True)
     frame, tasks, excluded = complete_tasks(frame, frontier)
     if tasks.tenant.nunique() != 1 or tasks.task_type.nunique() != 1:
@@ -111,9 +132,12 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     identity = hashlib.sha256()
     for task_id in sorted(tasks.task_id):
         identity.update(str(task_id).encode("utf-8") + b"\n")
-    return {
-        "version": POLICY_VERSION, "tenant": str(tasks.tenant.iloc[0]), "task_type": str(tasks.task_type.iloc[0]),
+    source = str(tasks.tenant.iloc[0])
+    policy = {
+        "version": POLICY_VERSION, "tenant": tenant if tenant is not None else source,
+        "task_type": str(tasks.task_type.iloc[0]),
         "frontier": frontier, "stages": [_stage(models[index], single_check) for index in chain],
+        **({"answer_pattern": answer_pattern} if answer_pattern is not None else {}),
         "guarantee": {
             "epsilon": epsilon, "delta": delta, "certified": bool(chain),
             "statement": ("With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks "
@@ -129,8 +153,47 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
         "provenance": {
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), "seed": seed,
             "fractions": list(fractions), "complete_tasks": len(tasks), "excluded_tasks": len(excluded),
-            "candidates": len(models) - 1, "task_ids_sha256": identity.hexdigest(), "check_coverage": coverage},
+            "candidates": len(models) - 1, "task_ids_sha256": identity.hexdigest(), "check_coverage": coverage,
+            **({"outcomes_tenant": source} if tenant is not None and tenant != source else {})},
     }
+    policy["provenance"][DIGEST_FIELD] = policy_digest(policy)
+    return policy
+
+
+def check_answer_pattern(pattern) -> None:
+    """Refuse an answer pattern the proxy could not use."""
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("answer_pattern must be a nonempty regular expression")
+    try:
+        re.compile(pattern)
+    except re.error:
+        raise ValueError("answer_pattern must be a valid regular expression") from None
+
+
+def policy_digest(policy: dict) -> str:
+    """SHA-256 of the policy's canonical JSON (sorted keys, no spaces), leaving out the
+    digest field itself. Numbers that are not plain JSON are written as floats, as
+    ``dumps`` writes them, so the digest of a policy and of its file agree."""
+    content = dict(policy)
+    if isinstance(content.get("provenance"), dict):
+        content["provenance"] = {key: value for key, value in content["provenance"].items() if key != DIGEST_FIELD}
+    text = json.dumps(content, sort_keys=True, separators=(",", ":"), default=float)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def freeze_state(policy: dict) -> str:
+    """Whether a policy is still what ``freeze_policy`` wrote: ``FREEZE_UNCHANGED``,
+    ``FREEZE_EDITED``, or ``FREEZE_NO_DIGEST`` for a file without a digest (policies
+    frozen before digests were written, and hand-written ones). A matching digest shows
+    only that the file was not edited carelessly; it is not a signature."""
+    provenance = policy.get("provenance") if isinstance(policy, dict) else None
+    if not isinstance(provenance, dict) or DIGEST_FIELD not in provenance:
+        return FREEZE_NO_DIGEST
+    try:
+        digest = policy_digest(policy)
+    except (TypeError, ValueError, RecursionError):  # content no JSON file can hold
+        return FREEZE_EDITED
+    return FREEZE_UNCHANGED if provenance[DIGEST_FIELD] == digest else FREEZE_EDITED
 
 
 def validate_policy(policy: dict) -> dict:
@@ -156,14 +219,36 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("Only an agreement stage may have several models")
         if policy["frontier"] in members:
             raise ValueError("The frontier is the final fallback and cannot be a stage member")
-    if stages and not (isinstance(policy.get("guarantee"), dict) and policy["guarantee"].get("certified") is True):
+    guarantee = policy.get("guarantee")
+    if stages and not (isinstance(guarantee, dict) and guarantee.get("certified") is True):
         raise ValueError("A policy with stages must carry a certified guarantee")
-    if stages:
-        # Checked only when the file states both: a certified chain has a bound within its limit.
-        bound, epsilon = known_cost(policy["guarantee"].get("bound")), known_cost(policy["guarantee"].get("epsilon"))
-        if bound is not None and epsilon is not None and bound > epsilon:
-            raise ValueError("A certified policy's bound cannot be above its epsilon")
+    if isinstance(guarantee, dict):
+        # A limit, confidence or bound written as a string, or out of range, would slip
+        # past the comparison below and still read as certified.
+        for name in ("epsilon", "delta"):
+            if guarantee.get(name) is not None and not _fraction(guarantee[name], open_interval=True):
+                raise ValueError(f"A policy's {name} must be a number strictly between 0 and 1")
+        if guarantee.get("bound") is not None and not _fraction(guarantee["bound"]):
+            raise ValueError("A policy's bound must be a number between 0 and 1")
+        if guarantee.get("certified") is True:
+            missing = [name for name in ("epsilon", "delta", "bound") if guarantee.get(name) is None]
+            if missing:
+                raise ValueError(f"A certified policy must state its {', '.join(missing)}")
+            if guarantee["bound"] > guarantee["epsilon"]:
+                raise ValueError("A certified policy's bound cannot be above its epsilon")
+    if policy.get("answer_pattern") is not None:
+        try:
+            check_answer_pattern(policy["answer_pattern"])
+        except ValueError:
+            raise ValueError("A policy's answer_pattern must be a valid, nonempty regular expression") from None
     return policy
+
+
+def _fraction(value, *, open_interval: bool = False) -> bool:
+    """Whether ``value`` is a number in [0, 1], or in (0, 1) with ``open_interval``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return 0 < value < 1 if open_interval else 0 <= value <= 1
 
 
 def same_answer(answers) -> bool:
