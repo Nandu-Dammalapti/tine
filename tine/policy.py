@@ -79,6 +79,12 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     measured for a single model, for example ``tests+judge``; whoever runs the policy
     must supply a check of that name that does the same thing, or the guarantee does
     not describe what runs.
+
+    ``single_check="none"`` means a single model's answer is served as it is. That is
+    refused when the chosen chain holds a single model whose recorded check rejected
+    at least one answer: the chain was then certified with a check, and a policy that
+    names none would serve every answer of that model unchecked under a guarantee
+    that does not cover it.
     """
     if not isinstance(single_check, str) or not single_check or single_check == "agreement":
         raise ValueError("single_check must be a check name other than 'agreement'")
@@ -102,6 +108,14 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
 
     chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
     chain, bound = certify_chain(chains, rows(choose), rows(certify), frontier_index, epsilon=epsilon, delta=delta)
+    if single_check == "none":
+        checked = sorted(models[index] for index in chain
+                         if "+" not in models[index] and not passes[:, index].all())
+        if checked:
+            raise ValueError(
+                f"The chain was certified with a check that rejected answers from {checked}, but "
+                "single_check is 'none', which would serve them unchecked. Name the check those results "
+                "measured (--single-check, for example tests+judge:sonnet)")
     on_certify = chain_metrics(chain, *rows(certify)[:2], frontier_index, passes=passes[certify])
     on_test = chain_metrics(chain, *rows(test)[:2], frontier_index, passes=passes[test])
     identity = hashlib.sha256()

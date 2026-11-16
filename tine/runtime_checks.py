@@ -25,7 +25,9 @@ cheaper model wrote it. Two things are done about that here. The tags that frame
 case are made inert wherever they occur inside it, so text cannot step outside its
 frame. And a case too long for the judge to read whole is rejected without asking
 it, because the judge's prompt keeps only the start of each text and would otherwise
-rule on a request it never saw the end of. The instructions themselves are the
+rule on a request it never saw the end of. For the same reason the judge is not asked
+about a reply that calls a tool or was cut off: it would rule on the words and the
+proxy would serve an action, or half an answer, that it never read. The instructions themselves are the
 measured ones and do not tell the judge to distrust the case; how a real judge
 reacts to text that argues with it has not been measured.
 
@@ -44,7 +46,7 @@ from urllib.parse import urlsplit
 
 from tine.judge import MAX_ISSUE_CHARS, MAX_PATCH_CHARS, build_messages, parse_verdict
 from tine.policy import known_cost
-from tine.shadow import response_text
+from tine.shadow import plain_finish, response_text
 
 STEP_TYPES = ("webhook", "judge")
 EFFORTS = ("low", "medium", "high")
@@ -141,6 +143,11 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
     async def judge(step: dict, result: dict, tested: bool) -> dict:
         patch = response_text(provider, result.get("payload"))
         if not patch:
+            return {"passed": False, "cost_usd": 0.0}
+        if not plain_finish(provider, result.get("payload")):
+            # The judge reads the reply's text. A reply that also calls a tool would be
+            # served with an action the judge never saw, and one cut off by the token
+            # limit is not the whole answer. Neither is asked about; both are rejected.
             return {"passed": False, "cost_usd": 0.0}
         issue, patch = inert(request_text(body)), inert(patch)
         if len(issue) > MAX_ISSUE_CHARS or len(patch) > MAX_PATCH_CHARS:
