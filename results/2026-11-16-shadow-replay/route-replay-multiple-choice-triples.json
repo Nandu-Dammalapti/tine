@@ -1,0 +1,24 @@
+{
+  "requests": 1414,
+  "mode": "route",
+  "ledger": {
+    "served_by_cheaper_models_share": 0.7772277227722773,
+    "cost_usd": 0.3248824,
+    "frontier_cost_usd": 0.6981200000000006,
+    "savings_fraction": 0.534632441414084
+  },
+  "graded": {
+    "policy_accuracy": 0.888967468175389,
+    "frontier_accuracy": 0.8698727015558698,
+    "degradation_rate": 0.009900990099009901
+  },
+  "policy_estimate": {
+    "scope": "held-out test tasks, recorded outcomes and costs; includes the cost of every call",
+    "test_tasks": 1414,
+    "savings": 0.5251849252277546,
+    "accuracy": 0.888967468175389,
+    "frontier_accuracy": 0.8698727015558698,
+    "degradation_rate": 0.009900990099009901,
+    "frontier_call_rate": 0.22277227722772278
+  }
+}

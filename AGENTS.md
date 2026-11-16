@@ -216,7 +216,7 @@ For each tenant and task type, a frozen policy: cheaper models in order, each be
 | Judge: prompt, one call, spending cap, scoring, join to chains | `tine/judge.py`, `scripts/judge_patches.py` | Built and tested; measured with paid calls ($12.69 total, authorised) |
 | Frozen policies and a runner with routing cost | `tine/policy.py`, `tine freeze-policy`, `docs/POLICY.md` | Built and tested |
 | Proxy with tenant auth, ledger, verified cache, net-of-routing savings | `tine/proxy.py`, `tine/ledger.py`, `docs/PROXY.md` | Development quality; SQLite |
-| Shadow mode and live routing through a policy | `tine/shadow.py`, `tine/proxy.py` | See `docs/PROXY.md` for what is wired in and its limits |
+| Shadow mode, live routing through a policy, named checks (tests behind a webhook, a judge call) | `tine/shadow.py`, `tine/runtime_checks.py`, `tine/proxy.py`, `scripts/shadow_replay.py` | Built and tested with stand-in providers; a replay of recorded answers reproduces the offline estimate. Never run on real traffic |
 
 Not built: nightly per-tenant retraining, distillation, the per-enterprise server beyond the proxy, a production datastore, streaming under a policy.
 

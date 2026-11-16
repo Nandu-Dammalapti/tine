@@ -81,10 +81,11 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
 
 ## Not done yet
 
-- The proxy runs a policy in shadow mode only ([PROXY.md](PROXY.md)): it reports what
-  the policy would have done and never returns a cheaper answer. Live routing through
-  `run_policy` is not wired in.
-- Running a repository's tests on a live patch is the caller's job; `tine.judge`
-  supplies only the judge half of a `tests+judge` check.
+- The proxy can run a policy in shadow mode (report only) or serve answers from it,
+  including code stages whose tests run behind a webhook and whose judge the proxy
+  calls ([PROXY.md](PROXY.md)). Both are tested with stand-in providers only; neither
+  has served real traffic.
+- Running a repository's tests on a live patch happens outside Tine, behind a webhook
+  the tenant hosts; Tine supplies the judge half of a `tests+judge` check.
 - Members of a stage are called one after another, not in parallel.
 - Extracting the comparable answer from a response is the caller's job.

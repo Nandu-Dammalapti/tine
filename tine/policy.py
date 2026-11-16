@@ -223,5 +223,71 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
     return finish(result, policy["frontier"], "frontier")
 
 
+async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dict | None = None) -> dict:
+    """The cheaper stages of ``policy`` for one request, for an asynchronous caller.
+
+    Like ``run_policy`` without its last step: the frontier is not called, because
+    the caller either has its answer already (shadow mode) or calls it itself when
+    nothing is accepted (the proxy). ``call(model)`` is awaited; the members of a
+    stage are called together. A named check may be a plain or an awaitable function.
+
+    Returns ``accepted``, and when accepted the ``stage``, the model that
+    ``served_by`` it and its ``result``; always the ``calls`` and ``checks`` made, so
+    that every cent spent on the way is accounted for.
+    """
+    import asyncio
+    import inspect
+
+    validate_policy(policy)
+    checks = checks or {}
+    missing = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS) - set(checks))
+    if missing:
+        raise ValueError(f"No check supplied for: {missing}")
+    calls, seen, check_runs = [], {}, []
+
+    async def attempt(model: str):
+        if model in seen:
+            return seen[model]
+        try:
+            result = await call(model)
+        except Exception as error:
+            calls.append({"model": model, "cost_usd": None, "error": type(error).__name__})
+            seen[model] = None
+            return None
+        calls.append({"model": model, "cost_usd": result.get("cost_usd"), "error": None})
+        seen[model] = result
+        return result
+
+    async def passes(name: str, model: str, result) -> bool:
+        try:
+            verdict = checks[name](result)
+            if inspect.isawaitable(verdict):
+                verdict = await verdict
+        except Exception as error:
+            check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
+                               "error": type(error).__name__})
+            return False
+        passed = verdict.get("passed") is True
+        check_runs.append({"check": name, "model": model, "passed": passed, "cost_usd": verdict.get("cost_usd"),
+                           "error": None})
+        return passed
+
+    for index, stage in enumerate(policy["stages"]):
+        results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
+        if any(result is None for result in results):
+            continue
+        if stage["check"] == "none":
+            accepted = True
+        elif stage["check"] == "agreement":
+            accepted = agree([result.get("answer") for result in results])
+        else:
+            accepted = await passes(stage["check"], stage["models"][0], results[0])
+        if accepted:
+            return {"accepted": True, "stage": index, "served_by": stage["models"][0], "result": results[0],
+                    "check": stage["check"], "calls": calls, "checks": check_runs}
+    return {"accepted": False, "stage": None, "served_by": None, "result": None, "check": None,
+            "calls": calls, "checks": check_runs}
+
+
 def dumps(policy: dict) -> str:
     return json.dumps(validate_policy(policy), indent=2, allow_nan=False, default=float) + "\n"

@@ -1,6 +1,7 @@
-# Shadow mode replayed on recorded answers, 2026-11-16
+# Shadow mode and live routing replayed on recorded answers, 2026-11-16
 
-A wiring check of the proxy's shadow mode (`docs/PROXY.md`), with no model called.
+A wiring check of the proxy's shadow mode and of routing through a policy
+(`docs/PROXY.md`), with no model called.
 `scripts/shadow_replay.py` stands in for the provider with recorded xRouteBench
 responses, serves the requests through the real proxy app with a frozen policy in
 shadow mode, and reads the report back from `GET /v1/shadow`.
@@ -20,15 +21,19 @@ shadow mode, and reads the report back from `GET /v1/shadow`.
 
 `shadow-replay-multiple-choice-triples.json`.
 
-| | shadow report, from the proxy | the policy file's stored estimate |
-| --- | --- | --- |
-| requests the policy would answer with cheaper models | 77.7% | 77.7% |
-| cost against always using the frontier | 53.5% lower | 52.5% lower |
-| accuracy (from the recorded grades) | 88.9% | 88.9% |
-| frontier accuracy | 87.0% | 87.0% |
-| tasks lost that the frontier solves | 0.99% | 0.99% |
+| | shadow report, from the proxy | live routing, from the ledger | the policy file's stored estimate |
+| --- | --- | --- | --- |
+| requests answered by cheaper models | 77.7% (would be) | 77.7% | 77.7% |
+| cost against always using the frontier | 53.5% lower | 53.5% lower | 52.5% lower |
+| accuracy (from the recorded grades) | 88.9% | 88.9% | 88.9% |
+| frontier accuracy | 87.0% | 87.0% | 87.0% |
+| tasks lost that the frontier solves | 0.99% | 0.99% | 0.99% |
 
-- **The live path reproduces the offline estimate.** Acceptance, accuracy and
+The live-routing column (`route-replay-multiple-choice-triples.json`, `--mode route`)
+serves the same 1,414 requests from the policy and adds up each request's answer cost
+and routing cost as the ledger recorded them.
+
+- **Both live paths reproduce the offline estimate, and each other.** Acceptance, accuracy and
   degradation match exactly. Savings are one point higher in the replay for a known
   reason: `gpt-oss-20b` sits in both stages; the stored estimate charges it twice and a
   live run calls it once per request.
@@ -59,4 +64,5 @@ cost and simply fails the agreement check. Fixed before this result, with a test
 python scripts/shadow_replay.py --outcomes DATA/xroutebench-multiple-choice.jsonl \
   --answers DATA/xroutebench-multiple-choice-answers.csv --policy RUNS/policy.json \
   --prices DATA/xroutebench-prices.json --group-outcomes DATA/multiple-choice-triples.jsonl
+# the same with --mode route for live routing
 ```

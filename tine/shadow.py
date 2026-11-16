@@ -18,8 +18,9 @@ What the report can and cannot say:
 - Shadow calls cost money on the customer's account. That spend is reported and can
   be capped. Projected savings are computed only from requests whose costs are all
   known.
-- Only stages with built-in checks (agreement, none) can be shadowed here. A check
-  that needs the customer's repository or a judge call is not run by the proxy.
+- A stage with a named check (tests, a judge) is shadowed only when the proxy has
+  been given a way to run that check (``tine.runtime_checks``). For such stages the
+  answer is not compared with the frontier's: two right patches rarely match.
 
 No prompt or response text is stored by this module; the ledger's request record
 already holds the customer's request and the frontier's response.
@@ -27,7 +28,6 @@ already holds the customer's request and the frontier's response.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -35,7 +35,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from tine.policy import BUILT_IN_CHECKS, same_answer, validate_policy
+from tine.policy import BUILT_IN_CHECKS, run_stages_async, same_answer, validate_policy
 
 SHADOW_SCOPE = (
     "sampled requests answered by the frontier model; the policy's cheaper stages were run in the "
@@ -79,18 +79,21 @@ def extract_answer(provider: str, payload: Any, pattern: str | None = None) -> s
     return answer if answer and answer.strip() else None
 
 
-def validate_shadow_policy(policy: dict, frontier: str) -> dict:
-    """A policy the proxy can shadow: valid, for this frontier, built-in checks only."""
+def validate_shadow_policy(policy: dict, frontier: str, available_checks=()) -> dict:
+    """A policy the proxy can run: valid, for this frontier, and every named check
+    it needs is one the proxy has been configured to run."""
     validate_policy(policy)
     if policy["frontier"] != frontier:
-        raise ValueError("A shadow policy's frontier must be the provider's configured frontier model")
-    unsupported = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS))
+        raise ValueError("A policy's frontier must be the provider's configured frontier model")
+    unsupported = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS)
+                         - set(available_checks))
     if unsupported:
-        raise ValueError(f"Shadow mode runs agreement stages only; this policy needs {unsupported}")
+        raise ValueError(f"No check is configured for {unsupported}; the proxy runs agreement stages "
+                         "and the named checks it has been given")
     return policy
 
 
-async def shadow_stages(policy: dict, call) -> dict:
+async def shadow_stages(policy: dict, call, checks: dict | None = None) -> dict:
     """Run the cheaper stages of ``policy`` and say what it would have done.
 
     ``call(model)`` is awaited and returns a mapping with ``answer`` and ``cost_usd``.
@@ -98,30 +101,11 @@ async def shadow_stages(policy: dict, call) -> dict:
     fails has no answer, so its stage does not pass. A model that appears in two
     stages is called once.
     """
-    seen: dict[str, dict | None] = {}
-    calls = []
-
-    async def attempt(model: str):
-        if model in seen:
-            return seen[model]
-        try:
-            result = await call(model)
-        except Exception as error:  # a shadow failure is a data point, never an outage
-            calls.append({"model": model, "cost_usd": None, "error": type(error).__name__})
-            seen[model] = None
-            return None
-        calls.append({"model": model, "cost_usd": result.get("cost_usd"), "error": None})
-        seen[model] = result
-        return result
-
-    for index, stage in enumerate(policy["stages"]):
-        results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
-        if any(result is None for result in results):
-            continue
-        if stage["check"] == "none" or same_answer([result.get("answer") for result in results]):
-            return {"accepted": True, "stage": index, "served_by": stage["models"][0],
-                    "answer": results[0].get("answer"), "calls": calls}
-    return {"accepted": False, "stage": None, "served_by": None, "answer": None, "calls": calls}
+    outcome = await run_stages_async(policy, call, checks=checks)
+    result = outcome["result"] or {}
+    return {"accepted": outcome["accepted"], "stage": outcome["stage"], "served_by": outcome["served_by"],
+            "answer": result.get("answer"), "calls": outcome["calls"], "checks": outcome["checks"],
+            "comparable": outcome["check"] in BUILT_IN_CHECKS}
 
 
 def _known_sum(values) -> float | None:
@@ -159,16 +143,17 @@ class ShadowStore:
     def record(self, *, request_id: str, tenant: str, provider: str, policy: dict, outcome: dict,
                frontier_answer: str | None, frontier_cost_usd: float | None) -> None:
         matches = None
-        if outcome["accepted"]:
+        if outcome["accepted"] and outcome.get("comparable", True):
             matches = int(frontier_answer is not None and same_answer([outcome["answer"], frontier_answer]))
+        spent = [*outcome["calls"], *({**run, "model": f"check:{run['check']}"} for run in outcome.get("checks", []))]
         digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         with self._ledger._lock, self._ledger._db:
             self._ledger._db.execute(
                 "INSERT INTO shadow_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, tenant, provider, datetime.now(timezone.utc).isoformat(), digest,
                  int(outcome["accepted"]), outcome["stage"], outcome["served_by"], matches,
-                 json.dumps(outcome["calls"], allow_nan=False),
-                 _known_sum(entry["cost_usd"] for entry in outcome["calls"]), frontier_cost_usd))
+                 json.dumps(spent, allow_nan=False),
+                 _known_sum(entry["cost_usd"] for entry in spent), frontier_cost_usd))
 
     def spend(self, tenant: str) -> float:
         """Known shadow spend so far. Calls of unknown cost are not counted, so a cap
@@ -185,7 +170,8 @@ class ShadowStore:
                 "SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json "
                 "FROM shadow_runs WHERE tenant=?", (tenant,)).fetchall()
         accepted = [row for row in rows if row["accepted"]]
-        matching = sum(row["matches_frontier"] == 1 for row in accepted)
+        compared = [row for row in accepted if row["matches_frontier"] is not None]
+        matching = sum(row["matches_frontier"] == 1 for row in compared)
         known = [row for row in rows if row["shadow_cost_usd"] is not None and row["frontier_cost_usd"] is not None]
         frontier_cost = math.fsum(row["frontier_cost_usd"] for row in known)
         # What the policy would have cost: every cheaper call it made, plus the
@@ -197,8 +183,9 @@ class ShadowStore:
             "tenant": tenant, "shadowed_requests": len(rows),
             "policy_would_accept": len(accepted),
             "policy_would_accept_share": len(accepted) / len(rows) if rows else None,
+            "accepted_compared_with_frontier": len(compared),
             "accepted_matching_frontier": matching,
-            "accepted_matching_frontier_share": matching / len(accepted) if accepted else None,
+            "accepted_matching_frontier_share": matching / len(compared) if compared else None,
             "cost_known_requests": len(known),
             "unknown_cost_requests": len(rows) - len(known),
             "frontier_cost_usd": frontier_cost if known else None,

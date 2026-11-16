@@ -54,7 +54,7 @@ traffic, without changing anything the tenant sees. It is off unless configured.
 - `TINE_SHADOW_SAMPLE_RATE`: the share of eligible requests to shadow, 0 to 1.
 - `TINE_SHADOW_MAX_COST_USD`: required when sampling. Shadow calls stop for a tenant once its recorded
   shadow spend reaches this amount; the run in progress when the cap is crossed still completes.
-- `TINE_SHADOW_ANSWER_PATTERN`: optional regular expression; the comparable answer of a response is its
+- `TINE_ANSWER_PATTERN`: optional regular expression; the comparable answer of a response is its
   last match (first group if there is one). Without it, whole response texts are compared.
 
 A request is eligible when it was answered by the frontier model, without streaming, without a cache
@@ -76,9 +76,77 @@ Limits to state with any number from it:
   label, a number, a choice, usually with an answer pattern). Free-form answers rarely match word for
   word, so such traffic shows low acceptance here. The quality limit comes from the policy's own
   certification on graded tasks.
-- **Agreement stages only.** A stage whose check needs the tenant's repository or a judge call cannot be
-  shadowed by the proxy yet; such a policy is refused at startup.
+- A stage with a named check (tests, a judge) is shadowed only if that check is configured (see Named
+  checks below); otherwise the policy is refused at startup. For such stages the accepted answer is not
+  compared with the frontier's, because two right patches rarely match word for word.
 - Projected savings use only requests whose costs are all known, so every stage model needs a price in
   `TINE_MODEL_PRICES`. Streaming requests are never shadowed.
 - Shadow results store no prompt or response text; the request record already holds the tenant's request
   and the frontier's response.
+
+## Routing through a policy
+
+With a route policy the proxy serves answers from a frozen policy. It is off unless configured, and a
+tenant's provider has either a shadow policy or a route policy, never both. Run shadow mode first.
+
+- `TINE_ROUTE_POLICIES`: path to a JSON file, tenant to provider to policy, as for shadow mode.
+- `TINE_ANSWER_PATTERN`: how a comparable answer is read from a response, for agreement stages.
+- `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
+
+For a non-streaming request that would have gone to the frontier, the proxy tries the policy's stages in
+order, with the same request and the model swapped. A stage's models are called together. If the
+stage's check passes, the first member's response is returned as it came from the provider, with
+`x-tine-model` naming it and `x-tine-route: stage-N`. If no stage is accepted, or anything in the policy
+path fails, the request goes to the frontier exactly as without a policy (`x-tine-route: frontier`).
+Streaming requests and requests for an allowlisted non-frontier model are not routed.
+
+What the ledger records for a routed request:
+
+- `cost_usd`: the returned answer's cost. `routing_cost_usd`: every other call the policy made for the
+  request (second opinions, attempts that were escalated, judge calls, and whatever a webhook reports).
+  It is left unknown if any of those costs is unknown, for example a model with no configured price or
+  a cheaper call that failed before its usage was known.
+- `baseline_cost_usd`: what the frontier would have cost is not observed when it was not called. It is
+  left unknown unless `TINE_ROUTE_ESTIMATE_BASELINE` is on, in which case it is **an estimate**: the
+  returned answer's token counts at the frontier's prices. A frontier answer could be longer or
+  shorter, so savings computed from it are approximate. Supply a measured baseline through the outcome
+  endpoint when one exists. When the request escalates, the baseline is the frontier's actual cost.
+
+The quality limit of a route policy is the one certified when it was frozen, on the tasks it was
+frozen from. The proxy does not check that live traffic resembles those tasks. Outcomes still have to
+be reported through the outcome endpoint for savings to count as verified.
+
+## Named checks
+
+A policy stage for code names the check it was certified with, for example `tests+judge:sonnet`.
+`TINE_CHECKS` is a path to a JSON file that tells the proxy how to run each name: a list of steps, run in
+order, all of which must pass.
+
+```json
+{"tests+judge:sonnet": [
+  {"type": "webhook", "url": "https://ci.internal.example/tine-check", "bearer_env": "CI_TOKEN"},
+  {"type": "judge", "model": "claude-sonnet-5-5", "effort": "medium"}
+]}
+```
+
+- `webhook`: the proxy POSTs `{"tenant", "provider", "model", "request", "response"}` to a URL the
+  operator controls and reads back `{"passed": true|false, "cost_usd": optional}`. This is how a
+  tenant's own tests are run: beside their repository, on their infrastructure. **The proxy never
+  executes model-written code.** `bearer_env` names an environment variable holding a token to send; the
+  token is never written to the configuration.
+- `judge`: the proxy asks a Claude model through its configured Anthropic provider whether the response
+  resolves the request, with the instructions the measured judges used. `threshold` accepts on the
+  judge's probability instead of its verdict. The judge's call is priced from `TINE_MODEL_PRICES`
+  (`anthropic:<model>`) and counted as routing cost.
+
+Every step fails closed: an error, a timeout, a malformed reply or a refusal rejects the answer, so the
+request moves on. Limits:
+
+- A configured check must do what the measured one did, or the policy's guarantee does not describe
+  what runs. The measured judges read a GitHub issue and a unified diff
+  (`results/2026-11-14-api-judge`); here the judge reads the request's user text and the response
+  text. Its measured catch rate carries over only to traffic of that shape, and it was measured on
+  public repositories the judge may have seen.
+- A webhook receives the tenant's request and a model's response. Point it only at the tenant's own
+  infrastructure.
+- This path has been tested with stand-in providers only. It has not served real traffic.

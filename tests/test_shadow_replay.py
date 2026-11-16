@@ -28,6 +28,12 @@ def test_replay_reports_savings_and_grades_from_recorded_answers():
                          "model": model, "success": letter == truth[index], "cost_usd": 0.0,
                          "input_tokens": 1_000_000, "output_tokens": 0})
             answers[(task_id, model)] = letter
+    frame = pd.DataFrame(rows)
+    tasks = [f"t{index}" for index in range(4)]
+    routed = asyncio.run(replay_module.replay(frame, answers, POLICY, PRICES, tasks, mode="route"))
+    assert routed["ledger"]["served_by_cheaper_models_share"] == 0.75
+    assert routed["ledger"]["cost_usd"] == pytest.approx(18.0) and routed["ledger"]["savings_fraction"] == pytest.approx(0.55)
+    assert routed["graded"] == {"policy_accuracy": 1.0, "frontier_accuracy": 0.75, "degradation_rate": 0.0}
     result = asyncio.run(replay_module.replay(pd.DataFrame(rows), answers, POLICY, PRICES,
                                               [f"t{index}" for index in range(4)]))
     report = result["shadow_report"]

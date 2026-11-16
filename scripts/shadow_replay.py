@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay recorded answers through the proxy's shadow mode.
+"""Replay recorded answers through the proxy's shadow mode or its live routing.
 
 A wiring check and a demonstration, with no model called: a stand-in provider answers
 every request from recorded benchmark responses (the answer each model gave, with its
@@ -12,6 +12,9 @@ By default it replays the tasks of the policy's own held-out test part, so the
 projected savings can be set beside the estimate stored in the policy file. The two
 differ slightly by design: the stored estimate charges a model once per stage it
 appears in, and a live run calls it once per request.
+
+``--mode route`` serves the same requests from the policy instead (live routing) and
+reads each request's served model, answer cost and routing cost back from the ledger.
 """
 
 from __future__ import annotations
@@ -41,7 +44,8 @@ def test_part(group_outcomes, frontier: str, seed: int, fractions) -> set[str]:
     return set(tasks.task_id[part == 2])
 
 
-async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: list[str]) -> dict:
+async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: list[str],
+                 mode: str = "shadow") -> dict:
     tenant, frontier = policy.get("tenant") or str(outcomes.tenant.iloc[0]), policy["frontier"]
     rows = {(row.task_id, row.model): row for row in outcomes.itertuples()}
     prompts = {row.prompt: row.task_id for row in outcomes.drop_duplicates("task_id").itertuples()}
@@ -60,7 +64,8 @@ async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: 
     config = ProxyConfig(
         tenant_keys={"replay-token": tenant}, openai_api_key="replay", openai_frontier_model=frontier,
         prices={f"openai:{model}": rates for model, rates in prices.items()}, verified_cache=False,
-        shadow_policies={tenant: {"openai": policy}}, shadow_sample_rate=1.0, shadow_max_cost_usd=1e9)
+        **({"route_policies": {tenant: {"openai": policy}}} if mode == "route" else
+           {"shadow_policies": {tenant: {"openai": policy}}, "shadow_sample_rate": 1.0, "shadow_max_cost_usd": 1e9}))
     ledger = Ledger()
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
         app = create_app(config, ledger=ledger, client=upstream)
@@ -73,7 +78,9 @@ async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: 
                                              json={"model": frontier, "messages": [{"role": "user", "content": prompt}]})
                 response.raise_for_status()
                 request_tasks[response.headers["x-tine-request-id"]] = task_id
-            report = (await client.get("/v1/shadow", headers=headers)).json()
+            report = (await client.get("/v1/shadow", headers=headers)).json() if mode == "shadow" else None
+    if mode == "route":
+        return route_summary(ledger, tenant, request_tasks, rows, frontier, prices, policy)
     # What a live deployment cannot see: whether each path's answer was right.
     served = {row["request_id"]: row for row in ledger._db.execute("SELECT request_id, accepted, served_by FROM shadow_runs")}
     policy_right = frontier_right = lost = 0
@@ -91,6 +98,31 @@ async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: 
             "policy_estimate": policy.get("estimate")}
 
 
+def route_summary(ledger, tenant, request_tasks, rows, frontier, prices, policy) -> dict:
+    """What live routing did, from the ledger, against the frontier's recorded cost."""
+    rates = prices[frontier]
+    spent = baseline = 0.0
+    right = frontier_right = lost = routed = 0
+    for request_id, task_id in request_tasks.items():
+        entry = ledger.get(tenant, request_id)
+        front = rows[(task_id, frontier)]
+        spent += entry["cost_usd"] + entry["routing_cost_usd"]
+        baseline += (front.input_tokens * rates["input_per_million"]
+                     + front.output_tokens * rates["output_per_million"]) / 1e6
+        mine = bool(rows[(task_id, entry["model"])].success)
+        routed += entry["model"] != frontier
+        right += mine
+        frontier_right += bool(front.success)
+        lost += bool(front.success) and not mine
+    count = len(request_tasks)
+    return {"requests": count, "mode": "route",
+            "ledger": {"served_by_cheaper_models_share": routed / count, "cost_usd": spent,
+                       "frontier_cost_usd": baseline, "savings_fraction": 1 - spent / baseline},
+            "graded": {"policy_accuracy": right / count, "frontier_accuracy": frontier_right / count,
+                       "degradation_rate": lost / count},
+            "policy_estimate": policy.get("estimate")}
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--outcomes", type=Path, required=True, help="canonical outcomes, one row per task and model")
@@ -100,6 +132,7 @@ def main(argv=None) -> None:
                         help="JSON: model -> {input_per_million, output_per_million}")
     parser.add_argument("--group-outcomes", type=Path,
                         help="the outcomes the policy was frozen from; replays only its test part")
+    parser.add_argument("--mode", choices=("shadow", "route"), default="shadow")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
@@ -114,7 +147,7 @@ def main(argv=None) -> None:
                          provenance["fractions"])
         task_ids = [task_id for task_id in task_ids if task_id in keep]
     result = asyncio.run(replay(outcomes, answers, policy, json.loads(args.prices.read_text()),
-                                task_ids[:args.limit]))
+                                task_ids[:args.limit], mode=args.mode))
     text = json.dumps(result, indent=2, default=float)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
