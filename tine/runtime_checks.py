@@ -20,21 +20,38 @@ a GitHub issue and a unified diff; here the judge reads the request's user text 
 the response text, so its measured catch rate carries over only to traffic of that
 shape.
 
+The text the judge reads is not trusted: an end user, a retrieved document or the
+cheaper model wrote it. Two things are done about that here. The tags that frame the
+case are made inert wherever they occur inside it, so text cannot step outside its
+frame. And a case too long for the judge to read whole is rejected without asking
+it, because the judge's prompt keeps only the start of each text and would otherwise
+rule on a request it never saw the end of. The instructions themselves are the
+measured ones and do not tell the judge to distrust the case; how a real judge
+reacts to text that argues with it has not been measured.
+
 Every step fails closed: an error, a timeout, a malformed reply or a refusal is a
 rejection, so the request moves on to the next model. What a step costs is returned
-and becomes routing cost.
+and becomes routing cost. A cost a webhook reports that is not a usable amount is
+unknown, never part of a sum.
 """
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from urllib.parse import urlsplit
 
-from tine.judge import build_messages, parse_verdict
+from tine.judge import MAX_ISSUE_CHARS, MAX_PATCH_CHARS, build_messages, parse_verdict
+from tine.policy import known_cost
 from tine.shadow import response_text
 
 STEP_TYPES = ("webhook", "judge")
 EFFORTS = ("low", "medium", "high")
+# A check holds a caller's request open (live routing) or a shadow slot. Ten minutes
+# is already long for either; a longer wait is refused at startup.
+MAX_WEBHOOK_TIMEOUT_SECONDS = 600
+_FRAME_TAG = re.compile(r"<\s*(/?)\s*(issue|patch)\s*>", flags=re.IGNORECASE)
 
 
 def validate_checks(checks) -> dict:
@@ -59,8 +76,10 @@ def validate_checks(checks) -> dict:
                         or parsed.username or parsed.password):
                     raise ValueError(f"Check {name!r}: a webhook needs an HTTP(S) url without credentials")
                 timeout = step.get("timeout_seconds", 60)
-                if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
-                    raise ValueError(f"Check {name!r}: timeout_seconds must be positive")
+                if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                        or not 0 < timeout <= MAX_WEBHOOK_TIMEOUT_SECONDS):
+                    raise ValueError(f"Check {name!r}: timeout_seconds must be positive and at most "
+                                     f"{MAX_WEBHOOK_TIMEOUT_SECONDS}")
                 if "bearer_env" in step and (not isinstance(step["bearer_env"], str) or not step["bearer_env"]):
                     raise ValueError(f"Check {name!r}: bearer_env must name an environment variable")
             else:
@@ -90,6 +109,12 @@ def request_text(body: dict) -> str:
     return "\n\n".join(parts)
 
 
+def inert(text: str) -> str:
+    """``text`` with the judge's frame tags (``<issue>``, ``</patch>`` and so on) made
+    harmless, so that text inside the frame cannot close it and continue outside."""
+    return _FRAME_TAG.sub(lambda tag: f"&lt;{tag.group(1)}{tag.group(2)}&gt;", text)
+
+
 def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: dict,
                  anthropic_url: str, anthropic_key: str, cost_of) -> dict:
     """Check functions for one request. ``cost_of(provider, model, payload)`` prices a
@@ -110,17 +135,20 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
         reply = response.json()
         if not isinstance(reply, dict) or not isinstance(reply.get("passed"), bool):
             raise ValueError("webhook reply needs a boolean 'passed'")
-        cost = reply.get("cost_usd", 0.0)
-        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
-            cost = None
-        return {"passed": reply["passed"], "cost_usd": cost}
+        # The tenant's CI can report anything, NaN and a 400-digit integer included.
+        return {"passed": reply["passed"], "cost_usd": known_cost(reply.get("cost_usd", 0.0))}
 
-    async def judge(step: dict, result: dict) -> dict:
+    async def judge(step: dict, result: dict, tested: bool) -> dict:
         patch = response_text(provider, result.get("payload"))
         if not patch:
             return {"passed": False, "cost_usd": 0.0}
+        issue, patch = inert(request_text(body)), inert(patch)
+        if len(issue) > MAX_ISSUE_CHARS or len(patch) > MAX_PATCH_CHARS:
+            # The judge's prompt keeps the start of each text. It would not see the
+            # newest turn of a long conversation or the end of a long answer.
+            return {"passed": False, "cost_usd": 0.0}
         messages = build_messages({"repository": step.get("repository", "the customer's"),
-                                   "issue": request_text(body), "patch": patch})
+                                   "issue": issue, "patch": patch}, tests_passed=tested)
         response = await upstream.post(
             anthropic_url, headers={"x-api-key": anthropic_key, "anthropic-version": "2023-06-01",
                                     "content-type": "application/json"},
@@ -141,21 +169,28 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
         passed = verdict["verdict"] == "accept" if threshold is None else verdict["probability"] >= threshold
         return {"passed": passed, "cost_usd": cost}
 
-    runners = {"webhook": webhook, "judge": judge}
-
     def make(steps: list[dict]):
         async def check(result: dict) -> dict:
-            costs, passed = [], True
+            costs, passed, tested = [], True, False
             for step in steps:
                 try:
-                    verdict = await runners[step["type"]](step, result)
+                    if step["type"] == "webhook":
+                        verdict = await webhook(step, result)
+                    else:
+                        # The judge is told the tests passed only if a test step did, just before.
+                        verdict = await judge(step, result, tested)
                 except Exception:  # fail closed: an unusable check rejects
                     verdict = {"passed": False, "cost_usd": None}
                 costs.append(verdict["cost_usd"])
                 if not verdict["passed"]:
                     passed = False
                     break
-            return {"passed": passed, "cost_usd": None if any(cost is None for cost in costs) else sum(costs)}
+                tested = tested or step["type"] == "webhook"
+            # One step of unknown cost makes the check's cost unknown; what the other
+            # steps cost is still reported, so known spending is not lost with it.
+            known = math.fsum(cost for cost in costs if cost is not None)
+            return {"passed": passed, "cost_usd": None if any(cost is None for cost in costs) else known,
+                    "known_cost_usd": known}
         return check
 
     return {name: make(steps) for name, steps in checks.items()}

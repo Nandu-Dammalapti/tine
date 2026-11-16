@@ -98,7 +98,8 @@ class Ledger:
                     latency_ms REAL,
                     outcome_updated_at TEXT,
                     outcome_sequence INTEGER NOT NULL DEFAULT 0,
-                    success INTEGER CHECK(success IN (0, 1) OR success IS NULL)
+                    success INTEGER CHECK(success IN (0, 1) OR success IS NULL),
+                    baseline_estimated INTEGER NOT NULL DEFAULT 0
                 )"""
             )
             self._db.execute(
@@ -119,6 +120,9 @@ class Ledger:
             if "routing_cost_usd" not in columns:
                 # Older records never measured routing overhead. Do not invent zero.
                 self._db.execute("ALTER TABLE requests ADD COLUMN routing_cost_usd REAL")
+            if "baseline_estimated" not in columns:
+                # Older records hold baselines that were measured or supplied by the caller.
+                self._db.execute("ALTER TABLE requests ADD COLUMN baseline_estimated INTEGER NOT NULL DEFAULT 0")
             self._db.execute(
                 "CREATE TABLE IF NOT EXISTS ledger_state "
                 "(id INTEGER PRIMARY KEY CHECK(id=1), outcome_sequence INTEGER NOT NULL)"
@@ -161,9 +165,15 @@ class Ledger:
         routing_cost_usd: float | None = None,
         baseline_cost_usd: float | None = None,
         latency_ms: float | None = None,
+        baseline_estimated: bool = False,
     ) -> str:
+        """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
+        was worked out, not measured: the frontier model was not called for this
+        request. The report keeps such rows out of verified savings."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
+        if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
+            raise ValueError("baseline_estimated must be a bool and needs a baseline_cost_usd")
         if success is not None and not isinstance(success, bool):
             raise ValueError("success must be bool or None")
         for name, value in (
@@ -212,6 +222,7 @@ class Ledger:
             "outcome_updated_at": now if success is not None else None,
             "outcome_sequence": 0,
             "success": None if success is None else int(success),
+            "baseline_estimated": int(baseline_estimated),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
@@ -252,7 +263,8 @@ class Ledger:
         routing_cost_usd: Any = _UNSET,
         baseline_cost_usd: Any = _UNSET,
     ) -> bool:
-        """Apply a caller-supplied outcome and optional measured costs later."""
+        """Apply a caller-supplied outcome and optional measured costs later. A baseline
+        supplied here replaces an estimated one and is no longer marked as an estimate."""
         if not isinstance(success, bool):
             raise ValueError("success must be a bool")
         assignments = ["success=?", "outcome_updated_at=?"]
@@ -266,6 +278,8 @@ class Ledger:
                 _nonnegative(value, name)
                 assignments.append(f"{name}=?")
                 values.append(value)
+        if baseline_cost_usd is not _UNSET:
+            assignments.append("baseline_estimated=0")
         values.extend([tenant, request_id])
         with self._lock, self._db:
             cursor = self._db.execute(
@@ -312,14 +326,21 @@ class Ledger:
         return self._decode(row)
 
     def report(self, tenant: str) -> dict[str, Any]:
-        """Report known ledger amounts, never extrapolate missing costs."""
+        """Report known ledger amounts, never extrapolate missing costs.
+
+        Verified savings rest on measured baselines only. Successful requests whose
+        baseline is an estimate are counted and summed apart, under names that say so.
+        """
         with self._lock:
+            # A ledger opened read-only may predate the column: its baselines are all measured.
+            columns = {row["name"] for row in self._db.execute("PRAGMA table_info(requests)")}
+            estimated_column = "baseline_estimated" if "baseline_estimated" in columns else "0 AS baseline_estimated"
             rows = self._db.execute(
-                "SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from "
+                f"SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from,{estimated_column} "
                 "FROM requests WHERE tenant=?",
                 (tenant,),
             ).fetchall()
-        comparable = [
+        costed = [
             row
             for row in rows
             if row["success"] == 1
@@ -327,6 +348,10 @@ class Ledger:
             and row["routing_cost_usd"] is not None
             and row["baseline_cost_usd"] is not None
         ]
+        comparable = [row for row in costed if not row["baseline_estimated"]]
+        estimated = [row for row in costed if row["baseline_estimated"]]
+        estimated_baseline = _cost_sum(row["baseline_cost_usd"] for row in estimated)
+        estimated_cost = _cost_sum(row[column] for row in estimated for column in ("cost_usd", "routing_cost_usd"))
         cost_columns = ("cost_usd", "routing_cost_usd")
         verified_answer_cost = _cost_sum(row["cost_usd"] for row in comparable)
         verified_routing_cost = _cost_sum(row["routing_cost_usd"] for row in comparable)
@@ -372,6 +397,16 @@ class Ledger:
             "verified_baseline_cost_usd": verified_baseline,
             "verified_savings_usd": savings,
             "savings_fraction": fraction,
+            "estimated_baseline_requests": len(estimated),
+            "estimated_baseline_savings_usd": (
+                estimated_baseline - estimated_cost
+                if estimated and estimated_baseline is not None and estimated_cost is not None else None
+            ),
+            "estimated_baseline_scope": (
+                "successful requests answered by a cheaper model, where the frontier model was not called: the "
+                "baseline is an estimate (the returned answer's token counts at the frontier's prices), so this "
+                "figure is approximate and is not part of verified savings"
+            ),
             "scope": "development ledger; outcomes and baseline costs are caller-attested",
             "cost_scope": (
                 "answer generation plus routing/checking costs; known totals sum only measured "
@@ -379,7 +414,7 @@ class Ledger:
             ),
             "savings_scope": (
                 "net of routing costs on successful requests with known answer, routing, and baseline costs only; "
-                "failed, pending, and incompletely costed requests "
+                "failed, pending, and incompletely costed requests, and requests whose baseline is estimated, "
                 "are excluded from this subtotal, so it is not a billing amount"
             ),
         }

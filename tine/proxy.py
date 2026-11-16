@@ -1,8 +1,11 @@
 """Development OpenAI/Anthropic proxy with tenant auth and a local ledger.
 
-Runtime routing defaults to the frontier model. Offline calibration artifacts are
-not loaded implicitly. Optional, explicitly allowlisted client model choices are
-useful for development; they are not a learned router or a quality guarantee.
+Runtime routing defaults to the frontier model. Nothing offline is loaded
+implicitly: a frozen policy (tine.policy) runs only when the operator configures it,
+either in shadow mode (report only) or as a route policy that serves answers, with
+named checks from tine.runtime_checks. Optional, explicitly allowlisted client model
+choices are useful for development; they are not a learned router or a quality
+guarantee.
 """
 
 from __future__ import annotations
@@ -28,7 +31,10 @@ from starlette.background import BackgroundTask
 from .ledger import MAX_TOKEN_COUNT, Ledger
 from .policy import run_stages_async
 from .runtime_checks import build_checks, validate_checks
-from .shadow import ShadowStore, extract_answer, sampled, shadow_stages, validate_shadow_policy
+from .shadow import (
+    NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries, shadow_stages,
+    validate_shadow_policy,
+)
 
 
 def _finite_number(value: Any) -> bool:
@@ -62,9 +68,22 @@ class ProxyConfig:
     route_policies: dict[str, dict[str, dict]] = field(default_factory=dict)
     route_estimate_baseline: bool = False
     # Named checks the proxy may run (tine.runtime_checks), and how a comparable
-    # answer is read from a response for agreement stages.
+    # answer is read from a response for agreement stages. ``checks`` is for every
+    # tenant; ``tenant_checks`` (tenant -> name -> steps) belongs to one tenant and
+    # wins over a shared check of the same name. A policy may carry its own
+    # ``answer_pattern``, which wins over this one.
     checks: dict[str, list] = field(default_factory=dict)
+    tenant_checks: dict[str, dict[str, list]] = field(default_factory=dict)
     answer_pattern: str | None = None
+    # Shadow runs in flight at once, for the whole proxy. A sampled request that
+    # arrives when all are busy is not shadowed.
+    shadow_max_concurrent: int = 8
+    # Shadow calls and checks of unknown cost a tenant may have before its shadowing
+    # stops: the spending cap cannot count them.
+    shadow_max_unknown_cost_calls: int = 20
+    # How long a route policy's cheaper stages may take together before the request
+    # goes to the frontier. None means timeout_seconds.
+    route_deadline_seconds: float | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -97,8 +116,18 @@ class ProxyConfig:
             route_estimate_baseline=os.environ.get("TINE_ROUTE_ESTIMATE_BASELINE", "false").lower() == "true",
             checks=(json.loads(open(os.environ["TINE_CHECKS"], encoding="utf-8").read())
                     if os.environ.get("TINE_CHECKS") else {}),
+            tenant_checks=(json.loads(open(os.environ["TINE_TENANT_CHECKS"], encoding="utf-8").read())
+                           if os.environ.get("TINE_TENANT_CHECKS") else {}),
             answer_pattern=os.environ.get("TINE_ANSWER_PATTERN") or None,
+            shadow_max_concurrent=int(os.environ.get("TINE_SHADOW_MAX_CONCURRENT", "8")),
+            shadow_max_unknown_cost_calls=int(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20")),
+            route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
+                                    if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
         )
+
+    def checks_for(self, tenant: str) -> dict[str, list]:
+        """The named checks one tenant's policies may use: the shared ones, and its own."""
+        return {**self.checks, **self.tenant_checks.get(tenant, {})}
 
     def validate(self) -> None:
         if not isinstance(self.tenant_keys, dict) or not self.tenant_keys or any(
@@ -151,14 +180,31 @@ class ProxyConfig:
                 raise ValueError("answer_pattern must be a valid regular expression") from None
         if not isinstance(self.route_estimate_baseline, bool):
             raise ValueError("route_estimate_baseline must be a boolean")
+        if self.route_deadline_seconds is not None and (
+                not _finite_number(self.route_deadline_seconds) or self.route_deadline_seconds <= 0):
+            raise ValueError("route_deadline_seconds must be finite and positive")
+        for name, least in (("shadow_max_concurrent", 1), ("shadow_max_unknown_cost_calls", 0)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < least:
+                raise ValueError(f"{name} must be a whole number of at least {least}")
+        if not isinstance(self.tenant_checks, dict) or any(
+                name not in self.tenant_keys.values() for name in self.tenant_checks):
+            raise ValueError("tenant_checks must map configured tenants to their named checks")
         try:
-            validate_checks(self.checks)
+            for checks in (self.checks, *self.tenant_checks.values()):
+                validate_checks(checks)
         except ValueError as error:
             raise ValueError(f"checks: {error}") from None
-        if any(step["type"] == "judge" for steps in self.checks.values() for step in steps) and not self.anthropic_api_key:
+        every_step = [step for checks in (self.checks, *self.tenant_checks.values())
+                      for steps in checks.values() for step in steps]
+        if any(step["type"] == "judge" for step in every_step) and not self.anthropic_api_key:
             raise ValueError("checks: a judge step needs the Anthropic provider key")
-        if self.shadow_sample_rate > 0 and self.shadow_policies and self.shadow_max_cost_usd is None:
+        sampling = self.shadow_sample_rate > 0 and bool(self.shadow_policies)
+        if sampling and self.shadow_max_cost_usd is None:
             raise ValueError("Shadow mode spends money: set shadow_max_cost_usd before sampling")
+        # Tenants whose policies name each shared check, to keep one tenant's
+        # requests away from a webhook that another tenant's requests also reach.
+        shared_users: dict[str, set[str]] = {}
         for label, policies in (("shadow_policies", self.shadow_policies), ("route_policies", self.route_policies)):
             if not isinstance(policies, dict):
                 raise ValueError(f"{label} must map tenants to provider policies")
@@ -169,11 +215,24 @@ class ProxyConfig:
                     if provider not in {"openai", "anthropic"}:
                         raise ValueError(f"{label} providers must be openai or anthropic")
                     try:
-                        validate_shadow_policy(policy, getattr(self, f"{provider}_frontier_model"), self.checks)
+                        validate_shadow_policy(policy, getattr(self, f"{provider}_frontier_model"),
+                                               self.checks_for(name))
                     except ValueError as error:
                         raise ValueError(f"{label}: {error}") from None
-                    if policy.get("tenant") not in (None, name):
-                        raise ValueError(f"{label}: a policy frozen for one tenant cannot be used for another")
+                    if policy.get("tenant") != name:
+                        raise ValueError(f"{label}: a policy must name the tenant it was frozen for, "
+                                         "and cannot be used for another tenant")
+                    for stage in policy["stages"]:
+                        if stage["check"] in self.checks and stage["check"] not in self.tenant_checks.get(name, {}):
+                            shared_users.setdefault(stage["check"], set()).add(name)
+                    if sampling and label == "shadow_policies":
+                        self._require_shadow_prices(name, provider, policy)
+        for check, users in shared_users.items():
+            if len(users) > 1 and any(step["type"] == "webhook" for step in self.checks[check]):
+                raise ValueError(
+                    f"checks: {check!r} has a webhook and is named by policies of several tenants "
+                    f"({', '.join(sorted(users))}). A webhook receives a tenant's request: give each of them "
+                    "its own entry under tenant_checks")
         for name, by_provider in self.route_policies.items():
             if set(by_provider) & set(self.shadow_policies.get(name, {})):
                 raise ValueError("A tenant's provider can have a shadow policy or a route policy, not both")
@@ -190,6 +249,19 @@ class ProxyConfig:
                     "cache_write_per_million",
                 } or not _finite_number(value) or value < 0:
                     raise ValueError("Model prices must be explicit finite nonnegative USD rates")
+
+    def _require_shadow_prices(self, tenant: str, provider: str, policy: dict) -> None:
+        """Refuse to sample a policy whose shadow calls could not be priced. The
+        spending cap counts known costs, so an unpriced model would never reach it."""
+        needed = {f"{provider}:{model}" for stage in policy["stages"] for model in stage["models"]}
+        needed |= {f"anthropic:{step['model']}" for stage in policy["stages"]
+                   for step in self.checks_for(tenant).get(stage["check"], []) if step["type"] == "judge"}
+        missing = sorted(key for key in needed if not isinstance(self.prices, dict)
+                         or not isinstance(self.prices.get(key), dict)
+                         or not {"input_per_million", "output_per_million"} <= set(self.prices[key]))
+        if missing:
+            raise ValueError("Shadow mode's spending cap counts known costs only: set an input and output "
+                             f"price for {missing} before sampling")
 
 
 class OutcomeUpdate(BaseModel):
@@ -272,11 +344,18 @@ def create_app(
     *,
     ledger: Ledger | None = None,
     client: httpx.AsyncClient | None = None,
+    policy_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     config = config or ProxyConfig.from_env()
     config.validate()
     store = ledger if ledger is not None else Ledger(config.ledger_path)
     upstream = client if client is not None else httpx.AsyncClient(timeout=config.timeout_seconds)
+    # Everything a policy does (cheaper stages, webhooks, judge calls, in shadow mode
+    # and in live routing) uses connections of its own. A slow webhook or cheap model
+    # can then use up only these, never the ones that carry frontier requests.
+    own_side = policy_client is None and client is None
+    side = (policy_client if policy_client is not None
+            else client if client is not None else httpx.AsyncClient(timeout=config.timeout_seconds))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -287,13 +366,20 @@ def create_app(
                 if client is None:
                     await upstream.aclose()
             finally:
-                if ledger is None:
-                    store.close()
+                try:
+                    if own_side:
+                        await side.aclose()
+                finally:
+                    if ledger is None:
+                        store.close()
 
     app = FastAPI(title="Tine development proxy", lifespan=lifespan)
     app.state.ledger = store
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
+    shadow_running = 0
+    route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
+                      else config.timeout_seconds)
 
     def record_safely(**values) -> bool:
         # Persistence failure must not discard a provider's answer. The response
@@ -333,45 +419,77 @@ def create_app(
     async def shadow_report(identity: str = Depends(tenant)):
         if shadow_store is None:
             raise HTTPException(status_code=404, detail="Shadow mode is not configured")
-        return shadow_store.report(identity)
+        sampling = (shadow_store.state(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls)
+                    if identity in config.shadow_policies else "no shadow policy for this tenant")
+        return {**shadow_store.report(identity), "sampling": sampling}
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None
 
-    def stage_tools(identity: str, provider: str, body: dict, url: str, headers: dict):
+    def answer_pattern(policy: dict) -> str | None:
+        """How answers are read for this policy: its own pattern, else the proxy's."""
+        return policy.get("answer_pattern") or config.answer_pattern
+
+    def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict):
         """How a policy's cheaper stages call a model and run a named check for one request."""
         async def call(model: str) -> dict:
-            response = await upstream.post(url, json={**body, "model": model}, headers=headers)
+            response = await side.post(url, json={**body, "model": model}, headers=headers)
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
                 raise ValueError("provider reply is not an object")
+            # NaN and Infinity are not JSON. Such a reply is neither served nor priced.
+            json.dumps(payload, allow_nan=False)
+            cost = price(provider, model, payload)
+            if not has_answer(provider, payload):
+                # Empty, an error body with status 200, filtered or refused: paid for,
+                # but not an answer. No stage may serve it, whatever its check.
+                raise NoAnswer(cost)
             # A reply with no comparable answer was still paid for: keep its cost and
-            # let an agreement stage fail on the missing answer.
-            return {"answer": extract_answer(provider, payload, config.answer_pattern), "model": model,
-                    "cost_usd": price(provider, model, payload), "payload": payload, "raw": response.content}
+            # let an agreement stage fail on the missing answer. A reply that calls a
+            # tool or was cut off has no final answer to compare.
+            answer = extract_answer(provider, payload, answer_pattern(policy)) if plain_finish(provider, payload) else None
+            return {"answer": answer, "model": model, "cost_usd": cost, "payload": payload, "raw": response.content}
 
+        named = config.checks_for(identity)
         checks = build_checks(
-            config.checks, upstream=upstream, tenant=identity, provider=provider, body=body,
+            named, upstream=side, tenant=identity, provider=provider, body=body,
             anthropic_url=_upstream_url(config.anthropic_base_url, "/v1/messages"),
-            anthropic_key=config.anthropic_api_key, cost_of=price) if config.checks else {}
+            anthropic_key=config.anthropic_api_key, cost_of=price) if named else {}
         return call, checks
 
     async def run_shadow(*, request_id: str, identity: str, provider: str, policy: dict, body: dict,
                          url: str, headers: dict, frontier_payload: dict, frontier_cost: float | None) -> None:
         """Run the policy's cheaper stages for a request that was already answered.
-        Nothing here can reach the caller: every failure is contained."""
+        Nothing here can reach the caller: every failure is contained, the run uses the
+        policy path's own connections, and the number of runs in flight is bounded.
+
+        A run starts only if the tenant's cap has room for it (``ShadowStore.admit``),
+        and what it spent is counted when it ends even if its row cannot be written.
+        """
+        nonlocal shadow_running
+        if shadow_running >= config.shadow_max_concurrent:
+            return
         try:
-            if shadow_store.spend(identity) >= config.shadow_max_cost_usd:
+            if not shadow_store.admit(identity, config.shadow_max_cost_usd, config.shadow_max_unknown_cost_calls):
                 return
-            call, checks = stage_tools(identity, provider, body, url, headers)
+        except Exception:
+            return
+        shadow_running += 1
+        entries: list[dict] = []
+        try:
+            call, checks = stage_tools(identity, provider, policy, body, url, headers)
             outcome = await shadow_stages(policy, call, checks)
+            entries = shadow_entries(outcome)
             shadow_store.record(
                 request_id=request_id, tenant=identity, provider=provider, policy=policy, outcome=outcome,
-                frontier_answer=extract_answer(provider, frontier_payload, config.answer_pattern),
+                frontier_answer=extract_answer(provider, frontier_payload, answer_pattern(policy)),
                 frontier_cost_usd=frontier_cost)
         except Exception:
             return
+        finally:
+            shadow_running -= 1
+            shadow_store.settle(identity, entries)
 
     async def forward(request: Request, provider: str, identity: str):
         try:
@@ -434,11 +552,13 @@ def create_app(
                 cached = None
             if cached is not None:
                 recorded = record_safely(
-                    tenant=identity, provider=provider, model=selected,
+                    # The model whose answer this is: a cheaper one if a policy served the source.
+                    tenant=identity, provider=provider, model=cached["model"],
                     requested_model=requested, request_body=body, cache_context=cache_context,
                     response_body=cached["response_body"], request_id=request_id,
                     upstream_status=cached["upstream_status"], cost_usd=0.0,
                     baseline_cost_usd=cached["baseline_cost_usd"],
+                    baseline_estimated=bool(cached.get("baseline_estimated")),
                     cached_from=cached["request_id"],
                     latency_ms=(time.monotonic() - started) * 1000,
                 )
@@ -453,34 +573,39 @@ def create_app(
         route = config.route_policies.get(identity, {}).get(provider)
         if route is not None and route["stages"] and not stream and selected == frontier:
             try:
-                call, named_checks = stage_tools(identity, provider, body, url, headers)
-                routed = await run_stages_async(route, call, checks=named_checks)
+                call, named_checks = stage_tools(identity, provider, route, body, url, headers)
+                routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
+                spent = [entry["cost_usd"] for entry in (*routed["calls"], *routed["checks"])]
+                total = None if any(value is None for value in spent) else math.fsum(spent)
             except Exception:
                 routed = None
             if routed is not None:
-                spent = [entry["cost_usd"] for entry in (*routed["calls"], *routed["checks"])]
-                total = None if any(value is None for value in spent) else math.fsum(spent)
                 if routed["accepted"]:
                     served, result = routed["served_by"], routed["result"]
                     answer_cost = result["cost_usd"]
                     tokens = _usage(provider, result["payload"])
+                    # What the frontier would have cost is not observed. With the
+                    # explicit setting it is estimated from this answer's token counts
+                    # at the frontier's prices, and stored and labelled as an estimate;
+                    # otherwise it stays unknown.
+                    estimate = _cost(config, provider, frontier, tokens) if config.route_estimate_baseline else None
                     recorded = record_safely(
+                        # Recorded under the request as it arrived, so that a verified
+                        # answer is found by the cache lookup above; the model column
+                        # says which model answered.
                         tenant=identity, provider=provider, model=served, requested_model=requested,
-                        request_body={**body, "model": served}, request_id=request_id, cache_context=cache_context,
+                        request_body=body, request_id=request_id, cache_context=cache_context,
                         response_body=result["payload"], upstream_status=200,
                         input_tokens=tokens["input_tokens"], output_tokens=tokens["output_tokens"],
                         cached_tokens=tokens["cached_tokens"], cost_usd=answer_cost,
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
-                        # What the frontier would have cost is not observed. With the
-                        # explicit setting it is estimated from this answer's token counts
-                        # at the frontier's prices; otherwise it stays unknown.
-                        baseline_cost_usd=(_cost(config, provider, frontier, tokens)
-                                           if config.route_estimate_baseline else None),
+                        baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
                         latency_ms=(time.monotonic() - started) * 1000)
                     return Response(
                         result["raw"], status_code=200, media_type="application/json",
                         headers={"x-tine-request-id": request_id, "x-tine-model": served,
                                  "x-tine-route": f"stage-{routed['stage']}",
+                                 **({"x-tine-baseline": "estimated"} if estimate is not None else {}),
                                  "x-tine-ledger": "recorded" if recorded else "unavailable"})
                 routing_spent = total if routed["calls"] else 0.0
 
@@ -513,7 +638,9 @@ def create_app(
             stream=stream, fallback_used=fallback, cache_context=cache_context,
         )
         if response is None:
-            recorded = record_safely(**common, latency_ms=(time.monotonic() - started) * 1000)
+            # What a route policy spent before the frontier failed is still known.
+            recorded = record_safely(**common, routing_cost_usd=routing_spent,
+                                     latency_ms=(time.monotonic() - started) * 1000)
             return JSONResponse(
                 {"error": {"message": "Upstream request failed", "type": "upstream_error"}},
                 status_code=502, headers={"x-tine-request-id": request_id, "x-tine-ledger": "recorded" if recorded else "unavailable"},

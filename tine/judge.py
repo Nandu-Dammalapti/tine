@@ -37,6 +37,11 @@ Work through these steps in a few sentences each:
 End your reply with one JSON object on its own line:
 {{"verdict": "accept" or "reject", "probability": a number from 0 to 1 that the patch correctly resolves the issue, "reason": "at most 20 words"}}"""
 STYLES = {"verdict": None, "think": THINK_INSTRUCTIONS}
+# The measured judges only ever read patches that had passed the free checks, and were
+# told so. A caller that runs the judge with no test step before it must not repeat
+# that claim; it sends the second sentence in place of the first.
+TESTED = "The patch already applies cleanly and does not break the project's existing tests."
+UNTESTED = "The patch has not been applied or tested."
 CASE_TEMPLATE = "<issue>\n{issue}\n</issue>\n\n<patch>\n{patch}\n</patch>"
 MAX_ISSUE_CHARS = 12000
 MAX_PATCH_CHARS = 20000
@@ -51,17 +56,28 @@ def case_text(case: dict) -> str:
     return CASE_TEMPLATE.format(issue=case["issue"][:MAX_ISSUE_CHARS], patch=case["patch"][:MAX_PATCH_CHARS])
 
 
-def build_messages(case: dict, style: str = "verdict") -> list[dict]:
+def build_messages(case: dict, style: str = "verdict", *, tests_passed: bool = True) -> list[dict]:
+    """The judge's instructions and the case. ``tests_passed=False`` is for a judge
+    that runs without a test step: the instructions then do not say the tests passed.
+    That judge is not the one that was measured."""
     if style not in STYLES:
         raise ValueError(f"style must be one of {sorted(STYLES)}")
     instructions = STYLES[style] or INSTRUCTIONS
+    if not tests_passed:
+        if TESTED not in instructions:
+            raise ValueError("Only the verdict style can be used without a test step")
+        instructions = instructions.replace(TESTED, UNTESTED)
     return [{"role": "system", "content": instructions.format(repository=case["repository"])},
             {"role": "user", "content": case_text(case)}]
 
 
 def parse_verdict(text: str) -> dict:
-    """The judge's JSON object from its reply. Raises ValueError if there is none."""
-    for candidate in reversed(re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL)):
+    """The judge's JSON object from its reply: the last one that is a verdict. Raises
+    ValueError if there is none, or if the reply holds verdict objects that disagree:
+    a judge that rejects and then quotes an "accept" object from the text it was
+    reading has not accepted, and which object is its own cannot be told apart."""
+    found = []
+    for candidate in re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL):
         try:
             value = json.loads(candidate)
         except json.JSONDecodeError:
@@ -75,9 +91,13 @@ def parse_verdict(text: str) -> dict:
             continue
         if not 0 <= probability <= 1:
             continue
-        return {"verdict": verdict, "probability": probability,
-                "reason": str(value.get("reason", ""))[:200]}
-    raise ValueError("No verdict object with verdict and probability in the reply")
+        found.append({"verdict": verdict, "probability": probability,
+                      "reason": str(value.get("reason", ""))[:200]})
+    if not found:
+        raise ValueError("No verdict object with verdict and probability in the reply")
+    if len({value["verdict"] for value in found}) > 1:
+        raise ValueError("The reply holds verdict objects that disagree")
+    return found[-1]
 
 
 def judge_once(client, case: dict, *, model: str, effort: str = "medium", max_tokens: int = 8000,

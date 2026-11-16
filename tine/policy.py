@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 
 import numpy as np
@@ -30,6 +31,27 @@ from tine.pipeline import complete_tasks, matrix
 
 POLICY_VERSION = 1
 BUILT_IN_CHECKS = ("agreement", "none")
+# No single call or check costs this much. A larger figure is a mistake in whatever
+# reported it, and adding it up would only hide the real total.
+MAX_COST_USD = 1_000_000.0
+# What recorded answers hold where a model gave none (``scripts/agreement_pairs.py``).
+NO_ANSWER_WORDS = ("None", "[None]", "null")
+
+
+def known_cost(value) -> float | None:
+    """``value`` as a cost in dollars, or None when it is not a usable amount.
+
+    Costs reach this code from provider usage, a judge's reply and a customer's
+    webhook. One that is missing, negative, not finite or absurdly large is unknown:
+    it must not be added to a total, and it must not be read as zero.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        cost = float(value)
+    except OverflowError:
+        return None
+    return cost if math.isfinite(cost) and 0 <= cost <= MAX_COST_USD else None
 
 
 def _stage(name: str, single_check: str) -> dict:
@@ -109,7 +131,7 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
 
 def validate_policy(policy: dict) -> dict:
     """Reject a policy this code cannot run faithfully. Returns it unchanged."""
-    if not isinstance(policy, dict) or policy.get("version") != POLICY_VERSION:
+    if not isinstance(policy, dict) or type(policy.get("version")) is not int or policy["version"] != POLICY_VERSION:
         raise ValueError(f"Policy version must be {POLICY_VERSION}")
     if not isinstance(policy.get("frontier"), str) or not policy["frontier"]:
         raise ValueError("Policy needs a frontier model")
@@ -122,7 +144,9 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("Each stage needs a nonempty list of model names")
         if not isinstance(stage.get("check"), str) or not stage["check"]:
             raise ValueError("Each stage needs a check name")
-        if stage["check"] == "agreement" and len(set(members)) < 2:
+        if len(set(members)) != len(members):
+            raise ValueError("A stage cannot name the same model twice")
+        if stage["check"] == "agreement" and len(members) < 2:
             raise ValueError("An agreement check needs at least two different models")
         if stage["check"] != "agreement" and len(members) != 1:
             raise ValueError("Only an agreement stage may have several models")
@@ -130,13 +154,20 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("The frontier is the final fallback and cannot be a stage member")
     if stages and not (isinstance(policy.get("guarantee"), dict) and policy["guarantee"].get("certified") is True):
         raise ValueError("A policy with stages must carry a certified guarantee")
+    if stages:
+        # Checked only when the file states both: a certified chain has a bound within its limit.
+        bound, epsilon = known_cost(policy["guarantee"].get("bound")), known_cost(policy["guarantee"].get("epsilon"))
+        if bound is not None and epsilon is not None and bound > epsilon:
+            raise ValueError("A certified policy's bound cannot be above its epsilon")
     return policy
 
 
 def same_answer(answers) -> bool:
-    """True when every answer is present and equal after collapsing whitespace."""
+    """True when every answer is present and equal after collapsing whitespace. The
+    words recorded answers use for "no answer" count as missing, as they did when
+    agreement was measured."""
     cleaned = {" ".join(answer.split()) if isinstance(answer, str) else None for answer in answers}
-    return len(cleaned) == 1 and None not in cleaned and "" not in cleaned
+    return len(cleaned) == 1 and not cleaned & {None, "", *NO_ANSWER_WORDS}
 
 
 def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = None) -> dict:
@@ -157,6 +188,9 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
     Returns the accepted call's mapping under ``result``, the model that served it,
     the stage it came from (``"frontier"`` for the fallback), ``answer_cost_usd`` for
     that call and ``routing_cost_usd`` for every other call made, with the calls listed.
+    When any call or check has no known cost (``unknown_cost_calls``), the routing
+    cost is not known either and ``routing_cost_usd`` is None, never a partial sum
+    that would read as the whole; the part that is known is ``known_routing_cost_usd``.
     A model that appears in two stages is called once per request; the frozen
     estimate charges it each time, so live cost can only be lower on that account.
     """
@@ -173,21 +207,23 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
         try:
             result = call(model)
         except Exception as error:  # a cheaper model's failure must not fail the request
-            calls.append({"model": model, "cost_usd": None, "error": type(error).__name__})
+            calls.append(_failed_call(model, error))
             seen[model] = None
             return None
-        calls.append({"model": model, "cost_usd": result.get("cost_usd"), "error": None})
+        calls.append({"model": model, "cost_usd": known_cost(result.get("cost_usd")), "error": None})
         seen[model] = result
         return result
 
     def finish(result, model: str, stage):
         known = [entry["cost_usd"] for entry in calls + check_runs if entry["cost_usd"] is not None]
-        answer_cost = result.get("cost_usd")
-        total = sum(known)
+        answer_cost = known_cost(result.get("cost_usd"))
+        total = math.fsum(known)
+        unknown = sum(entry["cost_usd"] is None for entry in calls + check_runs)
+        known_routing = total - answer_cost if answer_cost is not None else total
         return {"result": result, "served_by": model, "stage": stage, "calls": calls, "checks": check_runs,
                 "answer_cost_usd": answer_cost,
-                "routing_cost_usd": total - answer_cost if answer_cost is not None else total,
-                "unknown_cost_calls": sum(entry["cost_usd"] is None for entry in calls + check_runs)}
+                "routing_cost_usd": None if unknown else known_routing,
+                "known_routing_cost_usd": known_routing, "unknown_cost_calls": unknown}
 
     def passes(name: str, model: str, result) -> bool:
         try:
@@ -196,10 +232,8 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
                                "error": type(error).__name__})
             return False
-        passed = verdict.get("passed") is True
-        check_runs.append({"check": name, "model": model, "passed": passed, "cost_usd": verdict.get("cost_usd"),
-                           "error": None})
-        return passed
+        check_runs.append(_check_run(name, model, verdict))
+        return check_runs[-1]["passed"]
 
     for index, stage in enumerate(policy["stages"]):
         results = []
@@ -219,11 +253,30 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
         if accepted:
             return finish(results[0], stage["models"][0], index)
     result = call(policy["frontier"])
-    calls.append({"model": policy["frontier"], "cost_usd": result.get("cost_usd"), "error": None})
+    calls.append({"model": policy["frontier"], "cost_usd": known_cost(result.get("cost_usd")), "error": None})
     return finish(result, policy["frontier"], "frontier")
 
 
-async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dict | None = None) -> dict:
+def _failed_call(model: str, error: Exception) -> dict:
+    """The record of a call that gave no usable result. A failure that knows what the
+    call cost (a paid reply with nothing in it) carries it as ``cost_usd``."""
+    return {"model": model, "cost_usd": known_cost(getattr(error, "cost_usd", None)), "error": type(error).__name__}
+
+
+def _check_run(name: str, model: str, verdict: dict) -> dict:
+    """The record of one check. A check of several steps may know only part of its
+    cost; it then reports that part as ``known_cost_usd`` and it is kept beside the
+    unknown total, so spending that is known is not lost with the rest."""
+    run = {"check": name, "model": model, "passed": verdict.get("passed") is True,
+           "cost_usd": known_cost(verdict.get("cost_usd")), "error": None}
+    partial = known_cost(verdict.get("known_cost_usd"))
+    if run["cost_usd"] is None and partial is not None:
+        run["known_cost_usd"] = partial
+    return run
+
+
+async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dict | None = None,
+                           deadline_seconds: float | None = None) -> dict:
     """The cheaper stages of ``policy`` for one request, for an asynchronous caller.
 
     Like ``run_policy`` without its last step: the frontier is not called, because
@@ -234,6 +287,11 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
     Returns ``accepted``, and when accepted the ``stage``, the model that
     ``served_by`` it and its ``result``; always the ``calls`` and ``checks`` made, so
     that every cent spent on the way is accounted for.
+
+    With ``deadline_seconds`` the stages together get that long. When it runs out
+    nothing is accepted, so a stalled model or check delays the caller by the deadline
+    and not by every stage's own timeout in turn. A call or check that was cut off is
+    listed with an unknown cost: the provider may still charge for it.
     """
     import asyncio
     import inspect
@@ -244,49 +302,64 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
     if missing:
         raise ValueError(f"No check supplied for: {missing}")
     calls, seen, check_runs = [], {}, []
+    calling, checking = [], []  # what is in flight, so a deadline can account for it
 
     async def attempt(model: str):
         if model in seen:
             return seen[model]
+        calling.append(model)
         try:
             result = await call(model)
         except Exception as error:
-            calls.append({"model": model, "cost_usd": None, "error": type(error).__name__})
+            calling.remove(model)
+            calls.append(_failed_call(model, error))
             seen[model] = None
             return None
-        calls.append({"model": model, "cost_usd": result.get("cost_usd"), "error": None})
+        calling.remove(model)
+        calls.append({"model": model, "cost_usd": known_cost(result.get("cost_usd")), "error": None})
         seen[model] = result
         return result
 
     async def passes(name: str, model: str, result) -> bool:
+        checking.append((name, model))
         try:
             verdict = checks[name](result)
             if inspect.isawaitable(verdict):
                 verdict = await verdict
         except Exception as error:
+            checking.remove((name, model))
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
                                "error": type(error).__name__})
             return False
-        passed = verdict.get("passed") is True
-        check_runs.append({"check": name, "model": model, "passed": passed, "cost_usd": verdict.get("cost_usd"),
-                           "error": None})
-        return passed
+        checking.remove((name, model))
+        check_runs.append(_check_run(name, model, verdict))
+        return check_runs[-1]["passed"]
 
-    for index, stage in enumerate(policy["stages"]):
-        results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
-        if any(result is None for result in results):
-            continue
-        if stage["check"] == "none":
-            accepted = True
-        elif stage["check"] == "agreement":
-            accepted = agree([result.get("answer") for result in results])
-        else:
-            accepted = await passes(stage["check"], stage["models"][0], results[0])
-        if accepted:
-            return {"accepted": True, "stage": index, "served_by": stage["models"][0], "result": results[0],
-                    "check": stage["check"], "calls": calls, "checks": check_runs}
-    return {"accepted": False, "stage": None, "served_by": None, "result": None, "check": None,
-            "calls": calls, "checks": check_runs}
+    async def stages():
+        for index, stage in enumerate(policy["stages"]):
+            results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
+            if any(result is None for result in results):
+                continue
+            if stage["check"] == "none":
+                accepted = True
+            elif stage["check"] == "agreement":
+                accepted = agree([result.get("answer") for result in results])
+            else:
+                accepted = await passes(stage["check"], stage["models"][0], results[0])
+            if accepted:
+                return {"accepted": True, "stage": index, "served_by": stage["models"][0], "result": results[0],
+                        "check": stage["check"], "calls": calls, "checks": check_runs}
+        return None
+
+    try:
+        accepted = await asyncio.wait_for(stages(), deadline_seconds)
+    except TimeoutError:
+        accepted = None
+        calls.extend({"model": model, "cost_usd": None, "error": "DeadlineExceeded"} for model in calling)
+        check_runs.extend({"check": name, "model": model, "passed": False, "cost_usd": None,
+                           "error": "DeadlineExceeded"} for name, model in checking)
+    return accepted or {"accepted": False, "stage": None, "served_by": None, "result": None, "check": None,
+                        "calls": calls, "checks": check_runs}
 
 
 def dumps(policy: dict) -> str:

@@ -8,7 +8,7 @@ from tine.ledger import Ledger
 from tine.proxy import ProxyConfig, create_app
 from tine.shadow import ShadowStore, extract_answer, sampled, shadow_stages, validate_shadow_policy
 
-POLICY = {"version": 1, "frontier": "frontier", "guarantee": {"certified": True},
+POLICY = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
           "stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}
 PRICES = {f"openai:{name}": {"input_per_million": rate, "output_per_million": rate}
           for name, rate in (("frontier", 100.0), ("small-a", 1.0), ("small-b", 2.0))}
@@ -26,25 +26,30 @@ def reply(text):
     return {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 1000}}
 
 
-def serve(answers, seen, fail=()):
-    def provider(request):
+def serve(answers, seen, fail=(), delay=0.0, unmetered=()):
+    async def provider(request):
         model = json.loads(request.content)["model"]
         seen.append(model)
+        if delay and model != "frontier":
+            await asyncio.sleep(delay)
         if model in fail:
             return httpx.Response(500, json={"error": "down"})
+        if model in unmetered:  # a reply that does not say what it used: its cost cannot be known
+            return httpx.Response(200, json={"choices": reply(answers[model])["choices"]})
         return httpx.Response(200, json=reply(answers[model]))
     return provider
 
 
-def ask(app_config, provider, token="token-a", count=1):
+def ask(app_config, provider, token="token-a", count=1, together=False):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
             app = create_app(app_config, ledger=Ledger(), client=upstream)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
                 headers = {"authorization": f"Bearer {token}"}
-                answers = [await client.post("/v1/chat/completions", headers=headers,
-                                             json={"model": "frontier", "messages": [{"role": "user", "content": f"q{i}"}]})
-                           for i in range(count)]
+                posts = [client.post("/v1/chat/completions", headers=headers,
+                                     json={"model": "frontier", "messages": [{"role": "user", "content": f"q{i}"}]})
+                         for i in range(count)]
+                answers = await asyncio.gather(*posts) if together else [await post for post in posts]
                 report = await client.get("/v1/shadow", headers=headers)
                 health = await client.get("/health")
                 return answers, report, health
@@ -143,3 +148,111 @@ def test_a_reply_with_no_comparable_answer_is_still_paid_for():
     body = report.json()
     assert body["policy_would_accept"] == 0 and body["failed_shadow_calls"] == 0
     assert body["unknown_cost_requests"] == 0 and body["projected_policy_cost_usd"] == pytest.approx(0.206)
+
+
+SAME = {"frontier": "B", "small-a": "B", "small-b": "B"}
+
+
+def test_requests_that_arrive_together_cannot_overspend_the_cap():
+    """Forty requests at once, each shadow run costing $0.006 against a $0.01 cap. Read
+    one after another they stop after two runs; arriving together they must as well."""
+    seen = []
+    answers, report, _ = ask(config(shadow_max_cost_usd=0.01), serve(SAME, seen, delay=0.01), count=40, together=True)
+    assert all(answer.status_code == 200 for answer in answers) and seen.count("frontier") == 40
+    assert seen.count("small-a") <= 2 and report.json()["shadowed_requests"] <= 2
+    assert report.json()["shadow_spend_usd"] <= 0.012 + 1e-9
+
+
+def test_shadow_runs_in_flight_are_bounded_and_the_rest_of_the_sample_is_skipped():
+    seen = []
+    holding = asyncio.Event()
+
+    async def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if model != "frontier" and seen.count("frontier") > 1:
+            await holding.wait()  # a cheap model that does not answer
+        return httpx.Response(200, json=reply("B"))
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(shadow_max_concurrent=1), ledger=Ledger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                def post(index):
+                    return client.post("/v1/chat/completions", headers={"authorization": "Bearer token-a"}, json={
+                        "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                await post(0)  # one finished run, so the cap has a run's cost to reserve
+                waiting = asyncio.gather(*(post(index) for index in range(1, 7)))
+                for _ in range(200):
+                    await asyncio.sleep(0.005)
+                    if seen.count("frontier") == 7:
+                        break
+                await asyncio.sleep(0.05)
+                started = seen.count("small-a")
+                holding.set()
+                return started, await waiting
+    started, answers = asyncio.run(scenario())
+    assert started == 2 and seen.count("small-a") == 2  # the first request's run, then one held run at a time
+    assert all(answer.status_code == 200 for answer in answers)
+
+
+def test_shadow_sampling_needs_a_price_for_every_model_the_cap_has_to_count():
+    """The cap counts known costs. A stage model or a judge with no price would make
+    every shadow call free in its eyes, so sampling is refused until prices are set."""
+    code = {**POLICY, "stages": [{"models": ["small-a"], "check": "tests+judge"}]}
+    judge = {"tests+judge": [{"type": "judge", "model": "judge-model"}]}
+    priced = {**PRICES, "anthropic:judge-model": {"input_per_million": 1.0, "output_per_million": 1.0}}
+    for changes in [{"prices": {"openai:frontier": PRICES["openai:frontier"]}},
+                    {"prices": {**PRICES, "openai:small-b": {"input_per_million": 1.0}}},
+                    {"shadow_policies": {"a": {"openai": code}}, "checks": judge, "anthropic_api_key": "k"}]:
+        with pytest.raises(ValueError, match="price"):
+            create_app(config(**changes), ledger=Ledger())
+    create_app(config(shadow_policies={"a": {"openai": code}}, checks=judge, anthropic_api_key="k", prices=priced),
+               ledger=Ledger())
+    create_app(config(prices={}, shadow_sample_rate=0.0), ledger=Ledger())  # not sampling: nothing is spent
+
+
+def test_shadowing_stops_after_too_many_calls_whose_cost_is_not_known():
+    seen = []
+    _, report, _ = ask(config(shadow_max_cost_usd=1.0, shadow_max_unknown_cost_calls=2),
+                       serve(SAME, seen, unmetered={"small-b"}), count=6)
+    body = report.json()
+    assert seen.count("small-b") == 3 and body["shadowed_requests"] == 3  # the third unknown cost is one too many
+    assert body["unknown_cost_shadow_calls"] == 3 and body["shadow_spend_usd"] == pytest.approx(0.006)
+    assert body["sampling"] == "stopped: too many shadow calls of unknown cost"
+    _, report, _ = ask(config(shadow_max_cost_usd=0.01), serve(SAME, []), count=4)
+    assert report.json()["sampling"] == "stopped: the spending cap is reached"
+    _, report, _ = ask(config(), serve(SAME, []))
+    assert report.json()["sampling"] == "on"
+    _, report, _ = ask(config(), serve(SAME, []), token="token-b")
+    assert report.json()["sampling"] == "no shadow policy for this tenant"
+
+
+def test_the_cap_is_kept_in_memory_and_survives_a_row_that_cannot_be_written(monkeypatch):
+    reads = []
+    read = ShadowStore._runs
+    monkeypatch.setattr(ShadowStore, "_runs", lambda self, tenant: reads.append(tenant) or read(self, tenant))
+    seen = []
+    ask(config(shadow_max_cost_usd=1.0), serve(SAME, seen), count=5)
+    assert seen.count("small-a") == 5 and reads == ["a"]  # the table is read once, not for every request
+
+    def broken(self, **values):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(ShadowStore, "record", broken)
+    seen = []
+    ask(config(shadow_max_cost_usd=0.01), serve(SAME, seen), count=4)
+    assert seen.count("small-a") == 2  # the spend was real even though its row was lost
+
+
+def test_shadow_store_counts_the_known_part_of_a_check_and_never_stores_a_cost_it_cannot_add():
+    store = ShadowStore(Ledger())
+    outcome = {"accepted": False, "stage": None, "served_by": None, "answer": None,
+               "calls": [{"model": "coder", "cost_usd": float("nan"), "error": None},
+                         {"model": "other", "cost_usd": 0.25, "error": None}],
+               "checks": [{"check": "tests+judge", "model": "coder", "passed": False, "cost_usd": None,
+                           "known_cost_usd": 0.01, "error": None}]}
+    store.record(request_id="r1", tenant="a", provider="openai", policy=POLICY, outcome=outcome,
+                 frontier_answer="x", frontier_cost_usd=2.0)
+    report = store.report("a")
+    assert store.spend("a") == pytest.approx(0.26) and report["shadow_spend_usd"] == pytest.approx(0.26)
+    assert report["unknown_cost_shadow_calls"] == 2 and report["unknown_cost_requests"] == 1
