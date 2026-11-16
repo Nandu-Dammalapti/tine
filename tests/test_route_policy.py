@@ -727,6 +727,8 @@ def test_a_request_with_tools_skips_an_agreement_policy_and_says_why(tools):
     assert seen == ["frontier"]  # no cheaper model was paid for
     assert response.headers["x-tine-route"] == "frontier" and response.headers["x-tine-route-skipped"] == "tools"
     assert row["route_skip_reason"] == TOOLS_SKIP_REASON and row["routing_cost_usd"] == 0.0
+    # The policy's stages did not run, so the row is not traced to a stage of it.
+    assert row["policy_sha256"] is row["route_stage"] is None
     # Empty tool lists define no tools: the request goes through the policy, unmarked.
     seen = []
     response, row = ask(routed, world({"small-a": "42", "small-b": "42"}, seen),
@@ -764,6 +766,7 @@ def test_a_routed_row_names_the_policy_file_and_the_stage_that_answered(monkeypa
     path.write_bytes(b'{"a": {"openai": ' + json.dumps(AGREE).encode() + b'}}\n')
     monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
     monkeypatch.setenv("TINE_ROUTE_POLICIES", str(path))
+    monkeypatch.setenv("TINE_ANSWER_PATTERN", WHOLE_REPLY_PATTERN)  # an agreement policy needs a reader
     for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES"):
         monkeypatch.delenv(name, raising=False)
     loaded = ProxyConfig.from_env()

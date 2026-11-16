@@ -462,7 +462,8 @@ def test_a_required_ledger_withholds_cached_and_routed_answers_it_cannot_record(
             if self.broken:
                 raise RuntimeError("disk full")
             return super().record(**kwargs)
-    policy = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+    policy = {"version": 1, "tenant": "a", "frontier": "frontier",
+              "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
               "stages": [{"models": ["cheap"], "check": "none"}]}
 
     def provider(request):
