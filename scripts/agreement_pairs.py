@@ -31,7 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tine.data import read_outcomes, validate_outcomes, write_outcomes  # noqa: E402
+from tine.data import _validate_csv_structure, read_outcomes, validate_outcomes, write_outcomes  # noqa: E402
 
 
 def normalize(answer) -> str | None:
@@ -72,10 +72,22 @@ def recorded_answers(bench_dir: Path, *, outcomes=None) -> dict[tuple[str, str],
     return answers
 
 
-def answers_from_csv(path: Path) -> dict[tuple[str, str], str | None]:
-    """(task_id, model) -> normalised answer, from a CSV with those three columns."""
-    with Path(path).open(newline="", encoding="utf-8") as stream:
-        return {(row["task_id"], row["model"]): normalize(row["answer"]) for row in csv.DictReader(stream)}
+def answers_from_csv(path: Path, *, tenant: str | None = None) -> dict[tuple[str, str], str | None]:
+    """Read unambiguous single-tenant task/model answers without coercing text."""
+    with Path(path).open(newline="", encoding="utf-8-sig") as stream:
+        _validate_csv_structure(stream)
+        frame = pd.read_csv(stream, dtype=str, keep_default_na=False)
+    if {"task_id", "model", "answer"} - set(frame.columns):
+        raise ValueError("Answer CSV requires task_id, model, and answer columns")
+    for column in ["task_id", "model", *(["tenant"] if "tenant" in frame else [])]:
+        if not frame[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all():
+            raise ValueError(f"Answer CSV {column} must contain nonempty text identifiers")
+    if "tenant" in frame and not frame.empty:
+        if frame.tenant.nunique() != 1 or (tenant is not None and not frame.tenant.eq(tenant).all()):
+            raise ValueError("Answer CSV must contain only the outcomes' tenant")
+    if frame.duplicated(["task_id", "model"]).any():
+        raise ValueError("Duplicate recorded answer for task_id/model; select one run explicitly")
+    return {(row.task_id, row.model): normalize(row.answer) for row in frame.itertuples()}
 
 
 def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float = 0.5,
@@ -189,11 +201,14 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     if bool(args.bench_dir) == bool(args.answers):
         parser.error("Pass exactly one of --bench-dir and --answers")
-    if len({path.resolve() for path in (args.input, args.output, args.checks)}) != 3:
-        parser.error("Input outcomes, group outcomes, and checks must use distinct paths")
+    paths = [args.input, args.output, args.checks, *([args.answers] if args.answers else [])]
+    if len({path.resolve() for path in paths}) != len(paths):
+        parser.error("Input outcomes, answers, group outcomes, and checks must use distinct paths")
     outcomes = read_outcomes(args.input)
+    if outcomes.tenant.nunique() != 1:
+        raise ValueError("Build agreement groups for one tenant at a time")
     answers = (recorded_answers(args.bench_dir, outcomes=outcomes) if args.bench_dir
-               else answers_from_csv(args.answers))
+               else answers_from_csv(args.answers, tenant=outcomes.tenant.iloc[0]))
     frame, checks, report = build_pairs(outcomes, answers,
                                         args.frontier, max_cost_share=args.max_cost_share, models=args.models,
                                         group_size=args.group_size, include_singles=args.include_singles,

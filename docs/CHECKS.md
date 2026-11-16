@@ -82,6 +82,15 @@ the outcomes' `source_sha256` when present; a mismatch requires a matching bench
 run. Without source hashes, callers must verify that answers and grades came from
 the same run. Input outcomes, output outcomes, and checks must use distinct paths.
 
+With `--answers`, supply a CSV containing `task_id`, `model`, and `answer` for one
+tenant. Duplicate task/model answers, duplicate headers, malformed records, and
+blank identifiers are rejected. An optional `tenant` column must match the outcome
+table on every row. Without that column, the caller must ensure the answers belong
+to the outcome tenant. Empty answers remain missing; identifiers such as `NA` and
+`001` stay literal text. The answer CSV must also have a distinct path from both
+outputs and the outcome input. CSV answers carry no verified source hash, so the
+caller must check that they correspond to the graded run.
+
 ## Response check
 
 `tine cascade --response-check` adds a `response_certified` pick. A response check
