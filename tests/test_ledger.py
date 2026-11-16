@@ -167,7 +167,7 @@ def test_unknown_routing_costs_require_explicit_measurement_for_net_savings():
     assert ledger.get("a", request_id)["routing_cost_usd"] is None
     assert ledger.update_outcome("a", request_id, True, routing_cost_usd=0)
     assert ledger.report("a")["verified_savings_usd"] == 0.75
-    ledger.update_outcome("a", request_id, True, cost_usd=0.5)
+    ledger.update_outcome("a", request_id, True)
     assert ledger.get("a", request_id)["routing_cost_usd"] == 0
     ledger.update_outcome("a", request_id, True, routing_cost_usd=None)
     assert ledger.report("a")["verified_savings_usd"] is None
@@ -375,8 +375,8 @@ def test_a_caller_cannot_replace_a_baseline_the_proxy_measured():
     record = ledger.get("a", measured)
     assert (record["success"], record["baseline_cost_usd"], record["baseline_source"]) == (None, 1.0, "proxy_measured")
     assert ledger.outcome_events("a", measured) == []
-    assert ledger.update_outcome("a", measured, True, cost_usd=0.5)
-    assert ledger.report("a")["verified_savings_usd"] == 0.5
+    assert ledger.update_outcome("a", measured, True)
+    assert ledger.report("a")["verified_savings_usd"] == 0.0
     # A request with no baseline yet takes the caller's, and the caller may correct it.
     unmeasured = row(ledger, cost_usd=1.0, routing_cost_usd=0.0)
     assert ledger.update_outcome("a", unmeasured, True, baseline_cost_usd=3.0)
@@ -393,6 +393,35 @@ def test_a_caller_cannot_replace_a_baseline_the_proxy_measured():
         row(ledger, baseline_source="caller")  # a source of no baseline
     with pytest.raises(ValueError):
         row(ledger, baseline_cost_usd=1.0, baseline_estimated=True, baseline_source="proxy_measured")
+
+
+def test_a_caller_cannot_replace_a_cost_the_proxy_recorded_on_a_measured_request():
+    """Verified savings rest on the measured baseline and on the costs beside it, so a
+    caller who could rewrite those costs could set the verified figure at will."""
+    from tine.ledger import MeasuredCostError
+    ledger = Ledger()
+    measured = row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0)
+    assert ledger.update_outcome("a", measured, True)
+    for fields in ({"cost_usd": 0.0}, {"cost_usd": 50.0}, {"routing_cost_usd": 0.5}, {"cost_usd": None},
+                   {"routing_cost_usd": None}, {"cost_usd": 0.0, "routing_cost_usd": 0.0}):
+        with pytest.raises(MeasuredCostError):
+            ledger.update_outcome("a", measured, False, **fields)
+    record = ledger.get("a", measured)
+    assert (record["success"], record["cost_usd"], record["routing_cost_usd"]) == (True, 1.0, 0.0)
+    assert len(ledger.outcome_events("a", measured)) == 1 and ledger.report("a")["verified_savings_usd"] == 0.0
+    # A cost the proxy did not record may be filled, and the caller may correct its own figure.
+    unknown_routing = row(ledger, cost_usd=1.0, baseline_cost_usd=2.0)
+    assert ledger.update_outcome("a", unknown_routing, True, routing_cost_usd=0.5)
+    assert ledger.update_outcome("a", unknown_routing, True, routing_cost_usd=0.25)
+    with pytest.raises(MeasuredCostError):
+        ledger.update_outcome("a", unknown_routing, True, cost_usd=0.0, routing_cost_usd=0.25)
+    assert ledger.get("a", unknown_routing)["routing_cost_usd"] == 0.25
+    assert ledger.report("a")["verified_savings_usd"] == 0.75
+    # Without a measured baseline nothing verified rests on the costs: the caller may replace them.
+    unmeasured = row(ledger, cost_usd=1.0, routing_cost_usd=0.0)
+    assert ledger.update_outcome("a", unmeasured, True, cost_usd=0.5, baseline_cost_usd=2.0)
+    assert ledger.report("a")["caller_baseline_savings_usd"] == 1.5
+    assert "cannot be replaced" in ledger.report("a")["savings_scope"]
 
 
 def test_every_outcome_update_is_kept_in_an_append_only_history():

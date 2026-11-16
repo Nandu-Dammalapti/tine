@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
-from .ledger import MAX_TOKEN_COUNT, Ledger, MeasuredBaselineError
+from .ledger import MAX_TOKEN_COUNT, Ledger, MeasuredBaselineError, MeasuredCostError
 from .policy import FREEZE_EDITED, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
@@ -541,6 +541,9 @@ def create_app(
         except MeasuredBaselineError:
             raise HTTPException(status_code=409, detail="The proxy measured this request's baseline cost; "
                                                         "it cannot be replaced") from None
+        except MeasuredCostError:
+            raise HTTPException(status_code=409, detail="The proxy measured this request's baseline cost and "
+                                                        "recorded its costs; a recorded cost cannot be replaced") from None
         if not found:
             raise HTTPException(status_code=404, detail="Request not found")
         return {"request_id": request_id, "success": success}

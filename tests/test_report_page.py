@@ -200,20 +200,58 @@ def test_a_saving_on_escalated_requests_only_shows_what_it_leaves_out():
         "On them, answers and routing together cost $1.15 against a baseline of $1.00: $0.15 more than the "
         "baseline, so there is no net saving.",
         "If the proxy routes through a policy, the frontier model's cost is measured only for requests that "
-        "escalated to it, unless a baseline is supplied; the requests cheaper models answered are then the ones "
-        "left out, and this figure is not the policy's saving.",
-        "No estimated or projected figure is available for the requests left out: supply measured baselines "
-        "through the outcome endpoint, or run shadow mode."]
+        "escalated to it; the requests cheaper models answered are then the ones left out, and this figure is not "
+        "the policy's saving.",
+        "No estimated or projected figure is available for the requests left out: set the proxy to estimate the "
+        "baseline, or run shadow mode."]
     page = render(report, None, tenant="acme", generated_at="now")
     # The title line states the scope, not the loss.
     assert "<h1>The measured saving covers only 1 of 4 confirmed successful requests" in page
     assert "$" not in page[page.index("<h1>"):page.index("</h1>")]
     text = text_of(page)
-    assert "Confirmed successful but in neither figure, because a cost or the baseline is not known 3" in text
+    assert "Confirmed successful but in none of these figures, because a cost or the baseline is not known 3" in text
     assert "The measured saving covers 1 of 4 confirmed successes." in text
     unknown = text_of(render({**report, "verified_successes": None}, None, tenant="acme", generated_at="now"))
     assert "because a cost or the baseline is not known not known" in unknown
     assert "The measured saving covers only" not in unknown  # nothing is claimed about a count not known
+
+
+def test_a_baseline_the_caller_supplied_is_shown_apart_and_never_promised_in_the_measured_saving():
+    """The ledger counts only proxy-measured baselines as measured. The page must show
+    where a caller's baseline went, not count it as left out, and not tell the reader
+    that supplying one brings a request into the measured saving."""
+    ledger = Ledger()
+    ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": "hard"}, success=True,
+                  cost_usd=1.0, routing_cost_usd=0.1, baseline_cost_usd=1.0)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": 1}, success=True,
+                  cost_usd=0.1, routing_cost_usd=0.1, baseline_cost_usd=0.5, baseline_estimated=True)
+    supplied = ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": 2},
+                             cost_usd=0.1, routing_cost_usd=0.1)
+    ledger.update_outcome("acme", supplied, True, baseline_cost_usd=1.0)
+    report = ledger.report("acme")
+    assert (report["comparable_verified_requests"], report["caller_baseline_requests"]) == (1, 1)
+    sentences = headline_sentences(report, None)
+    assert "Supplied by the caller, not measured: on 1 confirmed successful request whose frontier cost the caller " \
+           "supplied through the outcome endpoint, the result is a saving of $0.80." in sentences
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    for expected in (
+        "Estimated or caller-supplied, not measured Confirmed successful, with the frontier model's cost estimated 1",
+        "Confirmed successful, with the frontier model's cost supplied by the caller 1",
+        "Net saving on those, from the caller's baseline $0.80 (the caller's figure, not measured)",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 0",
+        "the request never counts in the measured saving. A baseline the caller supplies later",
+        "The caller cannot replace a baseline the proxy measured",
+    ):
+        assert expected in text, expected
+    for stale in ("unless a baseline is supplied", "only if a measured baseline was supplied later",
+                  "supply measured baselines", "Outcomes and baseline costs are reported by the caller",
+                  "Without supplied baselines"):
+        assert stale not in text, stale
+    # A report from before baseline sources has no caller count: none are shown apart.
+    old = {key: value for key, value in report.items() if not key.startswith("caller_baseline")}
+    old_text = text_of(render(old, None, tenant="acme", generated_at="now"))
+    assert "supplied by the caller 1" not in old_text and "Estimated, not measured Confirmed" in old_text
+    assert "because a cost or the baseline is not known 1" in old_text
 
 
 def test_live_routing_keeps_estimated_baselines_out_of_the_measured_saving():
@@ -229,9 +267,8 @@ def test_live_routing_keeps_estimated_baselines_out_of_the_measured_saving():
         "measured.",
         "On them, answers and routing together cost $1.15 against a baseline of $1.00: $0.15 more than the "
         "baseline, so there is no net saving.",
-        "Under live routing the frontier model's cost is measured only for requests that escalated to it, unless "
-        "a baseline is supplied, so this figure leaves out the requests cheaper models answered and is not the "
-        "policy's saving.",
+        "Under live routing the frontier model's cost is measured only for requests that escalated to it, so this "
+        "figure leaves out the requests cheaper models answered and is not the policy's saving.",
         "Estimated, not measured: on 3 confirmed successful requests that cheaper models answered, with the "
         "frontier model's cost estimated from each answer's token counts, the result is an estimated saving of "
         "$2.55.",
@@ -250,7 +287,7 @@ def test_live_routing_keeps_estimated_baselines_out_of_the_measured_saving():
         "Net saving, measured -$0.15 (-15.0%)",
         "Estimated, not measured Confirmed successful, with the frontier model's cost estimated 3",
         "Net saving on those, estimated $2.55 (estimated, not measured)",
-        "Confirmed successful but in neither figure, because a cost or the baseline is not known 2",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 2",
         "Known answer spend, all recorded requests $1.70",
         "Known routing spend, all recorded requests $0.40",
         "Known spend, answers and routing together $2.10",
@@ -361,7 +398,7 @@ def test_round_trip_from_a_ledger_with_shadow_rows_to_the_page():
         "Net saving, measured $1.00 (50.0%)",
         "Confirmed successful, with the frontier model's cost estimated 0",
         "Net saving on those, estimated no such requests",
-        "Confirmed successful but in neither figure, because a cost or the baseline is not known 0",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 0",
         "Known answer spend, all recorded requests $1.75",
         "Known routing spend, all recorded requests $0.25",
         "Known spend, answers and routing together $2.00",
@@ -711,7 +748,8 @@ def test_a_drift_warning_heads_the_page_above_the_saving():
     sentences = headline_sentences(None, report)
     assert sentences[0] == report["drift_warning"] and sentences[1].startswith("Of 30 shadowed requests")
     assert headline(None, report).startswith("Cannot confirm the certification on this traffic: 12 of 30 accepted "
-                                             "cheaper answers (40.00%) differ from the frontier model's answer")
+                                             "cheaper answers differ from the frontier model's answer, 40.00% of "
+                                             "the 30 shadowed requests")
     page = render(None, report, tenant="acme", generated_at="now", policy=POLICY)
     # Shown first, set apart above the title line, and not repeated as the title.
     assert page.index('class="kicker"') < page.index('class="alarm"') < page.index("<h1>")

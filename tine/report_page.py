@@ -185,6 +185,14 @@ def _estimated(ledger: dict | None) -> int | None:
     return _whole(_get(ledger, "estimated_baseline_requests"))
 
 
+def _caller(ledger: dict | None) -> int | None:
+    """Confirmed successes whose baseline the caller supplied. A report from before
+    baseline sources were recorded has no such count: it counted them as measured."""
+    if not isinstance(ledger, dict) or "caller_baseline_requests" not in ledger:
+        return 0
+    return _whole(ledger["caller_baseline_requests"])
+
+
 def _outside_measured(ledger: dict | None) -> int | None:
     """Confirmed successes the measured saving does not count, for any reason."""
     successes, comparable = _whole(_get(ledger, "verified_successes")), _whole(_get(ledger, "comparable_verified_requests"))
@@ -204,6 +212,19 @@ def _estimated_sentence(ledger: dict | None) -> str | None:
         saving, None, word="estimated saving", against="the estimated baseline"))
     return (f"Estimated, not measured: on {_plural(requests, 'confirmed successful request')} that cheaper "
             f"models answered, with the frontier model's cost estimated from each answer's token counts, {result}.")
+
+
+def _caller_sentence(ledger: dict | None) -> str | None:
+    """The caller-supplied-baseline figure as a sentence that says whose it is, or None
+    when no confirmed success has a baseline the caller supplied."""
+    requests = _caller(ledger)
+    if not requests:
+        return None
+    saving = ledger.get("caller_baseline_savings_usd")
+    result = ("the saving is not known" if _number(saving) is None else "the result is " + _saving_clause(
+        saving, None, word="saving", against="the caller's baseline"))
+    return (f"Supplied by the caller, not measured: on {_plural(requests, 'confirmed successful request')} whose "
+            f"frontier cost the caller supplied through the outcome endpoint, {result}.")
 
 
 def _projection_sentence(shadow: dict | None) -> str | None:
@@ -269,16 +290,17 @@ def _live_headline(ledger: dict, shadow: dict | None) -> list[str]:
         measured = f"On them, {costs}"
         if _estimated(ledger):
             why = ("Under live routing the frontier model's cost is measured only for requests that escalated to "
-                   "it, unless a baseline is supplied, so this figure leaves out the requests cheaper models "
-                   "answered and is not the policy's saving.")
+                   "it, so this figure leaves out the requests cheaper models answered and is not the policy's "
+                   "saving.")
         else:
             why = ("If the proxy routes through a policy, the frontier model's cost is measured only for requests "
-                   "that escalated to it, unless a baseline is supplied; the requests cheaper models answered are "
-                   "then the ones left out, and this figure is not the policy's saving.")
-        pointers = [sentence for sentence in (_estimated_sentence(ledger), _projection_sentence(shadow)) if sentence]
+                   "that escalated to it; the requests cheaper models answered are then the ones left out, and "
+                   "this figure is not the policy's saving.")
+        pointers = [sentence for sentence in (_estimated_sentence(ledger), _caller_sentence(ledger),
+                                              _projection_sentence(shadow)) if sentence]
         if not pointers:
-            pointers = ["No estimated or projected figure is available for the requests left out: supply measured "
-                        "baselines through the outcome endpoint, or run shadow mode."]
+            pointers = ["No estimated or projected figure is available for the requests left out: set the proxy to "
+                        "estimate the baseline, or run shadow mode."]
         return [lead, measured, why, *pointers]
     # The saving is a subtotal. Saying how many requests it leaves out belongs in the
     # same sentence as the saving, not only in the table below it.
@@ -500,13 +522,19 @@ def _shadow_section(shadow: dict | None) -> str:
 
 
 def _left_out(ledger: dict) -> str:
-    """Confirmed successes in neither the measured saving nor the estimated figure,
-    because a cost or the baseline is not known. Without a baseline estimate these are
-    the requests a cheaper model answered, so the reader must see the number."""
-    outside, estimated = _outside_measured(ledger), _estimated(ledger)
-    if outside is None or estimated is None or estimated > outside:
+    """Confirmed successes in none of the measured, estimated and caller-supplied
+    figures, because a cost or the baseline is not known. Without a baseline estimate
+    these are the requests a cheaper model answered, so the reader must see the number."""
+    outside, estimated, caller = _outside_measured(ledger), _estimated(ledger), _caller(ledger)
+    if outside is None or estimated is None or caller is None or estimated + caller > outside:
         return NOT_KNOWN
-    return count(outside - estimated)
+    return count(outside - estimated - caller)
+
+
+def _caller_saving(ledger: dict) -> str:
+    """The saving on caller-supplied baselines, worded so it cannot be read as measured."""
+    saving = _number(ledger.get("caller_baseline_savings_usd"))
+    return NOT_KNOWN if saving is None else f"{money(saving)} (the caller's figure, not measured)"
 
 
 def _estimated_saving(ledger: dict) -> str:
@@ -545,8 +573,16 @@ def _ledger_section(ledger: dict | None) -> str:
     estimated = [
         ("Confirmed successful, with the frontier model's cost estimated", count(ledger.get("estimated_baseline_requests"))),
         ("Net saving on those, estimated", _estimated_saving(ledger)),
-        ("Confirmed successful but in neither figure, because a cost or the baseline is not known", _left_out(ledger)),
     ]
+    caller = _caller(ledger)
+    if caller != 0:
+        estimated += [
+            ("Confirmed successful, with the frontier model's cost supplied by the caller", count(caller)),
+            ("Net saving on those, from the caller's baseline", _caller_saving(ledger)),
+        ]
+    estimated.append(("Confirmed successful but in none of these figures, because a cost or the baseline is not "
+                      "known", _left_out(ledger)))
+    unmeasured = "Estimated, not measured" if caller == 0 else "Estimated or caller-supplied, not measured"
     spend = [
         ("Known answer spend, all recorded requests", money(ledger.get("known_answer_cost_total_usd"))),
         ("Known routing spend, all recorded requests", money(ledger.get("known_routing_cost_total_usd"))),
@@ -575,7 +611,7 @@ def _ledger_section(ledger: dict | None) -> str:
             "was measured.</p>"
             f"{''.join(notes)}{_rows(requests, 'Requests')}"
             f"{_rows(measured, 'Measured against the frontier model')}"
-            f"{_rows(estimated, 'Estimated, not measured')}"
+            f"{_rows(estimated, unmeasured)}"
             "<p class=\"small\">An estimated baseline is the returned answer's token counts at the frontier model's "
             "prices. The frontier model was not called, and its answer could have been longer or shorter. The "
             "estimated figure is never added to the measured one.</p>"
@@ -700,17 +736,19 @@ def _caveats(ledger: dict | None, shadow: dict | None, policy: dict | None) -> l
             "incompletely costed requests are left out, and so are requests whose baseline was estimated. It is "
             "not a billing amount.",
             "<strong>The measured saving uses measured baselines only.</strong> When a cheaper model answered, the "
-            "frontier model was not called, so its cost for that request was not observed. Such a request counts "
-            "in the measured saving only if a measured baseline was supplied later. Where the proxy is set to "
+            "frontier model was not called, so its cost for that request was not observed, and the request never "
+            "counts in the measured saving. A baseline the caller supplies later through the outcome endpoint "
+            "is shown on its own row, as the caller's figure, not measured. Where the proxy is set to "
             "estimate the baseline, the result is shown on its own row as estimated, not measured: the returned "
             "answer's token counts at the frontier model's prices. A frontier answer could have been longer or "
             "shorter.",
-            "<strong>Under live routing the measured saving leans to the hardest requests.</strong> Without "
-            "supplied baselines it covers the requests that escalated to the frontier model, which paid for "
-            "cheaper attempts first. It can show a loss while the policy saves on the requests cheaper models "
-            "answered.",
-            "<strong>Outcomes and baseline costs are reported by the caller.</strong> This page does not verify "
-            "them.",
+            "<strong>Under live routing the measured saving leans to the hardest requests.</strong> It covers "
+            "only the requests that escalated to the frontier model, which paid for cheaper attempts first. It "
+            "can show a loss while the policy saves on the requests cheaper models answered.",
+            "<strong>Outcomes are reported by the caller.</strong> So are costs the proxy did not record, such "
+            "as routing cost without a route policy, and baselines shown as supplied by the caller. This page "
+            "does not verify them. The caller cannot replace a baseline the proxy measured, or a cost it recorded "
+            "on such a request.",
         ]
         if "estimated_baseline_requests" not in ledger:
             items.append(

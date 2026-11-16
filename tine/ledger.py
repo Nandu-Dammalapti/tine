@@ -34,6 +34,11 @@ class MeasuredBaselineError(ValueError):
     """An outcome update tried to replace a baseline the proxy measured itself."""
 
 
+class MeasuredCostError(ValueError):
+    """An outcome update tried to replace a cost the proxy recorded on a request whose
+    baseline it measured: verified savings rest on both."""
+
+
 def _legacy_baseline_source(columns) -> str:
     """SQL for where a row's baseline came from, in a ledger written before the column.
 
@@ -356,7 +361,10 @@ class Ledger:
 
         A baseline supplied here is the caller's (``baseline_source`` ``caller``). It may
         replace an estimated or caller-supplied one, never one the proxy measured: that
-        raises ``MeasuredBaselineError`` and changes nothing. Each update is appended to
+        raises ``MeasuredBaselineError`` and changes nothing. On a request whose baseline
+        the proxy measured, ``cost_usd`` and ``routing_cost_usd`` may fill a cost that is
+        not known or replace one an earlier update supplied, never one the proxy recorded:
+        that raises ``MeasuredCostError`` and changes nothing. Each update is appended to
         ``outcome_events`` with the values it replaced. Returns False when the tenant
         has no such request."""
         if not isinstance(success, bool):
@@ -388,6 +396,15 @@ class Ledger:
                 return False
             if "baseline_cost_usd" in fields and row["baseline_source"] == "proxy_measured":
                 raise MeasuredBaselineError("the proxy measured this request's baseline; it cannot be replaced")
+            recorded = [name for name in ("cost_usd", "routing_cost_usd") if name in fields and row[name] is not None]
+            if recorded and row["baseline_source"] == "proxy_measured":
+                # A set cost is the proxy's unless an earlier outcome update supplied it.
+                supplied = {name for event in self._db.execute(
+                    "SELECT fields_json FROM outcome_events WHERE tenant=? AND request_id=?", (tenant, request_id))
+                    for name in json.loads(event["fields_json"])}
+                if any(name not in supplied for name in recorded):
+                    raise MeasuredCostError("the proxy recorded this request's costs and measured its baseline; "
+                                            "a recorded cost cannot be replaced")
             previous = {name: row[name] for name in fields}
             previous["success"] = None if row["success"] is None else bool(row["success"])
             changes["outcome_sequence"] = sequence = self._next_outcome_sequence()
@@ -542,14 +559,19 @@ class Ledger:
                 "(in a ledger written before baseline sources were recorded, any request whose outcome was "
                 "updated): Tine did not measure it, so this figure is the caller's and is not part of verified savings"
             ),
-            "scope": "development ledger; outcomes are caller-attested, verified baselines were measured by the proxy",
+            "scope": (
+                "development ledger; outcomes are caller-attested, verified baselines were measured by the proxy, "
+                "and on those requests the caller can supply only costs the proxy did not record"
+            ),
             "cost_scope": (
                 "answer generation plus routing/checking costs; known totals sum only measured "
                 "components and are incomplete when unknown_cost_requests is nonzero"
             ),
             "savings_scope": (
                 "net of routing costs on successful requests with known answer, routing, and baseline costs only, "
-                "where the proxy measured the baseline by calling the frontier model; failed, pending, and "
+                "where the proxy measured the baseline by calling the frontier model; a cost the proxy recorded on "
+                "such a request cannot be replaced by the caller, and a cost it did not record (such as routing "
+                "cost without a route policy) is the caller's; failed, pending, and "
                 "incompletely costed requests, and requests whose baseline is estimated or caller-supplied, "
                 "are excluded from this subtotal, so it is not a billing amount. Under live routing the proxy "
                 "calls the frontier only for requests that escalated, which also paid for the cheaper attempts, "

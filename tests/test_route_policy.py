@@ -831,3 +831,28 @@ def test_a_caller_cannot_replace_a_measured_baseline_and_every_update_is_kept():
     assert accepted.status_code == 200 and row["baseline_cost_usd"] == pytest.approx(0.2)
     assert row["baseline_source"] == "proxy_measured" and report["comparable_verified_requests"] == 1
     assert [event["fields"] for event in events] == [{"success": True, "routing_cost_usd": 0.0}]
+
+
+def test_a_caller_cannot_replace_the_costs_the_proxy_recorded_beside_a_measured_baseline():
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(world({"frontier": "42"}, []))) as upstream:
+            ledger = Ledger()
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                response = await client.post("/v1/chat/completions", headers=headers, json={
+                    "model": "frontier", "messages": [{"role": "user", "content": "q"}]})
+                request_id = response.headers["x-tine-request-id"]
+                filled = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                            json={"success": True, "routing_cost_usd": 0.0})
+                before = (await client.get("/v1/savings", headers=headers)).json()
+                refused = [await client.patch(f"/v1/outcomes/{request_id}", headers=headers, json=body)
+                           for body in ({"success": True, "cost_usd": 0.0, "routing_cost_usd": 0.0},
+                                        {"success": True, "cost_usd": 50.0})]
+                after = (await client.get("/v1/savings", headers=headers)).json()
+                return filled, refused, before, after, ledger.get("a", request_id)
+    filled, refused, before, after, row = asyncio.run(scenario())
+    assert filled.status_code == 200 and before["verified_savings_usd"] == 0.0
+    assert [response.status_code for response in refused] == [409, 409]
+    assert all("recorded" in response.json()["detail"] for response in refused)
+    assert after["verified_savings_usd"] == 0.0 and row["cost_usd"] == pytest.approx(0.2)

@@ -26,11 +26,11 @@ Start locally:
 python -m tine serve --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` reports the routing mode, whether shadow mode is sampling, and SQLite development storage. `routing` is `policy` only when at least one loaded route policy has a nonempty `stages` list, and `frontier-default` otherwise, including when `TINE_ROUTE_POLICIES` holds only policies with `stages: []`. `shadow` is `sampling` only when the sample rate is above 0, shadow policies are loaded and at least one of them has stages; otherwise it is `off`. Provider routes return a Tine request ID in `x-tine-request-id`. After an objective check completes, authenticate as the same tenant and update it with `PATCH /v1/outcomes/{request_id}` and JSON `{"success": true}` or `{"success": false}`. Optional `cost_usd`, `routing_cost_usd`, and `baseline_cost_usd` must come from actual accounting; they are not guessed. `GET /v1/savings` returns that tenant's ledger summary.
+`GET /health` reports the routing mode, whether shadow mode is sampling, and SQLite development storage. `routing` is `policy` only when at least one loaded route policy has a nonempty `stages` list, and `frontier-default` otherwise, including when `TINE_ROUTE_POLICIES` holds only policies with `stages: []`. `shadow` is `sampling` only when the sample rate is above 0, shadow policies are loaded and at least one of them has stages; otherwise it is `off`. Provider routes return a Tine request ID in `x-tine-request-id`. After an objective check completes, authenticate as the same tenant and update it with `PATCH /v1/outcomes/{request_id}` and JSON `{"success": true}` or `{"success": false}`. Optional `cost_usd`, `routing_cost_usd`, and `baseline_cost_usd` must come from actual accounting; they are not guessed. A caller may set a cost the proxy did not record, never replace one it measured (see Where a baseline comes from). `GET /v1/savings` returns that tenant's ledger summary.
 
 Record the returned answer's generation cost in `cost_usd` and the additional routing cost in `routing_cost_usd`. Routing cost includes earlier attempts that escalated, judges, tests, embeddings, and allocated customer-hosted compute. Include each expense once. If an older caller included these expenses in `cost_usd`, split that amount before supplying the routing component. `baseline_cost_usd` is the comparable always-frontier cost.
 
-For example, a verified answer costing $0.25 plus $0.90 in routing against a $1.00 baseline has **-$0.15 net savings**. Send `{"success": true, "cost_usd": 0.25, "routing_cost_usd": 0.90, "baseline_cost_usd": 1.00}`. Omitting a cost on later updates preserves it; explicit `null` marks it unknown again. Zero must be an explicit accounting result.
+For example, a verified answer costing $0.25 plus $0.90 in routing against a $1.00 baseline has **-$0.15 net savings**. For a request whose costs and baseline the proxy did not record, send `{"success": true, "cost_usd": 0.25, "routing_cost_usd": 0.90, "baseline_cost_usd": 1.00}`. The baseline is then the caller's, so this saving is reported as `caller_baseline_savings_usd`, not in `verified_savings_usd`. Omitting a cost on later updates preserves it; explicit `null` marks it unknown again. Zero must be an explicit accounting result.
 
 Without a route policy, automatic proxy records leave routing cost unknown, including cache hits: no provider call does not imply free checking or infrastructure. With a route policy the proxy records routing cost itself for requests the policy handled (see Routing through a policy); cache hits still leave it unknown. Cache hits do not copy the source request's routing cost. Older SQLite ledgers gain a nullable routing-cost column; existing rows stay unknown until costs are supplied. Restart all writers together when upgrading. Cache eligibility still depends on the verified outcome, independently of whether costs have arrived.
 
@@ -67,6 +67,17 @@ A PATCH whose body contains `baseline_cost_usd`, `null` included, for a request 
 replaced"). Nothing in the request is changed then, not even `success`. A PATCH may still set or
 correct a baseline that is missing, estimated or caller-supplied. A `null` baseline clears both the
 baseline and its source.
+
+The verified figures also rest on the answer and routing costs of those requests, so the same holds
+for them. On a request whose baseline is `proxy_measured`, a PATCH may set `cost_usd` or
+`routing_cost_usd` when the proxy left it unknown (routing cost without a route policy, for example),
+and may correct a value an earlier PATCH supplied. A PATCH that would replace a cost the proxy
+recorded, with a number or with `null`, returns 409 ("The proxy measured this request's baseline cost
+and recorded its costs; a recorded cost cannot be replaced") and changes nothing. A cache hit copies
+the baseline source of its source row, so its recorded answer cost is protected in the same way. On
+other requests the caller may replace either cost: nothing verified rests on them. Whether a cost was
+supplied by the caller is read from the outcome history, so a cost set before that history existed
+counts as the proxy's.
 
 ### Measuring the saving under live routing
 
@@ -223,19 +234,26 @@ More fields of `GET /v1/shadow`:
   - `accepted_differing_from_frontier` and `accepted_differing_from_frontier_share`: accepted cheaper
     answers whose answer differs from the frontier's, as a count and as a share of the answers
     compared. Answers accepted by a named check (code) are not compared and are left out.
+  - `drift_requests` and `drift_share`: the shadowed requests whose answer was compared with the
+    frontier's or sent to the frontier (all shadowed requests minus accepted answers that were not
+    compared), and the differing answers as a share of them. Epsilon bounds the loss over all tasks,
+    and a request sent to the frontier loses nothing, so this is the share checked against epsilon.
+    The share among accepted answers alone is larger by about one over the acceptance rate.
   - `drift_epsilon`: the strictest `guarantee.epsilon` among the tenant's shadow policies that have
     stages. `drift_min_compared`: 30.
   - `drift_check`: `warning`; `within the limit: ...`; `not checked yet: N accepted answers compared
     with the frontier's, 30 needed`; or `not checked: the policy's quality limit was not given`.
-  - `drift_warning`: null unless the differing share is above epsilon on at least 30 compared answers.
-    It then reads: "Cannot confirm the certification on this traffic: D of C accepted cheaper answers
-    (S%) differ from the frontier model's answer, more than the policy's quality limit of E%. A
+  - `drift_warning`: null unless `drift_share` is above epsilon on at least 30 compared answers. It
+    then reads: "Cannot confirm the certification on this traffic: D of C accepted cheaper answers
+    differ from the frontier model's answer, S% of the R shadowed requests whose answer was compared
+    with the frontier's or sent to the frontier, more than the policy's quality limit of E%. A
     different answer is not always a wrong one; grade a sample of these requests before relying on the
     policy or its projected saving."
 
 The drift warning is a reason to grade, not a measured loss. A different answer can be the frontier's
-mistake. On the published benchmark replay 5.28% of accepted answers differ from the frontier's
-against an epsilon of 2%, so the warning shows there too, although the graded loss was 0.99%. The
+mistake. On the published benchmark replay 58 of 1,099 accepted answers (5.28%) differ from the
+frontier's, 4.10% of the 1,414 shadowed requests, against an epsilon of 2%, so the warning shows
+there too, although the graded loss was 0.99%. The
 planned next step is to record the differing rate at certification time and compare against that.
 The check uses the tenant's strictest epsilon across providers, not each policy's own, and counts rows
 from older policy files too.

@@ -200,6 +200,29 @@ def test_shadow_runs_in_flight_are_bounded_and_the_rest_of_the_sample_is_skipped
     assert all(answer.status_code == 200 for answer in answers)
 
 
+def test_a_shadow_run_that_cost_nothing_does_not_lift_the_one_run_at_a_time_limit(tmp_path):
+    """A run with no model call (a judged stage skipped for a long request, a request
+    skipped for tools) costs nothing. Reserving that zero for every run in flight would
+    let them all through, however much they cost."""
+    def admitted(store, times=5):
+        return [store.admit("a", 1.0, 100) for _ in range(times)]
+    live = ShadowStore(Ledger())
+    assert admitted(live) == [True, False, False, False, False]
+    live.settle("a", [{"model": "check:judge", "cost_usd": 0.0, "error": None, "reason": "request_too_long"}])
+    assert admitted(live) == [True, False, False, False, False]
+    live.settle("a", [{"model": "small-a", "cost_usd": 0.25, "error": None}])
+    assert admitted(live) == [True, True, True, False, False]  # $0.25 reserved for each run in flight
+    path = tmp_path / "ledger.sqlite3"
+    skipped = ShadowStore(Ledger(path))
+    skipped.record(request_id="r1", tenant="a", provider="openai", policy=POLICY, outcome={
+        "accepted": False, "stage": None, "served_by": None, "answer": None, "calls": [], "checks": []},
+        frontier_answer="A", frontier_cost_usd=1.0, skip_reason="tools")
+    skipped._ledger.close()
+    restarted = ShadowStore(Ledger(path))
+    assert restarted._budget("a")["largest"] is None
+    assert admitted(restarted) == [True, False, False, False, False]
+
+
 def test_shadow_sampling_needs_a_price_for_every_model_the_cap_has_to_count():
     """The cap counts known costs. A stage model or a judge with no price would make
     every shadow call free in its eyes, so sampling is refused until prices are set."""
@@ -481,8 +504,10 @@ def test_too_many_answers_that_differ_from_the_frontier_cannot_confirm_the_certi
     report = store.report("a", epsilon=0.02)
     assert report["accepted_differing_from_frontier"] == 12 and report["accepted_differing_from_frontier_share"] == 0.4
     assert report["drift_check"] == "warning" and report["drift_warning"].startswith(
-        "Cannot confirm the certification on this traffic: 12 of 30 accepted cheaper answers (40.00%) differ from "
-        "the frontier model's answer, more than the policy's quality limit of 2.00%.")
+        "Cannot confirm the certification on this traffic: 12 of 30 accepted cheaper answers differ from the "
+        "frontier model's answer, 30.00% of the 40 shadowed requests whose answer was compared with the frontier's "
+        "or sent to the frontier, more than the policy's quality limit of 2.00%.")
+    assert (report["drift_requests"], report["drift_share"]) == (40, 0.3)
     assert store.report("a")["drift_warning"] is None and store.report("a")["drift_check"].startswith("not checked:")
     assert store.report("a", epsilon=0.5)["drift_check"].startswith("within the limit: 12 of 30")
     few = ShadowStore(Ledger())
@@ -491,6 +516,27 @@ def test_too_many_answers_that_differ_from_the_frontier_cannot_confirm_the_certi
     assert few.report("a", epsilon=0.02)["drift_check"] == ("not checked yet: 29 accepted answers compared with the "
                                                             "frontier's, 30 needed")
     assert few.report("a", epsilon=0.02, min_compared=29)["drift_check"] == "warning"
+
+
+def test_differing_answers_are_counted_over_all_the_traffic_the_limit_is_about():
+    """Epsilon bounds the loss over all tasks, and a request sent to the frontier loses
+    nothing. 4 differing answers among 50 accepted of 100 shadowed requests are at most
+    4% of the traffic, within a 5% limit, though they are 8% of the accepted answers."""
+    store = ShadowStore(Ledger())
+    shadow_rows(store, matching=46, differing=4, not_accepted=50)
+    report = store.report("a", epsilon=0.05)
+    assert report["accepted_differing_from_frontier_share"] == 0.08 and report["drift_share"] == 0.04
+    assert report["drift_warning"] is None and report["drift_check"] == (
+        "within the limit: 4 of 50 accepted answers differ from the frontier's, 4.00% of the 100 shadowed requests "
+        "whose answer was compared with the frontier's or sent to the frontier, at most the policy's quality limit "
+        "of 5.00%")
+    assert store.report("a", epsilon=0.03)["drift_check"] == "warning"
+    # Accepted answers that were not compared (a code check) cannot be told either way: left out.
+    for index in range(20):
+        store.record(request_id=f"code{index}", tenant="a", provider="openai", policy=POLICY, frontier_answer="A",
+                     frontier_cost_usd=1.0, outcome={"accepted": True, "comparable": False, "stage": 0,
+                                                     "served_by": "small-a", "answer": "x", "calls": []})
+    assert store.report("a", epsilon=0.05)["drift_requests"] == 100
 
 
 def test_the_shadow_endpoint_checks_differing_answers_against_the_policys_limit():

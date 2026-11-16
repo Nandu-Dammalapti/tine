@@ -26,10 +26,10 @@ What the report can and cannot say:
   has stopped; a streamed request is never shadowed. Each of these is counted per
   tenant, and the report gives the share of sampled requests that were shadowed, so
   the projection says what it left out.
-- When too many accepted cheaper answers differ from the frontier's answer (more
-  than the policy's quality limit, on at least ``DRIFT_MIN_COMPARED`` compared
-  answers), the report carries a warning: such traffic cannot confirm the
-  certification. A different answer is not always a wrong one, so this is a reason
+- When too many accepted cheaper answers differ from the frontier's answer (as a
+  share of the shadowed requests, more than the policy's quality limit, on at least
+  ``DRIFT_MIN_COMPARED`` compared answers), the report carries a warning: such
+  traffic cannot confirm the certification. A different answer is not always a wrong one, so this is a reason
   to grade a sample, not a measured loss.
 - A stage with a named check (tests, a judge) is shadowed only when the proxy has
   been given a way to run that check (``tine.runtime_checks``). For such stages the
@@ -328,7 +328,7 @@ class ShadowStore:
                 "unknown": sum(entry["cost_usd"] is None for run in runs for entry in run),
                 "calls": sum(len(run) for run in runs),
                 "why": Counter(_why_unknown(entry) for run in runs for entry in run if entry["cost_usd"] is None),
-                "largest": max((math.fsum(_known_part(entry) for entry in run) for run in runs), default=None),
+                "largest": _largest(math.fsum(_known_part(entry) for entry in run) for run in runs),
                 "running": 0}
         return self._budgets[tenant]
 
@@ -360,7 +360,9 @@ class ShadowStore:
 
         A run's cost is known only when it ends, so a run in flight is held to cost
         what the tenant's most expensive run so far did. Until one run has finished
-        there is nothing to go by and one run at a time is let through. The run that
+        there is nothing to go by and one run at a time is let through. A run with no
+        known cost (no model call, or none whose cost is known) is nothing to go by
+        either: a zero would let every run in flight through. The run that
         crosses the cap still completes, so spend can pass the cap by about one run,
         and by more only if runs in flight cost more than any run before them.
         Every admitted run must be followed by ``settle``.
@@ -385,8 +387,7 @@ class ShadowStore:
         budget["unknown"] += sum(entry["cost_usd"] is None for entry in entries)
         budget["calls"] += len(entries)
         budget["why"].update(_why_unknown(entry) for entry in entries if entry["cost_usd"] is None)
-        if entries:
-            budget["largest"] = max(budget["largest"] or 0.0, cost)
+        budget["largest"] = _largest([cost] if budget["largest"] is None else [budget["largest"], cost])
 
     def report(self, tenant: str, epsilon: float | None = None,
                min_compared: int = DRIFT_MIN_COMPARED) -> dict[str, Any]:
@@ -435,9 +436,17 @@ class ShadowStore:
             "check_rejection_reasons": dict(sorted(Counter(
                 entry["reason"] for entry in calls if isinstance(entry.get("reason"), str)).items())),
             **coverage(len(rows), self.counts(tenant)),
-            **drift(len(compared), len(compared) - matching, epsilon, min_compared),
+            # Requests the policy sends to the frontier lose nothing against it; accepted
+            # answers that were not compared cannot be told either way and are left out.
+            **drift(len(compared), len(compared) - matching, epsilon, min_compared,
+                    requests=len(rows) - (len(accepted) - len(compared))),
             "scope": SHADOW_SCOPE,
         }
+
+
+def _largest(costs) -> float | None:
+    """The largest known cost of a shadow run, from runs that cost something, or None."""
+    return max((cost for cost in costs if cost > 0), default=None)
 
 
 def _why_unknown(entry: dict) -> str:
@@ -474,21 +483,32 @@ def coverage(shadowed: int, counts: dict[str, int] | None) -> dict[str, Any]:
             "shadow_coverage": shadowed / sampled if sampled else None}
 
 
-def drift(compared: int, differing: int, epsilon: float | None, min_compared: int = DRIFT_MIN_COMPARED) -> dict:
+def drift(compared: int, differing: int, epsilon: float | None, min_compared: int = DRIFT_MIN_COMPARED,
+          *, requests: int | None = None) -> dict:
     """Whether so many accepted answers differ from the frontier's that this traffic
     cannot confirm the policy's certification.
 
-    The policy is certified to lose at most ``epsilon`` of the tasks against the
+    The policy is certified to lose at most ``epsilon`` of all tasks against the
     frontier. An accepted answer equal to the frontier's loses nothing against it,
-    so a differing share at or below ``epsilon`` is consistent with the
-    certification, and one above it cannot confirm it. Cheaper models that agree on
-    wrong answers push this share up while they push the projected saving up too. A
-    different answer is not always a wrong one (the frontier can be the one that is
-    wrong), so the warning asks for grading; it is not a measured loss.
+    and neither does a request the policy sends to the frontier. So the differing
+    answers are counted as a share of ``requests``: the shadowed requests whose
+    answer was compared with the frontier's or sent to the frontier (``compared``
+    when not given). A share at or below ``epsilon`` is consistent with the
+    certification, and one above it cannot confirm it. The share among accepted
+    answers alone is larger by about one over the acceptance rate, and is reported
+    beside it, not checked. Cheaper models that agree on wrong answers push the share
+    up while they push the projected saving up too. A different answer is not always
+    a wrong one (the frontier can be the one that is wrong), so the warning asks for
+    grading; it is not a measured loss.
     """
-    share = differing / compared if compared else None
-    result = {"accepted_differing_from_frontier": differing, "accepted_differing_from_frontier_share": share,
+    requests = compared if requests is None else requests
+    share = differing / requests if requests else None
+    result = {"accepted_differing_from_frontier": differing,
+              "accepted_differing_from_frontier_share": differing / compared if compared else None,
+              "drift_requests": requests, "drift_share": share,
               "drift_epsilon": epsilon, "drift_min_compared": min_compared, "drift_warning": None}
+    counted = (f"{share:.2%} of the {requests:,} shadowed requests whose answer was compared with the frontier's "
+               "or sent to the frontier") if share is not None else None
     if epsilon is None:
         result["drift_check"] = "not checked: the policy's quality limit was not given"
     elif compared < min_compared:
@@ -498,10 +518,10 @@ def drift(compared: int, differing: int, epsilon: float | None, min_compared: in
         result["drift_check"] = "warning"
         result["drift_warning"] = (
             f"Cannot confirm the certification on this traffic: {differing:,} of {compared:,} accepted cheaper "
-            f"answers ({share:.2%}) differ from the frontier model's answer, more than the policy's quality limit "
+            f"answers differ from the frontier model's answer, {counted}, more than the policy's quality limit "
             f"of {epsilon:.2%}. A different answer is not always a wrong one; grade a sample of these requests "
             "before relying on the policy or its projected saving.")
     else:
-        result["drift_check"] = (f"within the limit: {differing:,} of {compared:,} accepted answers ({share:.2%}) "
-                                 f"differ from the frontier's, at most the policy's quality limit of {epsilon:.2%}")
+        result["drift_check"] = (f"within the limit: {differing:,} of {compared:,} accepted answers differ from the "
+                                 f"frontier's, {counted}, at most the policy's quality limit of {epsilon:.2%}")
     return result
