@@ -224,3 +224,22 @@ def test_stages_stop_at_the_deadline_and_keep_what_was_already_spent():
     outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": slow_check}, deadline_seconds=0.1))
     assert outcome["checks"] == [{"check": "judge", "model": "a", "passed": False, "cost_usd": None,
                                   "error": "DeadlineExceeded"}]
+
+
+def test_freeze_policy_measured_shortlist_skips_a_cheap_pair_that_agrees_on_wrong_answers():
+    """Two candidates: ``c+d`` is cheaper and its check passes everything, ``a+b``
+    agrees less often but is always right when it does. With one candidate slot the
+    default rule keeps ``c+d``, which cannot certify; the measured rule keeps ``a+b``."""
+    frame, checks = recorded()
+    rng = np.random.default_rng(1)
+    cheap = frame[frame.model == "frontier"].assign(model="c+d", cost_usd=0.5)
+    cheap["success"] = rng.random(len(cheap)) < 0.85
+    frame = pd.concat([frame, cheap], ignore_index=True)
+    checks = pd.concat([checks, cheap[["task_id", "model"]].assign(passed=True)], ignore_index=True)
+    default = freeze_policy(frame, "frontier", checks, epsilon=0.02, top_k=1)
+    measured = freeze_policy(frame, "frontier", checks, epsilon=0.02, top_k=1, shortlist="measured")
+    assert default["stages"] == [] and not default["guarantee"]["certified"]
+    assert measured["stages"] == [{"models": ["a", "b"], "check": "agreement"}]
+    assert measured["guarantee"]["certified"] and measured["guarantee"]["bound"] <= 0.02
+    # With room for both candidates the default rule finds the pair too.
+    assert freeze_policy(frame, "frontier", checks, epsilon=0.02)["stages"] == measured["stages"]

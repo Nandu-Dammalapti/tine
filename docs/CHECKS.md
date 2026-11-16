@@ -134,3 +134,16 @@ wrong` keeps such data and counts the group as wrong on those tasks; the count i
 it for free-form answers extracted from responses, and say so with the result. `--answers` reads
 extracted answers from a CSV in place of a benchmark folder, and `--include-singles` also offers
 each cheaper model alone with no check, the alternative an agreement check has to beat.
+
+### Which candidates chains are built from
+
+`tine cascade` and `tine freeze-policy` build chains from eight shortlisted candidates.
+The default (`--shortlist savings`) ranks each cheaper candidate by what it would save
+tried alone if its check caught every wrong answer, which ignores how often a measured
+check passes a wrong answer. `--shortlist measured` ranks on the choose part only, with
+the measured check results, once per epsilon: first candidates that save something
+with a single-stage degradation rate at most epsilon (most savings first), then the
+other saving candidates (lowest degradation first), then the rest. Certify and test
+rows never reach the shortlist. It is opt-in: on the published experiments it raised
+certified savings where there are hundreds of agreement groups and lowered a few
+other cells slightly (`results/2026-11-17-measured-shortlist`).

@@ -1,0 +1,11 @@
+experiment,data,kind,split,published_file,cells_compared,precision,max_abs_difference
+2026-11-11-agreement-check,MMLU-Pro test_3000,pairs,40/30/30,2026-11-11-agreement-check/agreement-pairs-mmlupro-summary.csv,40,full,0.0
+2026-11-11-agreement-check,MMLU-Pro test_3000,triples,40/30/30,2026-11-11-agreement-check/agreement-triples-mmlupro-summary.csv,30,full,0.0
+2026-11-14-xroutebench,xRouteBench multiple choice,pairs,40/30/30,2026-11-14-xroutebench/agreement-pairs-multiple-choice-summary.csv,30,full,0.0
+2026-11-14-xroutebench,xRouteBench multiple choice,triples,40/30/30,2026-11-14-xroutebench/agreement-triples-multiple-choice-summary.csv,30,full,0.0
+2026-11-14-api-judge,"SWE-bench 274, haiku judge",code chain,40/30/30,2026-11-14-api-judge/cascade-judge-variants.csv,30,3 decimals,0.0
+2026-11-14-api-judge,"SWE-bench 274, haiku judge",code chain,30/50/20,2026-11-14-api-judge/cascade-judge-variants.csv,30,3 decimals,0.0
+2026-11-14-api-judge,"SWE-bench 274, sonnet judge",code chain,40/30/30,2026-11-14-api-judge/cascade-judge-variants.csv,30,3 decimals,0.0
+2026-11-14-api-judge,"SWE-bench 274, sonnet judge",code chain,30/50/20,2026-11-14-api-judge/cascade-judge-variants.csv,30,3 decimals,0.0
+2026-11-16-agreement-more-datasets,"mmlupro, arcc, pool-wide; model rule cheapest",all kinds incl. every-group,40/30/30,2026-11-16-agreement-more-datasets/cheapest-certified.csv,180,4 decimals,0.0
+2026-11-16-agreement-more-datasets,"mmlupro, arcc, pool-wide; model rule all-cheaper",all kinds incl. every-group,40/30/30,2026-11-16-agreement-more-datasets/all-cheaper-certified.csv,180,4 decimals,0.0
