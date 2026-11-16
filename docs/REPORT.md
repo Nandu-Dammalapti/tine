@@ -43,7 +43,7 @@ python scripts/savings_report.py --report-json saved.json --tenant TENANT --note
 
 ## Limits
 
-- Built and tested with stand-in data and a replay of benchmark answers only. It has never been made from real traffic or seen by a customer, and it has never been viewed in a browser: the sandbox this was built in blocked a headless browser. Contrast was checked by computing it (every text colour passes WCAG AA in both themes); layout at phone width was not checked by eye.
+- Built and tested with stand-in data and a replay of benchmark answers only. It has never been made from real traffic or seen by a customer. On 2026-11-16 a team member opened the two example pages (`artifacts/demo/savings-report-replay.html`, `savings-report-live.html`) in a desktop browser and confirmed they render correctly. Contrast was checked by computing it (every text colour passes WCAG AA in both themes); layout at phone width and in mail clients has not been checked.
 - Outcomes and baseline costs come from the caller; the page does not verify them.
 - The ledger report does not say which requests escalated. The page infers the escalation story from counts: when estimated baselines exist, routing is certain; otherwise the explanation is worded "if the proxy routes through a policy".
 - An estimated baseline is the returned answer's token counts at the frontier's prices; a frontier answer could have been longer or shorter. The ledger report gives no estimated baseline total, so the estimated saving has no percentage.

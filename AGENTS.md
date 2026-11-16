@@ -222,7 +222,7 @@ For each tenant and task type, a frozen policy: cheaper models in order, each be
 | Frozen policies and a runner with routing cost | `tine/policy.py`, `tine freeze-policy`, `docs/POLICY.md` | Built and tested |
 | Proxy with tenant auth, ledger, verified cache, net-of-routing savings | `tine/proxy.py`, `tine/ledger.py`, `docs/PROXY.md` | Development quality; SQLite |
 | Shadow mode, live routing through a policy, named checks (tests behind a webhook, a judge call) | `tine/shadow.py`, `tine/runtime_checks.py`, `tine/proxy.py`, `scripts/shadow_replay.py` | Built and tested with stand-in providers; a replay of recorded answers reproduces the offline estimate. Never run on real traffic |
-| Savings report page (one self-contained HTML file from the ledger and shadow reports) | `tine/report_page.py`, `scripts/savings_report.py`, `docs/REPORT.md` | Built and tested with stand-in data; never viewed rendered, never seen by a customer or made from real traffic |
+| Savings report page (one self-contained HTML file from the ledger and shadow reports) | `tine/report_page.py`, `scripts/savings_report.py`, `docs/REPORT.md` | Built and tested with stand-in data; example pages checked in a desktop browser (2026-11-16); not checked on a phone or in mail clients; never seen by a customer or made from real traffic |
 | Container packaging | `Dockerfile`, `docker-compose.yml`, `deploy/`, `docs/DEPLOY.md` | Written and checked by tests as text; the image has never been built or run |
 | Learning loop: certifying a tenant's policy from its own traffic | `docs/LEARNING_LOOP.md` | A design. Not built |
 | Evidence brief for outside readers | `docs/EVIDENCE.md` | Written; every number carries its results file |
