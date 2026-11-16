@@ -511,6 +511,10 @@ The judge step and what it reads:
   and keep the user turn to the issue or task, at most 12,000 characters. That is the shape the judge
   was measured on: it read the issue and the patch. In the simulated coding pilot, 252 of 274 prompts
   had repository context in the user turn, so the judge never ran on them and the chain saved nothing.
+- The judge is not asked about a reply that calls a tool or was cut off by the token limit. It reads
+  only the reply's text, so it would rule on the words while the proxy served a tool call it never saw.
+  Such a reply is rejected without a judge call, with reason `not_a_finished_reply`, and the request
+  moves on.
 - The text the judge reads is not trusted. The tags that frame it (`<issue>`, `<patch>` and their
   closing forms) are made inert wherever they occur inside it, so text cannot close its frame and
   continue as if it were instructions.

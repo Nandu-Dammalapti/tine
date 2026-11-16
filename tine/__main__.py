@@ -78,7 +78,9 @@ def main(argv=None):
     freeze.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
                         default=[0.4, 0.3, 0.3])
     freeze.add_argument("--single-check", default="none",
-                        help="Name of the check the results measured for a single model, e.g. tests+judge")
+                        help="Name of the check the results measured for a single model, e.g. tests+judge. "
+                             "The default, none, is refused when those results rejected any answer of a "
+                             "model in the chosen chain")
     freeze.add_argument("--tenant", help="Tenant to name in the policy file (default: the tenant in --input)")
     freeze.add_argument("--answer-pattern", metavar="REGEX",
                         help="How the proxy reads a comparable answer from a reply for agreement stages: the last "

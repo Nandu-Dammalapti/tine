@@ -21,6 +21,9 @@ certified experiment does. The file it writes holds:
   when all of them give the same answer (`"check": "agreement"`). A stage with one
   model carries the name given with `--single-check`: `none` (accepted as it is) or
   the name of the check the recorded results measured, such as `tests+judge:sonnet`.
+  `freeze-policy` refuses `none` when the recorded check rejected any answer of a
+  single model in the chosen chain: that chain was certified with a check, and a
+  policy naming none would serve those answers unchecked.
 - `frontier`: the model every request falls back to.
 - `guarantee`: epsilon, delta, the Clopper-Pearson bound and the number of tasks it
   rests on. If nothing certifies, `stages` is empty and every request goes to the
