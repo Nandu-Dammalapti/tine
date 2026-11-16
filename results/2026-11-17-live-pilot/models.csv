@@ -1,0 +1,4 @@
+model,replies,accuracy,reader_match_rate,cut_off_at_max_tokens,mean_cost_usd,total_cost_usd,mean_output_tokens,latency_p50_s,latency_p95_s
+claude-haiku-5-5,1000,0.843,0.994,6,0.000374,0.3735,679.6,2.96,8.02
+claude-opus-5-5,1000,0.922,1.0,0,0.011165,11.1649,490.8,4.56,10.0
+claude-sonnet-5-5,1000,0.884,1.0,0,0.003784,3.7836,310.9,2.75,6.14

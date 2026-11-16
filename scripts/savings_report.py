@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.ledger import Ledger  # noqa: E402
-from tine.policy import validate_policy  # noqa: E402
+from tine.policy import FREEZE_EDITED, freeze_state, validate_policy  # noqa: E402
 from tine.report_page import render  # noqa: E402
 from tine.shadow import ShadowStore  # noqa: E402
 
@@ -58,9 +58,11 @@ def _has_table(ledger: Ledger, name: str) -> bool:
     return row is not None
 
 
-def reports_from_ledger(path: Path, tenant: str) -> tuple[dict, dict | None]:
+def reports_from_ledger(path: Path, tenant: str, epsilon: float | None = None) -> tuple[dict, dict | None]:
     """The tenant's ledger report, and its shadow report if the ledger has shadow rows
-    to read. A ledger that never ran shadow mode has no shadow table and gives None."""
+    to read. A ledger that never ran shadow mode has no shadow table and gives None.
+    ``epsilon``, the described policy's quality limit, is what differing answers are
+    checked against, as ``GET /v1/shadow`` does with the policy it runs."""
     ledger = open_read_only(path)
     try:
         if not _has_table(ledger, "requests"):
@@ -69,7 +71,7 @@ def reports_from_ledger(path: Path, tenant: str) -> tuple[dict, dict | None]:
         if _has_table(ledger, "shadow_runs"):
             store = ShadowStore.__new__(ShadowStore)
             store._ledger = ledger
-            shadow_report = store.report(tenant)
+            shadow_report = store.report(tenant, epsilon=epsilon)
         return ledger.report(tenant), shadow_report
     finally:
         ledger.close()
@@ -112,11 +114,15 @@ def reports_from_json(path: Path) -> tuple[dict | None, dict | None]:
 
 
 def read_policy(path: Path, tenant: str) -> dict:
-    """A valid policy frozen for this tenant. A policy frozen for one tenant must not
-    be shown beside another tenant's figures."""
+    """A valid policy that names this tenant. A policy for one tenant must not be shown
+    beside another tenant's figures. A file edited after freezing still loads; the
+    page says so, and so does a warning here."""
     policy = validate_policy(json.loads(path.read_text(encoding="utf-8")))
     if policy.get("tenant") not in (None, tenant):
-        raise ValueError(f"The policy was frozen for tenant {policy.get('tenant')!r}, not {tenant!r}")
+        raise ValueError(f"The policy file names tenant {policy.get('tenant')!r}, not {tenant!r}")
+    if freeze_state(policy) == FREEZE_EDITED:
+        print(f"savings_report: warning: {path} was {FREEZE_EDITED}: it does not match its freeze digest",
+              file=sys.stderr)
     return policy
 
 
@@ -125,12 +131,16 @@ def build(*, tenant: str, ledger: Path | None = None, report_json: Path | None =
     """The HTML page for one tenant from a ledger file or a saved report."""
     if (ledger is None) == (report_json is None):
         raise ValueError("Give exactly one of a ledger file and a saved report")
-    ledger_report, shadow_report = reports_from_ledger(ledger, tenant) if ledger else reports_from_json(report_json)
+    described = read_policy(policy, tenant) if policy else None
+    guarantee = described.get("guarantee") if described and described["stages"] else None
+    epsilon = guarantee.get("epsilon") if isinstance(guarantee, dict) else None
+    epsilon = epsilon if isinstance(epsilon, (int, float)) and not isinstance(epsilon, bool) else None
+    ledger_report, shadow_report = (reports_from_ledger(ledger, tenant, epsilon) if ledger
+                                    else reports_from_json(report_json))
     for report in (ledger_report, shadow_report):
         if isinstance(report, dict) and report.get("tenant") not in (None, tenant):
             raise ValueError(f"The saved report is for tenant {report.get('tenant')!r}, not {tenant!r}")
     when = generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    described = read_policy(policy, tenant) if policy else None
     notes = [note] if note else []
     if described is not None and ledger:
         mismatch = policy_mismatch_note(ledger, tenant, described)
@@ -147,7 +157,8 @@ def main(argv=None) -> None:
     source.add_argument("--ledger", type=Path, help="ledger SQLite file; opened read-only")
     source.add_argument("--report-json", type=Path,
                         help="JSON with a shadow_report and/or ledger_report object, in place of a ledger")
-    parser.add_argument("--tenant", required=True)
+    parser.add_argument("--tenant", required=True,
+                        help="tenant the page is for; a saved report or policy for another tenant is refused")
     parser.add_argument("--policy", type=Path, help="frozen policy JSON to describe on the page")
     parser.add_argument("--generated-at", help="time to print on the page; default is now, in UTC")
     parser.add_argument("--note", help="one line to show under the headline, for example where the figures came from")

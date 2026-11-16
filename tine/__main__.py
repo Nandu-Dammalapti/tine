@@ -47,6 +47,9 @@ def main(argv=None):
                          help="Task shares when no gate or response check is fitted (default 0.4 0.3 0.3)")
     cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
+    cascade.add_argument("--shortlist", choices=("savings", "measured"), default="savings",
+                         help="How to pick the eight candidates chains are built from: savings with a perfect "
+                              "check (default) or measured check results on the choose part, per epsilon")
     cascade.add_argument("--catch-rates", type=Path,
                          help="CSV (model, catch_rate): also simulate each model's own catch rate")
     cascade.add_argument("--gate", choices=("logistic", "knn", "cluster"),
@@ -70,12 +73,18 @@ def main(argv=None):
     freeze.add_argument("--delta", type=float, default=0.05)
     freeze.add_argument("--seed", type=int, default=42)
     freeze.add_argument("--max-length", type=int, default=3)
+    freeze.add_argument("--shortlist", choices=("savings", "measured"), default="savings",
+                        help="How to pick the eight candidates chains are built from (see tine cascade)")
     freeze.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
                         default=[0.4, 0.3, 0.3])
     freeze.add_argument("--single-check", default="none",
                         help="Name of the check the results measured for a single model, e.g. tests+judge. "
                              "The default, none, is refused when those results rejected any answer of a "
                              "model in the chosen chain")
+    freeze.add_argument("--tenant", help="Tenant to name in the policy file (default: the tenant in --input)")
+    freeze.add_argument("--answer-pattern", metavar="REGEX",
+                        help="How the proxy reads a comparable answer from a reply for agreement stages: the last "
+                             "match, its first group if it has one. Must read what the recorded answers held")
     freeze.add_argument("--output", required=True, type=Path, help="Policy JSON")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
@@ -143,6 +152,7 @@ def main(argv=None):
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),
                                         max_length=args.max_length, gate_method=args.gate,
+                                        shortlist=args.shortlist,
                                         catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
                                         response_check=args.response_check,
                                         fit_fractions=args.fit_fractions,
@@ -157,12 +167,22 @@ def main(argv=None):
         from tine.artifacts import atomic_write_text
         from tine.checks import read_checks
         from tine.data import read_outcomes
-        from tine.policy import dumps, freeze_policy
+        from tine.policy import check_answer_pattern, dumps, freeze_policy
 
+        # Checked before the outcomes are read, so a typo does not cost a long run.
+        if args.tenant is not None and not args.tenant.strip():
+            parser.error("--tenant must be a nonempty name")
+        if args.answer_pattern is not None:
+            try:
+                check_answer_pattern(args.answer_pattern)
+            except ValueError as error:
+                parser.error(f"--answer-pattern: {error}")
         policy = freeze_policy(read_outcomes(args.input), args.frontier, read_checks(args.checks),
                                epsilon=args.epsilon, delta=args.delta, seed=args.seed,
                                max_length=args.max_length, fractions=tuple(args.fractions),
-                               single_check=args.single_check)
+                               shortlist=args.shortlist,
+                               single_check=args.single_check, tenant=args.tenant,
+                               answer_pattern=args.answer_pattern)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
         print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))
@@ -204,9 +224,19 @@ def main(argv=None):
                           "task_types": sorted(frame.task_type.unique()),
                           "model_coverage": frame.groupby("model").size().to_dict()}, indent=2))
     else:
+        import logging
+
         import uvicorn
         from tine.proxy import create_app
 
+        # The proxy logs each loaded policy at startup, and warnings about them. Only
+        # Tine's own loggers: httpx would log every upstream request at this level.
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        tine_log = logging.getLogger("tine")
+        tine_log.addHandler(handler)
+        tine_log.setLevel(logging.INFO)
+        tine_log.propagate = False
         uvicorn.run(create_app(), host=args.host, port=args.port)
 
 

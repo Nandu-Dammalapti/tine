@@ -136,18 +136,61 @@ def chain_metrics(chain, outcomes, costs, frontier_index: int, catch: float = 1.
     }
 
 
-def candidate_chains(outcomes, costs, frontier_index: int, max_length: int = 3, top_k: int = 8):
-    """Ordered chains of up to ``max_length`` cheaper models, drawn from the ``top_k``
-    models that save most when tried alone first."""
+SHORTLIST_RULES = ("savings", "measured")
+
+
+def candidate_chains(outcomes, costs, frontier_index: int, max_length: int = 3, top_k: int = 8, *,
+                     shortlist: str = "savings", passes=None, epsilon: float | None = None):
+    """Ordered chains of up to ``max_length`` cheaper models (mean cost below the
+    frontier's), drawn from a shortlist of ``top_k`` of them.
+
+    Pass only the choosing tasks: the shortlist must not see certify or test rows.
+
+    ``shortlist="savings"`` (the default, used by every published result up to
+    2026-11-16) ranks each cheaper model by what it would save tried alone first if
+    its check caught every wrong answer. ``passes`` and ``epsilon`` are ignored.
+
+    ``shortlist="measured"`` ranks with the measured check results ``passes``
+    (boolean, same shape) and needs the run's ``epsilon``, so the shortlist is built
+    once per limit. For each cheaper model, tried alone first behind its measured
+    check, it takes the savings and the degradation rate (``chain_metrics([j], ...,
+    passes=passes)``), then fills the ``top_k`` slots in this order:
+
+    1. models with savings > 0 and degradation rate <= ``epsilon``, most savings first;
+    2. other models with savings > 0, lowest degradation rate first (ties: more savings);
+    3. models that save nothing tried alone, most savings first.
+
+    Remaining ties keep column order. The rule was fixed before any result with it
+    was seen (2026-11-17).
+    """
     outcomes, costs, frontier_index = _matrices(outcomes, costs, frontier_index)
     if not len(outcomes):
         raise ValueError("Candidate selection requires nonempty outcomes")
     max_length = _integer(max_length, "max_length", minimum=1)
     top_k = _integer(top_k, "top_k", minimum=1)
+    if shortlist not in SHORTLIST_RULES:
+        raise ValueError(f"Unknown shortlist rule: {shortlist!r}; choose one of {SHORTLIST_RULES}")
     frontier_mean = costs[:, frontier_index].mean()
     cheaper = [j for j in range(costs.shape[1])
                if j != frontier_index and costs[:, j].mean() < frontier_mean]
-    ranked = sorted(cheaper, key=lambda j: -chain_metrics([j], outcomes, costs, frontier_index)["savings"])
+    if shortlist == "savings":
+        ranked = sorted(cheaper, key=lambda j: -chain_metrics([j], outcomes, costs, frontier_index)["savings"])
+    else:
+        if passes is None or epsilon is None:
+            raise ValueError("The measured shortlist needs the measured passes and the run's epsilon")
+        epsilon = _probability(epsilon, "epsilon")
+        alone = {j: chain_metrics([j], outcomes, costs, frontier_index, passes=passes) for j in cheaper}
+
+        def order(j):
+            saved = alone[j]["savings"]
+            saved = -np.inf if saved is None else saved
+            degradation = alone[j]["degradation_rate"]
+            if saved > 0 and degradation <= epsilon:
+                return (0, -saved, 0.0)
+            if saved > 0:
+                return (1, degradation, -saved)
+            return (2, -saved, 0.0)
+        ranked = sorted(cheaper, key=order)
     pool = ranked[:top_k]
     return [list(p) for length in range(1, max_length + 1) for p in permutations(pool, length)]
 
@@ -267,7 +310,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                            gate_thresholds=DEFAULT_GATE_THRESHOLDS,
                            fit_fractions=None, catch_rates: dict | None = None,
                            gate_embeddings=None, response_check: bool = False,
-                           response_thresholds=DEFAULT_RESPONSE_THRESHOLDS) -> dict:
+                           response_thresholds=DEFAULT_RESPONSE_THRESHOLDS,
+                           shortlist: str = "savings") -> dict:
     """For each seed, split tasks into choose / certify / test parts. Pick a chain
     two ways: "uncertified" (lowest cost with degradation <= epsilon on the choose
     part) and "certified" (also passes a Clopper-Pearson bound <= epsilon on the
@@ -294,7 +338,15 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
     (``tine.acceptance``) at one of ``response_thresholds``. It needs known
     input_tokens and output_tokens for every outcome. With ``catch=0`` the response
     check is the only check, so that setting involves no simulated check.
+
+    ``shortlist`` names the rule that picks the ``top_k`` candidates chains are built
+    from (see ``candidate_chains``). The default, ``savings``, builds one shortlist per
+    seed. ``measured`` builds one per seed, check setting and epsilon from that
+    setting's check results on the choose part only; with a gate or response check it
+    uses the setting's check alone.
     """
+    if shortlist not in SHORTLIST_RULES:
+        raise ValueError(f"Unknown shortlist rule: {shortlist!r}; choose one of {SHORTLIST_RULES}")
     if gate_method is not None and gate_method not in METHODS:
         raise ValueError(f"Unknown gate method: {gate_method!r}; choose one of {METHODS}")
     gated = gate_method is not None
@@ -377,7 +429,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                 roc_auc_score(outcomes[held_out, column], response_scores[held_out, column])
                 if 0 < outcomes[held_out, column].sum() < held_out.sum() else np.nan
                 for column in range(len(models))])
-        chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
+        if shortlist == "savings":
+            shared_chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
         settings = [("measured", measured)] if measured is not None else [
             (catch, simulated_passes(outcomes, catch, np.random.default_rng(10_000 + seed)))
             for catch in catches]
@@ -389,6 +442,9 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
                 return (outcomes[mask], costs[mask], passes[mask],
                         None if scores is None else scores[mask])
             for epsilon in epsilons:
+                chains = shared_chains if shortlist == "savings" else candidate_chains(
+                    outcomes[choose], costs[choose], frontier_index, max_length, top_k,
+                    shortlist=shortlist, passes=passes[choose], epsilon=epsilon)
                 chain, bound = certify_chain(chains, rows(choose), rows(certify), frontier_index,
                                              epsilon=epsilon, delta=delta)
                 # method -> (chain, gate tau, response tau, bound)
@@ -445,6 +501,7 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
               "synthetic": synthetic,
               "excluded_tasks": len(excluded), "seeds": len(seeds), "fractions": list(fractions),
               "delta": delta, "check_mode": "measured" if measured is not None else "simulated",
+              "shortlist": shortlist,
               "check_coverage": coverage,
               "gate": ({"method": gate_method, "thresholds": list(gate_thresholds),
                         "features": "supplied_embeddings" if lookup else "train_only_tfidf",
@@ -470,6 +527,8 @@ def run_cascade_experiment(frame, frontier: str, output, *, epsilons=(0.02, 0.01
         f"Frontier: `{frontier}`. Complete tasks: {len(tasks)}. Seeds: {len(seeds)}.",
         f"Each seed splits tasks {fractions} into "
         f"{'train / score-calibration / ' if fitted else ''}choose / certify / test parts.",
+        *(["Shortlist rule `measured`: candidates ranked per epsilon by their measured check results",
+           "on the choose part (see `tine.cascade.candidate_chains`)."] if shortlist == "measured" else []),
         "`uncertified` picks the cheapest chain whose degradation on the choose part is <= epsilon.",
         f"`certified` also requires a one-sided Clopper-Pearson bound <= epsilon (delta={delta})",
         "on the certify part, testing chains in a fixed order and stopping at the first failure.",

@@ -172,8 +172,21 @@ Measured in `results/2026-11-14-api-judge` and `results/2026-11-16-judge-probes`
   any judge, and neither did removing the project's name. Adding the surrounding code
   did not help.
 
-For code, the recommended named check is therefore the customer's tests, then Haiku,
-then Opus, all of which must pass (`docs/PROXY.md`, Named checks):
+For code, the check to try first is therefore the customer's tests, then Haiku, then
+Opus, all of which must pass (`docs/PROXY.md`, Named checks). **It is not certified.**
+Read it as a candidate to measure on your own tasks, not a measured design:
+
+- No chain with this check has been certified. Its 0.46% loss and 23.7% saving are
+  uncertified figures on 150 tasks.
+- The order (Haiku screening, then Opus) was chosen after seeing the single-judge
+  results on the same tasks.
+- Opus's own memory of these public fixes was not measured. The recall probe used
+  Sonnet. The "unrecalled" tasks are the ones Sonnet could not write, and Opus may
+  remember some of them.
+- The judge models are newer than `claude-opus-4.1`, the frontier they were measured
+  against.
+
+The example:
 
 ```json
 {"tests+judge:haiku-opus": [
@@ -184,10 +197,23 @@ then Opus, all of which must pass (`docs/PROXY.md`, Named checks):
 ```
 
 A policy certified with this check must name it, and its chain must have been
-certified with verdicts from the same two models. The order was chosen after seeing
-the single-judge results on the same 150 tasks; confirm it on fresh tasks before
-quoting it as a measured design. With a Haiku or Sonnet judge alone, plan for a 4-5%
-quality limit on code.
+certified with verdicts from the same two models. Confirm it on fresh tasks before
+quoting it. With a Haiku or Sonnet judge alone, plan for a 4-5% quality limit on code.
+
+What the webhook step must do. It runs the customer's own tests on the patch, beside
+their repository, and reports whether they pass. It must not be a grader that knows
+the right answer, such as the benchmark's hidden tests. The stand-in webhook in the
+simulated pilots agreed with the grade on 819 of 819 answers, so its chain lost
+nothing; a webhook that reports only regressions let through 19 wrong patches out of
+99 accepted (1.0 to 1.5% of tasks lost). The judge is there for what the tests do not
+check.
+
+Request shape. The judge reads at most 12,000 characters of the request's user text
+and 20,000 of the answer. Agents should put repository context in `system`, which the
+judge does not read, and keep the user turn to the issue or task. That matches what
+was measured: the judges read the issue and the patch. When the user text is longer,
+the proxy skips a stage whose check has a judge step before calling its cheap models,
+and records the reason `request_too_long` in shadow mode (`docs/PROXY.md`).
 
 `scripts/judge_probes.py` builds the probe cases (anonymized, injected, with code
 context) and compares any two verdict files case by case. `scripts/judge_recall_probe.py`

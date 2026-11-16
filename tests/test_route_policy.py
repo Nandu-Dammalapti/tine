@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -7,10 +8,11 @@ import pytest
 from tine.ledger import Ledger
 from tine.proxy import ProxyConfig, create_app
 from tine.runtime_checks import request_text, validate_checks
+from tine.shadow import TOOLS_SKIP_REASON, WHOLE_REPLY_PATTERN
 
-AGREE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+AGREE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
          "stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}
-CODE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True},
+CODE = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
         "stages": [{"models": ["coder"], "check": "tests+judge"}]}
 PLAIN = {**CODE, "stages": [{"models": ["coder"], "check": "none"}]}
 PRICES = {**{f"openai:{name}": {"input_per_million": rate, "output_per_million": rate}
@@ -22,7 +24,8 @@ CHECKS = {"tests+judge": [{"type": "webhook", "url": "https://ci.example/check"}
 
 def config(**changes):
     values = dict(tenant_keys={"token-a": "a"}, openai_api_key="secret", anthropic_api_key="secret-a",
-                  openai_frontier_model="frontier", prices=PRICES, verified_cache=False)
+                  openai_frontier_model="frontier", prices=PRICES, verified_cache=False,
+                  answer_pattern=WHOLE_REPLY_PATTERN)
     values.update(changes)
     return ProxyConfig(**values)
 
@@ -223,6 +226,67 @@ def test_a_webhook_check_cannot_be_shared_by_two_tenants_or_borrowed_from_anothe
     create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE, checks=judged), ledger=Ledger())
 
 
+@pytest.mark.parametrize("variable", ["TINE_OPENAI_API_KEY", "TINE_ANTHROPIC_API_KEY", "TINE_TENANT_KEYS",
+                                      "tine_tenant_keys", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "anthropic_api_key"])
+def test_a_webhook_cannot_be_sent_the_proxys_own_secrets(variable):
+    """A check names the variable whose value it sends. Naming a provider key or the
+    tenant tokens would send them to whatever URL the check file holds."""
+    leaky = {"t": [{"type": "webhook", "url": "https://ci.example/check", "bearer_env": variable}]}
+    with pytest.raises(ValueError, match="bearer_env .* provider key"):
+        create_app(config(checks=leaky), ledger=Ledger())
+    with pytest.raises(ValueError, match="bearer_env"):
+        create_app(config(tenant_checks={"a": leaky}), ledger=Ledger())
+
+
+def test_a_webhook_token_is_sent_only_over_https():
+    plain = {"t": [{"type": "webhook", "url": "http://ci.example/check", "bearer_env": "CI_TOKEN"}]}
+    for url in ("http://ci.example/check", "http://127.0.0.1:9000/check", "http://localhost/check"):
+        with pytest.raises(ValueError, match="https"):
+            validate_checks({"t": [{**plain["t"][0], "url": url}]})
+    with pytest.raises(ValueError, match="https"):
+        create_app(config(checks=plain), ledger=Ledger())
+    # Without a token a plain http webhook stays allowed, as before.
+    create_app(config(checks={"t": [{"type": "webhook", "url": "http://127.0.0.1:9000/check"}]}), ledger=Ledger())
+    create_app(config(checks={"t": [{"type": "webhook", "url": "https://ci.example/check",
+                                     "bearer_env": "CI_TOKEN"}]}), ledger=Ledger())
+
+
+def test_one_token_variable_cannot_serve_the_webhooks_of_two_tenants():
+    def own(name, variable):
+        return {"tests+judge": [{"type": "webhook", "url": f"https://ci.{name}.example/check", "bearer_env": variable}]}
+    with pytest.raises(ValueError, match="'CI_TOKEN_A' is sent by the webhook checks of several tenants \\(a, b\\)"):
+        create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE,
+                          tenant_checks={"a": own("a", "CI_TOKEN_A"), "b": own("b", "CI_TOKEN_A")}), ledger=Ledger())
+    # The same through a shared check that only tenant a's policy uses.
+    with pytest.raises(ValueError, match="'CI_TOKEN_A' is sent by the webhook checks of several tenants"):
+        create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE, checks=own("shared", "CI_TOKEN_A"),
+                          tenant_checks={"b": own("b", "CI_TOKEN_A")}), ledger=Ledger())
+    # One tenant using its token in two checks, or in its own and a shared check, is fine.
+    two_checks = {**own("a", "CI_TOKEN_A"), "tests": own("a", "CI_TOKEN_A")["tests+judge"]}
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"a": {"openai": CODE}},
+                      tenant_checks={"a": two_checks}), ledger=Ledger())
+    both = {**CODE, "stages": [{"models": ["coder"], "check": "tests"}, {"models": ["coder"], "check": "tests+judge"}]}
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"a": {"openai": both}},
+                      checks={"tests": own("a", "CI_TOKEN_A")["tests+judge"]},
+                      tenant_checks={"a": own("a", "CI_TOKEN_A")}), ledger=Ledger())
+    # A shared check no policy names reaches no tenant's requests.
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"b": {"openai": {**CODE, "tenant": "b"}}},
+                      checks={"unused": own("x", "CI_TOKEN_B")["tests+judge"]},
+                      tenant_checks={"b": own("b", "CI_TOKEN_B")}), ledger=Ledger())
+
+
+def test_a_tenant_check_file_naming_a_tine_variable_is_refused_at_startup(monkeypatch, tmp_path):
+    own = tmp_path / "tenant-checks.json"
+    own.write_text(json.dumps({"a": {"tests+judge": [{"type": "webhook", "url": "https://evil.example/check",
+                                                      "bearer_env": "TINE_TENANT_KEYS"}]}}), encoding="utf-8")
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    monkeypatch.setenv("TINE_TENANT_CHECKS", str(own))
+    for name in ("TINE_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="checks: Check 'tests\\+judge': bearer_env 'TINE_TENANT_KEYS'"):
+        ProxyConfig.from_env().validate()
+
+
 @pytest.mark.parametrize("cost", ["NaN", "Infinity", "-Infinity", "1e999", "1" + "0" * 400, "1e300"])
 @pytest.mark.parametrize("passed", ["true", "false"])
 def test_a_webhook_cost_that_cannot_be_added_up_is_unknown_and_never_fails_the_request(cost, passed):
@@ -315,18 +379,20 @@ def test_an_estimated_baseline_is_labelled_and_kept_out_of_verified_savings():
                 estimated = (await client.get("/v1/savings", headers=headers)).json()
                 await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
                                    json={"success": True, "baseline_cost_usd": 0.25})
-                measured = (await client.get("/v1/savings", headers=headers)).json()
-                return response, ledger.get("a", request_id), estimated, measured
-    response, row, estimated, measured = asyncio.run(scenario())
+                supplied = (await client.get("/v1/savings", headers=headers)).json()
+                return response, ledger.get("a", request_id), estimated, supplied
+    response, row, estimated, supplied = asyncio.run(scenario())
     assert response.headers["x-tine-baseline"] == "estimated"
     # The frontier was never called for this request: its cost here is an estimate.
     assert estimated["comparable_verified_requests"] == 0 and estimated["verified_savings_usd"] is None
     assert estimated["estimated_baseline_requests"] == 1
     assert estimated["estimated_baseline_savings_usd"] == pytest.approx(0.2 - 0.006)
     assert "estimate" in estimated["estimated_baseline_scope"]
-    # A baseline the caller then supplies is a measured one.
-    assert row["baseline_estimated"] == 0 and measured["estimated_baseline_requests"] == 0
-    assert measured["verified_savings_usd"] == pytest.approx(0.25 - 0.006)
+    # A baseline the caller then supplies is the caller's, reported apart from verified savings.
+    assert row["baseline_estimated"] == 0 and row["baseline_source"] == "caller"
+    assert supplied["estimated_baseline_requests"] == 0 and supplied["verified_savings_usd"] is None
+    assert supplied["caller_baseline_requests"] == 1
+    assert supplied["caller_baseline_savings_usd"] == pytest.approx(0.25 - 0.006)
 
 
 def test_no_baseline_header_without_an_estimate():
@@ -370,21 +436,65 @@ def test_a_stalled_stage_gives_way_to_the_frontier_at_the_route_deadline():
 
 def test_the_judge_is_not_asked_about_text_it_would_only_see_part_of():
     """The judge reads at most 12,000 characters of request and 20,000 of answer. Longer
-    text would be cut without a word, so the judge is not asked and the answer is rejected."""
+    text would be cut without a word, so the judge is not asked and the answer is rejected.
+    A request too long is known before the cheap model answers, so its stage is skipped."""
     routed = config(route_policies={"a": {"openai": CODE}}, checks=CHECKS)
     long_request = {"model": "frontier", "messages": [
         {"role": "user", "content": "x" * 12001}, {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "CURRENT-REQUEST: add the billing_id column"}]}
     seen = []
     response, row = ask(routed, world({"coder": "patch", "frontier": "frontier patch"}, seen), body=long_request)
-    assert seen == ["coder", "webhook", "frontier"] and response.json() == chat("frontier patch")
-    assert row["routing_cost_usd"] == pytest.approx(0.02)  # the coder and the tests; no judge call was paid
+    assert seen == ["frontier"] and response.json() == chat("frontier patch")
+    assert response.headers["x-tine-route"] == "frontier"
+    assert row["routing_cost_usd"] == 0.0  # neither the coder nor the tests were paid for
+    # At the limit nothing changes: the coder, the tests and the judge all run.
+    seen = []
+    ask(routed, world({"coder": "patch", "frontier": "frontier patch"}, seen),
+        body={"model": "frontier", "messages": [{"role": "user", "content": "x" * 12000}]})
+    assert seen == ["coder", "webhook", "judge"]
+    # A check with no judge step reads no request text, so its stage still runs.
+    webhook_only = {"tests+judge": [{"type": "webhook", "url": "https://ci.example/check"}]}
+    seen = []
+    ask(config(route_policies={"a": {"openai": CODE}}, checks=webhook_only),
+        world({"coder": "patch", "frontier": "frontier patch"}, seen), body=long_request)
+    assert seen == ["coder", "webhook"]
     seen = []
     ask(routed, world({"coder": "y" * 20001, "frontier": "frontier patch"}, seen))
     assert seen == ["coder", "webhook", "frontier"]
     seen = []
     ask(routed, world({"coder": "y" * 20000, "frontier": "frontier patch"}, seen))
     assert seen == ["coder", "webhook", "judge"]
+
+
+def test_shadow_mode_reports_why_the_judge_was_not_asked():
+    """A request or answer too long for the judge is a rejection with a reason, and the
+    shadow report counts it, so a pilot sees how much traffic the judge could not read."""
+    shadowed = config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0, shadow_max_cost_usd=1.0,
+                      checks=CHECKS)
+
+    def run(answers, texts):
+        seen = []
+
+        async def scenario():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(world(answers, seen))) as upstream:
+                app = create_app(shadowed, ledger=Ledger(), client=upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                    headers = {"authorization": "Bearer token-a"}
+                    for text in texts:
+                        await client.post("/v1/chat/completions", headers=headers, json={
+                            "model": "frontier", "messages": [{"role": "user", "content": text}]})
+                    return (await client.get("/v1/shadow", headers=headers)).json()
+        return seen, asyncio.run(scenario())
+    seen, report = run({"coder": "patch", "frontier": "frontier patch"}, ["x" * 12001, "q"])
+    assert seen == ["frontier", "frontier", "coder", "webhook", "judge"]  # the long request paid no cheap call
+    assert report["shadowed_requests"] == 2 and report["policy_would_accept"] == 1
+    assert report["check_rejection_reasons"] == {"request_too_long": 1}
+    assert report["shadow_spend_usd"] == pytest.approx(0.03)
+    seen, report = run({"coder": "y" * 20001, "frontier": "frontier patch"}, ["q"])
+    assert seen == ["frontier", "coder", "webhook"]
+    assert report["check_rejection_reasons"] == {"response_too_long": 1}
+    _, report = run({"coder": "patch", "frontier": "frontier patch"}, ["q"])
+    assert report["check_rejection_reasons"] == {}
 
 
 def test_the_judge_is_not_asked_about_a_reply_that_calls_a_tool_or_was_cut_off():
@@ -548,6 +658,39 @@ def test_shadow_keeps_the_known_part_of_a_check_and_a_webhook_cost_cannot_switch
     assert report["shadow_spend_usd"] == pytest.approx(0.02)
 
 
+def test_a_failed_check_records_its_step_and_http_status_and_the_stop_reason_names_it():
+    """A CI webhook that answers 503: the check fails closed with an unknown cost, the
+    record says which step failed and how, and a stop says what kept failing."""
+    seen = []
+    healthy = world({"coder": "patch", "frontier": "frontier patch"}, seen)
+
+    def handler(request):
+        if request.url.host == "ci.example":
+            seen.append("webhook")
+            return httpx.Response(503, json={"error": "runner lost"})
+        return healthy(request)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            ledger = Ledger()
+            app = create_app(config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0,
+                                    shadow_max_cost_usd=1.0, checks=CHECKS, shadow_max_unknown_cost_calls=0),
+                             ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                for index in range(2):
+                    await client.post("/v1/chat/completions", headers=headers, json={
+                        "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                report = (await client.get("/v1/shadow", headers=headers)).json()
+                return report, json.loads(ledger._db.execute("SELECT calls_json FROM shadow_runs").fetchone()[0])
+    report, entries = asyncio.run(scenario())
+    assert seen == ["frontier", "coder", "webhook", "frontier"]  # stopped after the first: 1 of 2 is unknown
+    assert entries[1] == {"model": "check:tests+judge", "check": "tests+judge", "passed": False, "cost_usd": None,
+                          "error": "webhook HTTPStatusError", "status": 503, "known_cost_usd": 0.0}
+    assert report["failed_shadow_calls"] == 1 and report["skipped_stopped"] == 1
+    assert report["sampling"].endswith("Most common: check:tests+judge: HTTP 503 (1)")
+
+
 def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     own = tmp_path / "tenant-checks.json"
     own.write_text(json.dumps({"a": tenant_webhook("a")}), encoding="utf-8")
@@ -567,3 +710,169 @@ def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     defaults = ProxyConfig.from_env()
     assert (defaults.tenant_checks, defaults.route_deadline_seconds, defaults.shadow_max_concurrent,
             defaults.shadow_max_unknown_cost_calls) == ({}, None, 8, 20)
+
+
+def test_an_agreement_route_policy_needs_an_answer_reader():
+    """Without one, whole replies are compared: free text almost never agrees, so every
+    request pays for the cheaper models and then the frontier."""
+    with pytest.raises(ValueError, match="no answer reader"):
+        create_app(config(answer_pattern=None, route_policies={"a": {"openai": AGREE}}), ledger=Ledger())
+    for policy, pattern in (({**AGREE, "answer_pattern": r"\(([A-D])\)"}, None), (AGREE, r"\(([A-D])\)"),
+                            (CODE, None)):  # a code check reads no answer
+        create_app(config(answer_pattern=pattern, checks=CHECKS, route_policies={"a": {"openai": policy}}),
+                   ledger=Ledger())
+
+
+def test_each_loaded_policy_is_logged_with_its_tenant_task_type_and_reader(caplog):
+    caplog.set_level(logging.INFO, logger="tine.proxy")
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={
+        "a": {"openai": {**AGREE, "task_type": "ticket-labels", "answer_pattern": r"\(([A-D])\)"}},
+        "b": {"openai": {**CODE, "tenant": "b", "task_type": "coding"}}},
+        tenant_checks={"b": CHECKS}), ledger=Ledger())
+    lines = [record.getMessage() for record in caplog.records]
+    assert any("route policy for tenant 'a' on openai: task_type 'ticket-labels'" in line
+               and "answer reader '\\\\(([A-D])\\\\)' (policy file)" in line for line in lines), lines
+    assert any("tenant 'b'" in line and "task_type 'coding'" in line and "(TINE_ANSWER_PATTERN)" in line
+               and "no digest (frozen before digests)" in line for line in lines), lines
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize("tools", [{"tools": [{"type": "function", "function": {"name": "lookup"}}]},
+                                   {"functions": [{"name": "lookup", "parameters": {}}]}])
+def test_a_request_with_tools_skips_an_agreement_policy_and_says_why(tools):
+    routed = config(route_policies={"a": {"openai": AGREE}})
+    seen = []
+    body = {"model": "frontier", "messages": [{"role": "user", "content": "q"}], **tools}
+    response, row = ask(routed, world({"small-a": "42", "small-b": "42", "frontier": "42"}, seen), body=body)
+    assert seen == ["frontier"]  # no cheaper model was paid for
+    assert response.headers["x-tine-route"] == "frontier" and response.headers["x-tine-route-skipped"] == "tools"
+    assert row["route_skip_reason"] == TOOLS_SKIP_REASON and row["routing_cost_usd"] == 0.0
+    # The policy's stages did not run, so the row is not traced to a stage of it.
+    assert row["policy_sha256"] is row["route_stage"] is None
+    # Empty tool lists define no tools: the request goes through the policy, unmarked.
+    seen = []
+    response, row = ask(routed, world({"small-a": "42", "small-b": "42"}, seen),
+                        body={**body, "tools": [], "functions": []})
+    assert seen == ["small-a", "small-b"] and "x-tine-route-skipped" not in response.headers
+    assert row["route_skip_reason"] is None
+
+
+def test_a_code_policy_still_runs_on_a_request_with_tools():
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": CODE}}, checks=CHECKS),
+                        world({"coder": "patch"}, seen),
+                        body={"model": "frontier", "messages": [{"role": "user", "content": "fix"}],
+                              "tools": [{"type": "function", "function": {"name": "run_tests"}}]})
+    assert seen[0] == "coder" and response.headers["x-tine-route"] == "stage-0" and row["route_skip_reason"] is None
+
+
+def test_a_routed_row_names_the_policy_file_and_the_stage_that_answered(monkeypatch, tmp_path):
+    import hashlib
+    policies = {"a": {"openai": AGREE}}
+    canonical = hashlib.sha256(json.dumps(policies, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    routed = config(route_policies=policies)
+    _, served = ask(routed, world({"small-a": "42", "small-b": "42"}, []))
+    _, escalated = ask(routed, world({"small-a": "41", "small-b": "42", "frontier": "42"}, []))
+    assert (served["policy_sha256"], served["route_stage"]) == (canonical, "0")
+    assert (escalated["policy_sha256"], escalated["route_stage"]) == (canonical, "frontier")
+    # No policy ran: a streamed request, a tenant without one, a policy with no stages.
+    _, streamed = ask(routed, world({"frontier": "42"}, []),
+                      body={"model": "frontier", "stream": True, "messages": [{"role": "user", "content": "q"}]})
+    _, unrouted = ask(config(), world({"frontier": "42"}, []))
+    _, empty = ask(config(route_policies={"a": {"openai": {**AGREE, "stages": []}}}), world({"frontier": "42"}, []))
+    assert all(row["policy_sha256"] is row["route_stage"] is None for row in (streamed, unrouted, empty))
+    # Loaded from the environment, the digest is of the file's bytes as read.
+    path = tmp_path / "route-policies.json"
+    path.write_bytes(b'{"a": {"openai": ' + json.dumps(AGREE).encode() + b'}}\n')
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    monkeypatch.setenv("TINE_ROUTE_POLICIES", str(path))
+    monkeypatch.setenv("TINE_ANSWER_PATTERN", WHOLE_REPLY_PATTERN)  # an agreement policy needs a reader
+    for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES"):
+        monkeypatch.delenv(name, raising=False)
+    loaded = ProxyConfig.from_env()
+    assert loaded.route_policies == policies
+    assert loaded.route_policies_sha256 == hashlib.sha256(path.read_bytes()).hexdigest() != canonical
+    loaded.openai_api_key, loaded.openai_frontier_model, loaded.prices = "secret", "frontier", PRICES
+    _, row = ask(loaded, world({"small-a": "42", "small-b": "42"}, []))
+    assert row["policy_sha256"] == loaded.route_policies_sha256
+    for digest in ("A" * 64, "a" * 63, 1):
+        with pytest.raises(ValueError, match="route_policies_sha256"):
+            create_app(config(route_policies=policies, route_policies_sha256=digest), ledger=Ledger())
+
+
+@pytest.mark.parametrize("variable", ["TINE_ROUTE_POLICIES", "TINE_SHADOW_POLICIES", "TINE_CHECKS",
+                                      "TINE_TENANT_CHECKS"])
+def test_a_file_that_cannot_be_loaded_is_named_with_its_variable(monkeypatch, tmp_path, variable):
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    for name in ("TINE_ROUTE_POLICIES", "TINE_SHADOW_POLICIES", "TINE_CHECKS", "TINE_TENANT_CHECKS"):
+        monkeypatch.delenv(name, raising=False)
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text('{"a": {"openai": ', encoding="utf-8")
+    for path in (corrupt, tmp_path / "missing.json", tmp_path):
+        monkeypatch.setenv(variable, str(path))
+        with pytest.raises(ValueError) as error:
+            ProxyConfig.from_env()
+        assert f"{variable}={path}" in str(error.value)
+
+
+def test_health_says_policy_only_when_a_loaded_policy_has_stages():
+    def health(app_config):
+        async def scenario():
+            app = create_app(app_config, ledger=Ledger())
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                return (await client.get("/health")).json()
+        return asyncio.run(scenario())
+    empty = {**AGREE, "stages": []}
+    assert health(config(route_policies={"a": {"openai": empty}}))["routing"] == "frontier-default"
+    assert health(config(route_policies={"a": {"openai": AGREE}}))["routing"] == "policy"
+    sampling = dict(shadow_sample_rate=1.0, shadow_max_cost_usd=1.0)
+    assert health(config(shadow_policies={"a": {"openai": empty}}, **sampling))["shadow"] == "off"
+    assert health(config(shadow_policies={"a": {"openai": AGREE}}, **sampling))["shadow"] == "sampling"
+
+
+def test_a_caller_cannot_replace_a_measured_baseline_and_every_update_is_kept():
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(world({"frontier": "42"}, []))) as upstream:
+            ledger = Ledger()
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                response = await client.post("/v1/chat/completions", headers=headers, json={
+                    "model": "frontier", "messages": [{"role": "user", "content": "q"}]})
+                request_id = response.headers["x-tine-request-id"]
+                refused = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                             json={"success": True, "baseline_cost_usd": 99.0})
+                accepted = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                              json={"success": True, "routing_cost_usd": 0.0})
+                report = (await client.get("/v1/savings", headers=headers)).json()
+                return refused, accepted, report, ledger.get("a", request_id), ledger.outcome_events("a", request_id)
+    refused, accepted, report, row, events = asyncio.run(scenario())
+    assert refused.status_code == 409 and "measured" in refused.json()["detail"]
+    assert accepted.status_code == 200 and row["baseline_cost_usd"] == pytest.approx(0.2)
+    assert row["baseline_source"] == "proxy_measured" and report["comparable_verified_requests"] == 1
+    assert [event["fields"] for event in events] == [{"success": True, "routing_cost_usd": 0.0}]
+
+
+def test_a_caller_cannot_replace_the_costs_the_proxy_recorded_beside_a_measured_baseline():
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(world({"frontier": "42"}, []))) as upstream:
+            ledger = Ledger()
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                response = await client.post("/v1/chat/completions", headers=headers, json={
+                    "model": "frontier", "messages": [{"role": "user", "content": "q"}]})
+                request_id = response.headers["x-tine-request-id"]
+                filled = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                            json={"success": True, "routing_cost_usd": 0.0})
+                before = (await client.get("/v1/savings", headers=headers)).json()
+                refused = [await client.patch(f"/v1/outcomes/{request_id}", headers=headers, json=body)
+                           for body in ({"success": True, "cost_usd": 0.0, "routing_cost_usd": 0.0},
+                                        {"success": True, "cost_usd": 50.0})]
+                after = (await client.get("/v1/savings", headers=headers)).json()
+                return filled, refused, before, after, ledger.get("a", request_id)
+    filled, refused, before, after, row = asyncio.run(scenario())
+    assert filled.status_code == 200 and before["verified_savings_usd"] == 0.0
+    assert [response.status_code for response in refused] == [409, 409]
+    assert all("recorded" in response.json()["detail"] for response in refused)
+    assert after["verified_savings_usd"] == 0.0 and row["cost_usd"] == pytest.approx(0.2)

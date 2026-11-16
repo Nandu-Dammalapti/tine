@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timezone
 
 import numpy as np
@@ -36,6 +37,11 @@ BUILT_IN_CHECKS = ("agreement", "none")
 MAX_COST_USD = 1_000_000.0
 # What recorded answers hold where a model gave none (``scripts/agreement_pairs.py``).
 NO_ANSWER_WORDS = ("None", "[None]", "null")
+# Where ``freeze_policy`` writes the digest of everything else in the file.
+DIGEST_FIELD = "content_sha256"
+FREEZE_UNCHANGED = "matches the digest written when it was frozen"
+FREEZE_EDITED = "edited after freezing"
+FREEZE_NO_DIGEST = "no digest (frozen before digests)"
 
 
 def known_cost(value) -> float | None:
@@ -64,7 +70,8 @@ def _stage(name: str, single_check: str) -> dict:
 
 def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float = 0.05, seed: int = 42,
                   fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8,
-                  single_check: str = "none") -> dict:
+                  single_check: str = "none", shortlist: str = "savings", tenant: str | None = None,
+                  answer_pattern: str | None = None) -> dict:
     """Choose and certify one chain, and describe it as data.
 
     Tasks are split by ``seed`` into choose / certify / test parts. The chain is
@@ -80,6 +87,19 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     must supply a check of that name that does the same thing, or the guarantee does
     not describe what runs.
 
+    ``shortlist`` is the candidate rule of ``candidate_chains``; ``measured`` ranks
+    candidates by their check results on the choose part at this ``epsilon``.
+
+    ``tenant`` names the tenant the policy is for when it differs from the tenant in
+    the outcomes; the outcomes' tenant is then kept in provenance. ``answer_pattern``
+    is the regular expression the proxy reads a comparable answer with (the last
+    match, its first group if it has one). It must read the same answer the recorded
+    answers behind ``checks`` held, or agreement live is not the agreement measured.
+
+    The digest of the policy's content is written to ``provenance`` last, so a file
+    edited afterwards can be told apart (``freeze_state``). It is not a signature:
+    anyone who edits the file can write a new one.
+
     ``single_check="none"`` means a single model's answer is served as it is. That is
     refused when the chosen chain holds a single model whose recorded check rejected
     at least one answer: the chain was then certified with a check, and a policy that
@@ -88,7 +108,11 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     """
     if not isinstance(single_check, str) or not single_check or single_check == "agreement":
         raise ValueError("single_check must be a check name other than 'agreement'")
-    epsilon = _probability(epsilon, "epsilon")
+    if tenant is not None and (not isinstance(tenant, str) or not tenant.strip()):
+        raise ValueError("tenant must be a nonempty name")
+    if answer_pattern is not None:
+        check_answer_pattern(answer_pattern)
+    epsilon = _probability(epsilon, "epsilon", open_interval=True)
     delta = _probability(delta, "delta", open_interval=True)
     frame, tasks, excluded = complete_tasks(frame, frontier)
     if tasks.tenant.nunique() != 1 or tasks.task_type.nunique() != 1:
@@ -106,7 +130,8 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     def rows(mask):
         return outcomes[mask], costs[mask], passes[mask]
 
-    chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
+    chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k,
+                              shortlist=shortlist, passes=passes[choose], epsilon=epsilon)
     chain, bound = certify_chain(chains, rows(choose), rows(certify), frontier_index, epsilon=epsilon, delta=delta)
     if single_check == "none":
         checked = sorted(models[index] for index in chain
@@ -121,9 +146,12 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     identity = hashlib.sha256()
     for task_id in sorted(tasks.task_id):
         identity.update(str(task_id).encode("utf-8") + b"\n")
-    return {
-        "version": POLICY_VERSION, "tenant": str(tasks.tenant.iloc[0]), "task_type": str(tasks.task_type.iloc[0]),
+    source = str(tasks.tenant.iloc[0])
+    policy = {
+        "version": POLICY_VERSION, "tenant": tenant if tenant is not None else source,
+        "task_type": str(tasks.task_type.iloc[0]),
         "frontier": frontier, "stages": [_stage(models[index], single_check) for index in chain],
+        **({"answer_pattern": answer_pattern} if answer_pattern is not None else {}),
         "guarantee": {
             "epsilon": epsilon, "delta": delta, "certified": bool(chain),
             "statement": ("With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks "
@@ -139,8 +167,47 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
         "provenance": {
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), "seed": seed,
             "fractions": list(fractions), "complete_tasks": len(tasks), "excluded_tasks": len(excluded),
-            "candidates": len(models) - 1, "task_ids_sha256": identity.hexdigest(), "check_coverage": coverage},
+            "candidates": len(models) - 1, "task_ids_sha256": identity.hexdigest(), "check_coverage": coverage,
+            **({"outcomes_tenant": source} if tenant is not None and tenant != source else {})},
     }
+    policy["provenance"][DIGEST_FIELD] = policy_digest(policy)
+    return policy
+
+
+def check_answer_pattern(pattern) -> None:
+    """Refuse an answer pattern the proxy could not use."""
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("answer_pattern must be a nonempty regular expression")
+    try:
+        re.compile(pattern)
+    except re.error:
+        raise ValueError("answer_pattern must be a valid regular expression") from None
+
+
+def policy_digest(policy: dict) -> str:
+    """SHA-256 of the policy's canonical JSON (sorted keys, no spaces), leaving out the
+    digest field itself. Numbers that are not plain JSON are written as floats, as
+    ``dumps`` writes them, so the digest of a policy and of its file agree."""
+    content = dict(policy)
+    if isinstance(content.get("provenance"), dict):
+        content["provenance"] = {key: value for key, value in content["provenance"].items() if key != DIGEST_FIELD}
+    text = json.dumps(content, sort_keys=True, separators=(",", ":"), default=float)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def freeze_state(policy: dict) -> str:
+    """Whether a policy is still what ``freeze_policy`` wrote: ``FREEZE_UNCHANGED``,
+    ``FREEZE_EDITED``, or ``FREEZE_NO_DIGEST`` for a file without a digest (policies
+    frozen before digests were written, and hand-written ones). A matching digest shows
+    only that the file was not edited carelessly; it is not a signature."""
+    provenance = policy.get("provenance") if isinstance(policy, dict) else None
+    if not isinstance(provenance, dict) or DIGEST_FIELD not in provenance:
+        return FREEZE_NO_DIGEST
+    try:
+        digest = policy_digest(policy)
+    except (TypeError, ValueError, RecursionError):  # content no JSON file can hold
+        return FREEZE_EDITED
+    return FREEZE_UNCHANGED if provenance[DIGEST_FIELD] == digest else FREEZE_EDITED
 
 
 def validate_policy(policy: dict) -> dict:
@@ -166,14 +233,36 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("Only an agreement stage may have several models")
         if policy["frontier"] in members:
             raise ValueError("The frontier is the final fallback and cannot be a stage member")
-    if stages and not (isinstance(policy.get("guarantee"), dict) and policy["guarantee"].get("certified") is True):
+    guarantee = policy.get("guarantee")
+    if stages and not (isinstance(guarantee, dict) and guarantee.get("certified") is True):
         raise ValueError("A policy with stages must carry a certified guarantee")
-    if stages:
-        # Checked only when the file states both: a certified chain has a bound within its limit.
-        bound, epsilon = known_cost(policy["guarantee"].get("bound")), known_cost(policy["guarantee"].get("epsilon"))
-        if bound is not None and epsilon is not None and bound > epsilon:
-            raise ValueError("A certified policy's bound cannot be above its epsilon")
+    if isinstance(guarantee, dict):
+        # A limit, confidence or bound written as a string, or out of range, would slip
+        # past the comparison below and still read as certified.
+        for name in ("epsilon", "delta"):
+            if guarantee.get(name) is not None and not _fraction(guarantee[name], open_interval=True):
+                raise ValueError(f"A policy's {name} must be a number strictly between 0 and 1")
+        if guarantee.get("bound") is not None and not _fraction(guarantee["bound"]):
+            raise ValueError("A policy's bound must be a number between 0 and 1")
+        if guarantee.get("certified") is True:
+            missing = [name for name in ("epsilon", "delta", "bound") if guarantee.get(name) is None]
+            if missing:
+                raise ValueError(f"A certified policy must state its {', '.join(missing)}")
+            if guarantee["bound"] > guarantee["epsilon"]:
+                raise ValueError("A certified policy's bound cannot be above its epsilon")
+    if policy.get("answer_pattern") is not None:
+        try:
+            check_answer_pattern(policy["answer_pattern"])
+        except ValueError:
+            raise ValueError("A policy's answer_pattern must be a valid, nonempty regular expression") from None
     return policy
+
+
+def _fraction(value, *, open_interval: bool = False) -> bool:
+    """Whether ``value`` is a number in [0, 1], or in (0, 1) with ``open_interval``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return 0 < value < 1 if open_interval else 0 <= value <= 1
 
 
 def same_answer(answers) -> bool:
@@ -244,7 +333,7 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
             verdict = checks[name](result)
         except Exception as error:  # a broken check must not accept an answer or fail the request
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
-                               "error": type(error).__name__})
+                               **describe_failure(error)})
             return False
         check_runs.append(_check_run(name, model, verdict))
         return check_runs[-1]["passed"]
@@ -271,21 +360,43 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
     return finish(result, policy["frontier"], "frontier")
 
 
+def _status(value) -> dict:
+    """``{"status": code}`` for an HTTP status code, else nothing."""
+    return {"status": value} if type(value) is int and 100 <= value <= 599 else {}
+
+
+def describe_failure(error: Exception) -> dict:
+    """What went wrong, for the record: the kind of error and, when the error carries
+    an HTTP reply (a provider or webhook answered with an error status), its status."""
+    try:
+        status = error.response.status_code
+    except Exception:  # no reply attached, or not an HTTP error at all
+        status = None
+    return {"error": type(error).__name__, **_status(status)}
+
+
 def _failed_call(model: str, error: Exception) -> dict:
     """The record of a call that gave no usable result. A failure that knows what the
     call cost (a paid reply with nothing in it) carries it as ``cost_usd``."""
-    return {"model": model, "cost_usd": known_cost(getattr(error, "cost_usd", None)), "error": type(error).__name__}
+    return {"model": model, "cost_usd": known_cost(getattr(error, "cost_usd", None)), **describe_failure(error)}
 
 
 def _check_run(name: str, model: str, verdict: dict) -> dict:
     """The record of one check. A check of several steps may know only part of its
     cost; it then reports that part as ``known_cost_usd`` and it is kept beside the
-    unknown total, so spending that is known is not lost with the rest."""
+    unknown total, so spending that is known is not lost with the rest. A check that
+    failed closed may say why (``error``, and ``status`` for an HTTP reply). A check
+    that says why it did not pass (a short ``reason`` such as ``request_too_long``)
+    keeps that reason."""
     run = {"check": name, "model": model, "passed": verdict.get("passed") is True,
-           "cost_usd": known_cost(verdict.get("cost_usd")), "error": None}
+           "cost_usd": known_cost(verdict.get("cost_usd")),
+           "error": verdict["error"] if isinstance(verdict.get("error"), str) and verdict["error"] else None,
+           **_status(verdict.get("status"))}
     partial = known_cost(verdict.get("known_cost_usd"))
     if run["cost_usd"] is None and partial is not None:
         run["known_cost_usd"] = partial
+    if not run["passed"] and isinstance(verdict.get("reason"), str) and verdict["reason"]:
+        run["reason"] = verdict["reason"]
     return run
 
 
@@ -306,6 +417,11 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
     nothing is accepted, so a stalled model or check delays the caller by the deadline
     and not by every stage's own timeout in turn. A call or check that was cut off is
     listed with an unknown cost: the provider may still charge for it.
+
+    A named check may carry a ``skip_reason``: why, from the request alone, it cannot
+    pass whatever a model answers (``tine.runtime_checks``). Its stage is then skipped
+    before any of its models is called, and the check is listed as not passed, at no
+    cost, with that reason.
     """
     import asyncio
     import inspect
@@ -343,7 +459,7 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
         except Exception as error:
             checking.remove((name, model))
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
-                               "error": type(error).__name__})
+                               **describe_failure(error)})
             return False
         checking.remove((name, model))
         check_runs.append(_check_run(name, model, verdict))
@@ -351,6 +467,11 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
 
     async def stages():
         for index, stage in enumerate(policy["stages"]):
+            skip = getattr(checks.get(stage["check"]), "skip_reason", None)
+            if skip:
+                check_runs.append(_check_run(stage["check"], stage["models"][0],
+                                             {"passed": False, "cost_usd": 0.0, "reason": skip}))
+                continue
             results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
             if any(result is None for result in results):
                 continue

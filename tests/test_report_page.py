@@ -2,13 +2,15 @@ import html
 import importlib.util
 import json
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from tine.ledger import Ledger
-from tine.report_page import NOT_KNOWN, count, headline, money, percent, render
+from tine.policy import DIGEST_FIELD, FREEZE_EDITED, FREEZE_UNCHANGED, policy_digest
+from tine.report_page import NOT_KNOWN, count, headline, headline_sentences, money, percent, render
 from tine.shadow import SHADOW_SCOPE, ShadowStore
 
 spec = importlib.util.spec_from_file_location(
@@ -34,6 +36,28 @@ def filled_ledger() -> Ledger:
         ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": cost}, success=True,
                       cost_usd=cost, routing_cost_usd=routing, baseline_cost_usd=baseline)
     ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": "pending"}, cost_usd=1.0)
+    return ledger
+
+
+def routed_ledger() -> Ledger:
+    """Live routing through a policy, as the proxy records it with the baseline estimate
+    on: three answers from a cheaper model with an estimated baseline, one more whose
+    routing cost is not known, one with no baseline at all, one request that escalated
+    to the frontier (its baseline measured), one failure and one pending."""
+    ledger = Ledger()
+    for index in range(3):
+        ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": index}, success=True,
+                      cost_usd=0.1, routing_cost_usd=0.05, baseline_cost_usd=1.0, baseline_estimated=True)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": "unpriced"}, success=True,
+                  cost_usd=0.1, routing_cost_usd=None, baseline_cost_usd=1.0, baseline_estimated=True)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": "no baseline"}, success=True,
+                  cost_usd=0.1, routing_cost_usd=0.05)
+    ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": "hard"}, success=True,
+                  cost_usd=1.0, routing_cost_usd=0.15, baseline_cost_usd=1.0)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": "wrong"}, success=False,
+                  cost_usd=0.1, routing_cost_usd=0.0, baseline_cost_usd=1.0, baseline_estimated=True)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": "later"}, cost_usd=0.1,
+                  routing_cost_usd=0.05)
     return ledger
 
 
@@ -170,14 +194,152 @@ def test_a_saving_on_escalated_requests_only_shows_what_it_leaves_out():
     ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": "hard"}, success=True,
                   cost_usd=1.0, routing_cost_usd=0.15, baseline_cost_usd=1.0)
     report = ledger.report("acme")
-    assert headline(report, None) == (
-        "On 1 of 4 recorded requests, those with a confirmed successful outcome and known costs, answers and "
-        "routing together cost $1.15 against a baseline of $1.00: $0.15 more than the baseline, so there is no "
-        "net saving.")
-    text = text_of(render(report, None, tenant="acme", generated_at="now"))
-    assert "Confirmed successful but left out, because a cost or the baseline is not known 3" in text
+    assert headline_sentences(report, None) == [
+        "The measured saving covers only 1 of 4 confirmed successful requests, those whose frontier cost was "
+        "measured.",
+        "On them, answers and routing together cost $1.15 against a baseline of $1.00: $0.15 more than the "
+        "baseline, so there is no net saving.",
+        "If the proxy routes through a policy, the frontier model's cost is measured only for requests that "
+        "escalated to it; the requests cheaper models answered are then the ones left out, and this figure is not "
+        "the policy's saving.",
+        "No estimated or projected figure is available for the requests left out: set the proxy to estimate the "
+        "baseline, or run shadow mode."]
+    page = render(report, None, tenant="acme", generated_at="now")
+    # The title line states the scope, not the loss.
+    assert "<h1>The measured saving covers only 1 of 4 confirmed successful requests" in page
+    assert "$" not in page[page.index("<h1>"):page.index("</h1>")]
+    text = text_of(page)
+    assert "Confirmed successful but in none of these figures, because a cost or the baseline is not known 3" in text
+    assert "The measured saving covers 1 of 4 confirmed successes." in text
     unknown = text_of(render({**report, "verified_successes": None}, None, tenant="acme", generated_at="now"))
     assert "because a cost or the baseline is not known not known" in unknown
+    assert "The measured saving covers only" not in unknown  # nothing is claimed about a count not known
+
+
+def test_a_baseline_the_caller_supplied_is_shown_apart_and_never_promised_in_the_measured_saving():
+    """The ledger counts only proxy-measured baselines as measured. The page must show
+    where a caller's baseline went, not count it as left out, and not tell the reader
+    that supplying one brings a request into the measured saving."""
+    ledger = Ledger()
+    ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": "hard"}, success=True,
+                  cost_usd=1.0, routing_cost_usd=0.1, baseline_cost_usd=1.0)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": 1}, success=True,
+                  cost_usd=0.1, routing_cost_usd=0.1, baseline_cost_usd=0.5, baseline_estimated=True)
+    supplied = ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": 2},
+                             cost_usd=0.1, routing_cost_usd=0.1)
+    ledger.update_outcome("acme", supplied, True, baseline_cost_usd=1.0)
+    report = ledger.report("acme")
+    assert (report["comparable_verified_requests"], report["caller_baseline_requests"]) == (1, 1)
+    sentences = headline_sentences(report, None)
+    assert "Supplied by the caller, not measured: on 1 confirmed successful request whose frontier cost the caller " \
+           "supplied through the outcome endpoint, the result is a saving of $0.80." in sentences
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    for expected in (
+        "Estimated or caller-supplied, not measured Confirmed successful, with the frontier model's cost estimated 1",
+        "Confirmed successful, with the frontier model's cost supplied by the caller 1",
+        "Net saving on those, from the caller's baseline $0.80 (the caller's figure, not measured)",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 0",
+        "the request never counts in the measured saving. A baseline the caller supplies later",
+        "The caller cannot replace a baseline the proxy measured",
+    ):
+        assert expected in text, expected
+    for stale in ("unless a baseline is supplied", "only if a measured baseline was supplied later",
+                  "supply measured baselines", "Outcomes and baseline costs are reported by the caller",
+                  "Without supplied baselines"):
+        assert stale not in text, stale
+    # A report from before baseline sources has no caller count: none are shown apart.
+    old = {key: value for key, value in report.items() if not key.startswith("caller_baseline")}
+    old_text = text_of(render(old, None, tenant="acme", generated_at="now"))
+    assert "supplied by the caller 1" not in old_text and "Estimated, not measured Confirmed" in old_text
+    assert "because a cost or the baseline is not known 1" in old_text
+
+
+def test_live_routing_keeps_estimated_baselines_out_of_the_measured_saving():
+    """With live routing, the measured saving covers only the escalated request. The
+    headline must say so and point to the estimated and projected figures, each
+    labelled as what it is, and the estimated saving must never join the measured one."""
+    ledger = routed_ledger()
+    report = ledger.report("acme")
+    assert (report["comparable_verified_requests"], report["estimated_baseline_requests"]) == (1, 3)
+    shadow = add_shadow_rows(ledger).report("acme")
+    assert headline_sentences(report, shadow) == [
+        "The measured saving covers only 1 of 6 confirmed successful requests, those whose frontier cost was "
+        "measured.",
+        "On them, answers and routing together cost $1.15 against a baseline of $1.00: $0.15 more than the "
+        "baseline, so there is no net saving.",
+        "Under live routing the frontier model's cost is measured only for requests that escalated to it, so this "
+        "figure leaves out the requests cheaper models answered and is not the policy's saving.",
+        "Estimated, not measured: on 3 confirmed successful requests that cheaper models answered, with the "
+        "frontier model's cost estimated from each answer's token counts, the result is an estimated saving of "
+        "$2.55.",
+        "Projected, not measured: on 3 shadowed requests with all costs known, shadow mode puts the policy at a "
+        "projected saving of $2.70 (90.0%)."]
+    page = render(report, shadow, tenant="acme", generated_at="now")
+    title = page[page.index("<h1>"):page.index("</h1>")]
+    assert "$" not in title and "covers only 1 of 6" in title
+    assert page.index("</h1>") < page.index('class="lead"') < page.index("</header>")
+    text = text_of(page)
+    for expected in (
+        "Requests recorded 8", "Confirmed successful 6", "Confirmed failed 1", "Outcome still pending 1",
+        "Requests with a cost that is not known 1 (answer cost missing on 0, routing cost missing on 1)",
+        "Requests the measured saving is computed on 1",
+        "Baseline: the frontier model's measured cost $1.00",
+        "Net saving, measured -$0.15 (-15.0%)",
+        "Estimated, not measured Confirmed successful, with the frontier model's cost estimated 3",
+        "Net saving on those, estimated $2.55 (estimated, not measured)",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 2",
+        "Known answer spend, all recorded requests $1.70",
+        "Known routing spend, all recorded requests $0.40",
+        "Known spend, answers and routing together $2.10",
+        "Known spend per confirmed success not known",
+        "The measured saving covers 1 of 6 confirmed successes.",
+        "On the requests the measured saving covers, routing cost more than the baseline.",
+        report["estimated_baseline_scope"],
+    ):
+        assert expected in text, expected
+    assert "$2.55" not in text[text.index("Measured against the frontier model"):text.index("Estimated, not measured C")]
+
+
+def test_estimated_figure_is_named_when_nothing_is_measured():
+    ledger = Ledger()
+    for index in range(2):
+        ledger.record(tenant="acme", provider="openai", model="small-a", request_body={"q": index}, success=True,
+                      cost_usd=0.1, routing_cost_usd=0.05, baseline_cost_usd=1.0, baseline_estimated=True)
+    report = ledger.report("acme")
+    assert headline_sentences(report, None) == [
+        "Of 2 recorded requests, none is a confirmed success with known costs and a measured frontier cost, so no "
+        "measured saving can be stated yet.",
+        "Estimated, not measured: on 2 confirmed successful requests that cheaper models answered, with the "
+        "frontier model's cost estimated from each answer's token counts, the result is an estimated saving of "
+        "$1.70."]
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    assert "Net saving, measured not known" in text and "Net saving on those, estimated $1.70 (estimated" in text
+    # With a shadow projection the projection leads, and the estimate follows it, labelled.
+    shadow = add_shadow_rows(ledger).report("acme")
+    sentences = headline_sentences(report, shadow)
+    assert sentences[0].startswith("Of 4 shadowed requests") and sentences[1].startswith("Estimated, not measured")
+    # An estimate that costs more is called what it is; one that is not known says so.
+    loss = {**report, "estimated_baseline_savings_usd": -0.2}
+    assert headline(loss, None).endswith(
+        "the result is $0.20 more than the estimated baseline, so there is no estimated saving.")
+    unknown = {**report, "estimated_baseline_savings_usd": None}
+    assert headline(unknown, None).endswith("token counts, the estimated saving is not known.")
+    assert "Net saving on those, estimated not known" in text_of(render(unknown, None, tenant="acme",
+                                                                        generated_at="now"))
+
+
+def test_shadow_sampling_state_is_shown_only_when_the_report_has_it():
+    report = {**add_shadow_rows(Ledger()).report("acme"), "sampling": "stopped: the spending cap is reached"}
+    assert "Shadow sampling when the report was read stopped: the spending cap is reached" in text_of(
+        render(None, report, tenant="acme", generated_at="now"))
+    assert "Shadow sampling when the report was read not known" in text_of(
+        render(None, {**report, "sampling": None}, tenant="acme", generated_at="now"))
+    report.pop("sampling")
+    assert "Shadow sampling" not in render(None, report, tenant="acme", generated_at="now")
+    # Shadow spend with every cost known is shown as it is, without "at least".
+    known = {**report, "unknown_cost_shadow_calls": 0}
+    assert "on calls with a known cost $0.30 Shadow calls and checks whose cost is not known 0" in text_of(
+        render(None, known, tenant="acme", generated_at="now"))
 
 
 def test_headline_calls_a_loss_a_loss():
@@ -186,7 +348,7 @@ def test_headline_calls_a_loss_a_loss():
                   routing_cost_usd=0.9, baseline_cost_usd=1.0)
     sentence = headline(ledger.report("acme"), None)
     assert sentence.endswith("$0.15 more than the baseline, so there is no net saving.")
-    assert "routing cost more than the baseline" in render(ledger.report("acme"), None, tenant="acme", generated_at="now")
+    assert "On these requests, routing cost more than the baseline" in render(ledger.report("acme"), None, tenant="acme", generated_at="now")
     shadow = {"shadowed_requests": 2, "policy_would_accept": 0, "policy_would_accept_share": 0.0,
               "unknown_cost_requests": 0, "cost_known_requests": 2, "frontier_cost_usd": 1.0,
               "projected_policy_cost_usd": 1.2, "projected_savings_usd": -0.2, "projected_savings_fraction": -0.2}
@@ -199,8 +361,8 @@ def test_a_ledger_with_only_pending_requests_states_no_saving():
     report = ledger.report("acme")
     assert headline(report, None).startswith("Of 1 recorded request, none has a confirmed successful outcome")
     page = text_of(render(report, None, tenant="acme", generated_at="now"))
-    assert "Net saving not known" in page and "Until one does, no saving is stated." in page
-    assert "Outcome still pending 1" in page and "Net saving $" not in page
+    assert "Net saving, measured not known" in page and "Until one does, no measured saving is stated." in page
+    assert "Outcome still pending 1" in page and "Net saving, measured $" not in page
 
 
 def test_round_trip_from_a_ledger_with_shadow_rows_to_the_page():
@@ -220,7 +382,9 @@ def test_round_trip_from_a_ledger_with_shadow_rows_to_the_page():
         "Frontier model cost, on requests with known costs $3.00",
         "Projected policy cost, on the same requests $0.30",
         "Projected saving $2.70 (90.0%)",
-        "What shadow mode itself cost, on calls with a known cost $0.30",
+        "What shadow mode itself cost, on calls with a known cost at least $0.30 (1 call or check of unknown "
+        "cost not included)",
+        "Shadow calls and checks whose cost is not known 1",
         "Shadow calls made 4",
         "Shadow calls that failed 1",
         "Requests recorded 3",
@@ -229,10 +393,16 @@ def test_round_trip_from_a_ledger_with_shadow_rows_to_the_page():
         "Requests with a cost that is not known 1 (answer cost missing on 0, routing cost missing on 1)",
         "Verified answer cost $0.75",
         "Routing cost (second opinions, escalated attempts, checks) $0.25",
-        "Baseline: always using the frontier model $2.00",
-        "Net saving $1.00 (50.0%)",
-        "Confirmed successful but left out, because a cost or the baseline is not known 0",
-        "Known spend on all recorded requests $2.00",
+        "Requests the measured saving is computed on 2",
+        "Baseline: the frontier model's measured cost $2.00",
+        "Net saving, measured $1.00 (50.0%)",
+        "Confirmed successful, with the frontier model's cost estimated 0",
+        "Net saving on those, estimated no such requests",
+        "Confirmed successful but in none of these figures, because a cost or the baseline is not known 0",
+        "Known answer spend, all recorded requests $1.75",
+        "Known routing spend, all recorded requests $0.25",
+        "Known spend, answers and routing together $2.00",
+        "Known spend per confirmed success not known",
     ):
         assert expected in text, expected
     # Sections come in the promised order, after the headline.
@@ -260,19 +430,59 @@ def test_policy_is_described_in_plain_words():
     assert "Quality limit not known" in empty
 
 
+def test_the_page_names_the_tenant_as_the_file_does_and_says_how_answers_are_read():
+    text = text_of(render(None, None, tenant="acme", generated_at="now", policy=POLICY))
+    assert "Tenant named in the policy file: acme ." in text and "frozen for: acme" not in text
+    assert "The policy file names no pattern for reading answers" in text
+    read = text_of(render(None, None, tenant="acme", generated_at="now",
+                          policy={**POLICY, "answer_pattern": "Answer: ([A-D])"}))
+    assert "Agreement compares the answer the pattern Answer: ([A-D]) reads from each reply." in read
+    assert "The policy file is not signed." in text
+
+
+def test_a_policy_edited_after_freezing_is_not_shown_as_certified():
+    frozen = {**POLICY, "provenance": {"seed": 42}}
+    frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
+    text = text_of(render(None, None, tenant="acme", generated_at="now", policy=frozen))
+    assert f"Policy file {FREEZE_UNCHANGED}" in text and "Certified at this limit yes" in text
+    relabelled = {**frozen, "tenant": "someone-else"}
+    page = render(None, None, tenant="acme", generated_at="now", policy=relabelled)
+    text = text_of(page)
+    assert "Certified at this limit yes" not in text
+    assert "Certified at this limit not confirmed: the file was edited after freezing" in text
+    assert f"Policy file {FREEZE_EDITED}" in text and '<p class="warn">This policy file was edited' in page
+    # A file from before digests is not called edited.
+    for path in sorted((Path(__file__).parents[1] / "results").glob("*/policy-*.json")):
+        shipped = json.loads(path.read_text(encoding="utf-8"))
+        text = text_of(render(None, None, tenant="benchmark", generated_at="now", policy=shipped))
+        assert "Policy file no digest (frozen before digests)" in text and "Certified at this limit yes" in text
+
+
+def test_requests_sent_to_the_frontier_for_tools_are_counted_on_the_page():
+    ledger = Ledger()
+    store = add_shadow_rows(ledger)
+    shadow = {**store.report("acme"), "sent_to_frontier_for_tools": 2}
+    text = text_of(render(None, shadow, tenant="acme", generated_at="now"))
+    assert "Sent to the frontier model untried, because the request defined tools 2" in text
+    assert "untried" not in text_of(render(None, store.report("acme"), tenant="acme", generated_at="now"))
+
+
 def test_every_caveat_from_the_scope_texts_is_carried():
     ledger = filled_ledger()
     ledger_report, shadow_report = ledger.report("acme"), add_shadow_rows(ledger).report("acme")
     text = text_of(render(ledger_report, shadow_report, tenant="acme", generated_at="now", policy=POLICY))
     for scope in (SHADOW_SCOPE, ledger_report["scope"], ledger_report["cost_scope"], ledger_report["savings_scope"],
-                  POLICY["estimate"]["scope"]):
+                  ledger_report["estimated_baseline_scope"], POLICY["estimate"]["scope"]):
         assert scope in text
     for caveat in ("Equal answers are not correctness.", "They cover only requests whose costs are all known.",
-                   "not a billing amount", "The baseline may be an estimate.", "Shadow mode is not free.",
+                   "not a billing amount", "The measured saving uses measured baselines only.",
+                   "shown on its own row as estimated, not measured",
+                   "Under live routing the measured saving leans to the hardest requests.", "Shadow mode is not free.",
                    "A missing cost or outcome is never counted as zero.", "Only some requests are shadowed.",
                    "The figures describe the shadowed requests, not all traffic.", "rounded down"):
         assert caveat in text
     assert text.index("What this does and does not show") < text.index("Equal answers are not correctness.")
+    assert "The baseline may be an estimate" not in text and "does not say how many baselines" not in text
 
 
 def test_code_stages_are_shown_as_not_compared():
@@ -290,9 +500,14 @@ def test_nulls_and_missing_keys_render_as_not_known_never_zero():
     text = text_of(render(ledger, shadow, tenant="acme", generated_at="now"))
     for line in ("Frontier model cost, on requests with known costs not known", "Projected saving not known",
                  "What shadow mode itself cost, on calls with a known cost not known", "Shadow calls made not known",
-                 "Of those, same answer as the frontier model not known", "Net saving not known",
+                 "Of those, same answer as the frontier model not known", "Net saving, measured not known",
                  "Verified answer cost not known", "Outcome still pending not known",
-                 "Requests with a cost that is not known not known"):
+                 "Requests with a cost that is not known not known",
+                 "Shadow calls and checks whose cost is not known not known",
+                 "Confirmed successful, with the frontier model's cost estimated not known",
+                 "Net saving on those, estimated not known", "Known spend per confirmed success not known",
+                 "Known answer spend, all recorded requests not known",
+                 "This ledger report does not say how many baselines were estimated."):
         assert line in text, line
     assert "$" not in text and " 0 " not in text and not re.search(r"(?<![\d.])0\.0%", text)
     nulled = dict.fromkeys(Ledger().report("acme"), None) | {"requests": 1}
@@ -310,7 +525,9 @@ def test_shadow_spend_is_labelled_as_covering_known_costs_only():
     report = store.report("acme")
     assert report["shadow_spend_usd"] == 0.0 and report["cost_known_requests"] == 0
     text = text_of(render(None, report, tenant="acme", generated_at="now"))
-    assert "What shadow mode itself cost, on calls with a known cost $0.00" in text
+    assert ("What shadow mode itself cost, on calls with a known cost at least $0.00 (1 call or check of unknown "
+            "cost not included)") in text
+    assert "Shadow calls and checks whose cost is not known 1" in text
     assert "It sums only calls whose cost is known, so it is too low, and can read as zero" in text
     assert headline(None, report) == ("Of 1 shadowed request, the policy would have answered 100.0% with cheaper "
                                       "models; their costs are not known, so no saving is projected.")
@@ -335,14 +552,26 @@ def test_note_is_shown_under_the_headline_and_escaped():
 
 def test_hostile_strings_in_every_data_field_are_escaped():
     ledger = filled_ledger()
-    ledger_report, shadow_report = ledger.report("acme"), add_shadow_rows(ledger).report("acme")
+    ledger_report = ledger.report("acme")
+    shadow_report = {**add_shadow_rows(ledger).report("acme"), "sampling": "on"}
     pages = [render(poisoned(ledger_report), poisoned(shadow_report), tenant=HOSTILE, generated_at=HOSTILE,
                     policy=poisoned(POLICY), note=HOSTILE)]
-    # One field at a time, so a field that is only reached when the rest is well formed is covered too.
-    for name, report in (("ledger", ledger_report), ("shadow", shadow_report)):
-        for key in report:
-            reports = {"ledger": ledger_report, "shadow": shadow_report} | {name: {**report, key: HOSTILE}}
-            pages.append(render(reports["ledger"], reports["shadow"], tenant="acme", generated_at="now", policy=POLICY))
+    # One field at a time, so a field that is only reached when the rest is well formed is covered too. The
+    # routed ledger reaches the estimated-baseline and partial-measurement wording.
+    for full in (ledger_report, routed_ledger().report("acme")):
+        assert {"estimated_baseline_requests", "estimated_baseline_savings_usd", "estimated_baseline_scope",
+                "known_cost_per_verified_success_usd"} <= set(full)
+        for name, report in (("ledger", full), ("shadow", shadow_report)):
+            for key in report:
+                reports = {"ledger": full, "shadow": shadow_report} | {name: {**report, key: HOSTILE}}
+                pages.append(render(reports["ledger"], reports["shadow"], tenant="acme", generated_at="now",
+                                    policy=POLICY))
+    assert "unknown_cost_shadow_calls" in shadow_report
+    for key in ("estimated_baseline_scope", "sampling"):
+        page = render(routed_ledger().report("acme") | {key: HOSTILE}, shadow_report | {key: HOSTILE},
+                      tenant="acme", generated_at="now")
+        assert html.escape(HOSTILE) in page
+        pages.append(page)
     for path in (("tenant",), ("task_type",), ("frontier",), ("stages", 0, "models", 0), ("stages", 1, "check"),
                  ("guarantee", "epsilon"), ("guarantee", "delta"), ("guarantee", "bound"),
                  ("guarantee", "certify_tasks"), ("guarantee", "statement"), ("guarantee", "certified"),
@@ -357,7 +586,7 @@ def test_hostile_strings_in_every_data_field_are_escaped():
         assert "<script" not in page.lower() and "<img" not in page.lower() and "onerror=1>" not in page
         assert HOSTILE not in page
     assert html.escape(HOSTILE) in pages[0]
-    assert pages[0].count(html.escape(HOSTILE)) >= 13  # tenant (twice), time, note, scopes, policy names
+    assert pages[0].count(html.escape(HOSTILE)) >= 15  # tenant (twice), time, note, sampling, scopes, policy names
 
 
 def test_page_is_self_contained():
@@ -425,6 +654,40 @@ def test_cli_says_so_when_shadow_rows_were_run_with_another_policy(tmp_path, cap
     assert "Note." not in text_of(cli.build(tenant="nobody", ledger=path))
 
 
+def test_cli_warns_about_an_edited_policy_and_refuses_a_bound_written_as_text(tmp_path, capsys):
+    frozen = {**POLICY, "provenance": {"seed": 42}}
+    frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
+    edited = tmp_path / "edited.json"
+    edited.write_text(json.dumps({**frozen, "estimate": {**POLICY["estimate"], "savings": 0.9}}), encoding="utf-8")
+    saved = tmp_path / "report.json"
+    saved.write_text(json.dumps({"shadow_report": None}), encoding="utf-8")
+    text = text_of(cli.build(tenant="acme", report_json=saved, policy=edited))
+    assert "edited after freezing" in capsys.readouterr().err and "Certified at this limit not confirmed" in text
+    for guarantee in ({"bound": "0.01"}, {"epsilon": 1.5}, {"bound": None}):
+        broken = tmp_path / "broken.json"
+        broken.write_text(json.dumps({**POLICY, "guarantee": {**POLICY["guarantee"], **guarantee}}), encoding="utf-8")
+        with pytest.raises(ValueError):
+            cli.read_policy(broken, "acme")
+
+
+def test_a_ledger_from_before_skip_reasons_still_reports_and_is_upgraded(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    Ledger(path).close()
+    with sqlite3.connect(path) as old:
+        old.execute("CREATE TABLE shadow_runs (request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, provider TEXT NOT "
+                    "NULL, created_at TEXT NOT NULL, policy_sha256 TEXT NOT NULL, accepted INTEGER NOT NULL, stage "
+                    "INTEGER, served_by TEXT, matches_frontier INTEGER, calls_json TEXT NOT NULL, shadow_cost_usd "
+                    "REAL, frontier_cost_usd REAL)")
+        old.execute("INSERT INTO shadow_runs VALUES ('r1','acme','openai','t','d',0,NULL,NULL,NULL,'[]',0.0,1.0)")
+    _, shadow = cli.reports_from_ledger(path, "acme")  # read-only: no column is added
+    assert shadow["shadowed_requests"] == 1 and shadow["sent_to_frontier_for_tools"] == 0
+    ledger = Ledger(path)
+    ShadowStore(ledger)
+    columns = {row["name"] for row in ledger._db.execute("PRAGMA table_info(shadow_runs)")}
+    assert "skip_reason" in columns and ShadowStore(ledger).report("acme")["shadowed_requests"] == 1
+    ledger.close()
+
+
 def test_cli_leaves_out_the_shadow_report_when_the_ledger_has_no_shadow_table(tmp_path):
     path = tmp_path / "ledger.sqlite3"
     Ledger(path).close()
@@ -466,3 +729,83 @@ def test_cli_builds_from_a_saved_report_and_refuses_mismatches(tmp_path, capsys)
     cli.main(["--report-json", str(saved), "--tenant", "acme", "--note", "A replay.", "--output", str(output)])
     text = text_of(output.read_text(encoding="utf-8"))
     assert "their costs are not known, so no saving is projected" in text and "Note. A replay." in text
+
+
+def drifted(ledger: Ledger, matching: int = 18, differing: int = 12) -> ShadowStore:
+    """Accepted answers of which ``differing`` differ from the frontier's: cheap models
+    that agree on wrong answers, which also makes the projected saving look larger."""
+    store = ShadowStore(ledger)
+    accepted = {"accepted": True, "stage": 0, "served_by": "small-a", "answer": "A",
+                "calls": [{"model": "small-a", "cost_usd": 0.1, "error": None}]}
+    for index in range(matching + differing):
+        store.record(request_id=f"d{index}", tenant="acme", provider="openai", policy=POLICY, outcome=accepted,
+                     frontier_answer="A" if index < matching else "B", frontier_cost_usd=1.0)
+    return store
+
+
+def test_a_drift_warning_heads_the_page_above_the_saving():
+    report = drifted(Ledger()).report("acme", epsilon=0.02)
+    sentences = headline_sentences(None, report)
+    assert sentences[0] == report["drift_warning"] and sentences[1].startswith("Of 30 shadowed requests")
+    assert headline(None, report).startswith("Cannot confirm the certification on this traffic: 12 of 30 accepted "
+                                             "cheaper answers differ from the frontier model's answer, 40.00% of "
+                                             "the 30 shadowed requests")
+    page = render(None, report, tenant="acme", generated_at="now", policy=POLICY)
+    # Shown first, set apart above the title line, and not repeated as the title.
+    assert page.index('class="kicker"') < page.index('class="alarm"') < page.index("<h1>")
+    assert "Cannot confirm" not in page[page.index("<h1>"):page.index("</h1>")]
+    text = text_of(page)
+    assert text.count("Cannot confirm the certification on this traffic") == 2  # headline, and the shadow section
+    assert "Warning. Cannot confirm the certification" in text
+    assert "Accepted answers that differ from the frontier model's 12 (40.0% of those compared)" in text
+    assert "Checked against the policy's quality limit warning" in text
+    calm = drifted(Ledger(), matching=30, differing=0).report("acme", epsilon=0.02)
+    page = render(None, calm, tenant="acme", generated_at="now")
+    assert 'class="alarm"' not in page and "Checked against the policy's quality limit within the limit" in text_of(page)
+    # A report with no warning field (older JSON), or no shadowed request, shows none.
+    assert 'class="alarm"' not in render(None, {**report, "drift_warning": None}, tenant="acme", generated_at="now")
+    assert 'class="alarm"' not in render(None, {**report, "shadowed_requests": 0}, tenant="acme", generated_at="now")
+
+
+def test_the_page_shows_what_the_sample_left_out_beside_the_projection():
+    ledger = Ledger()
+    store = add_shadow_rows(ledger)
+    for name, times in (("skipped_busy", 3), ("failed", 1), ("streamed", 2)):
+        for _ in range(times):
+            store.count("acme", name)
+    report = store.report("acme")
+    assert (report["sampled_requests"], report["shadow_coverage"]) == (8, 0.5)
+    sentences = headline_sentences(None, report)
+    assert sentences[1] == ("Shadow mode ran on 4 of 8 sampled requests (50.0%); the rest were skipped (3 while shadow "
+                            "runs were busy and 1 because the shadow run failed), so busy periods count for less "
+                            "than they should. 2 more sampled requests were streamed, and shadow mode does not run "
+                            "streamed requests.")
+    text = text_of(render(None, report, tenant="acme", generated_at="now"))
+    for expected in ("Projected saving $2.70 (90.0%) Sampled requests shadow mode could have run 8 (50.0% shadowed)",
+                     "Skipped because shadow runs were busy 3", "Skipped because shadowing had stopped 0",
+                     "Shadow runs that failed before they were recorded 1",
+                     "Sampled requests that were streamed, never shadowed 2"):
+        assert expected in text, expected
+    # Under live routing the same sentence follows the projection it qualifies.
+    routed = headline_sentences(routed_ledger().report("acme"), report)
+    assert routed[routed.index(next(s for s in routed if s.startswith("Projected, not measured"))) + 1] == sentences[1]
+    # Nothing left out, or a report from before the counts: no sentence, and no rows without counts.
+    full = add_shadow_rows(Ledger()).report("acme")
+    assert len(headline_sentences(None, full)) == 1
+    old = {key: value for key, value in report.items() if key not in (
+        "sampled_requests", "skipped_busy", "skipped_stopped", "failed_shadow_runs", "streamed_not_shadowed",
+        "shadow_coverage")}
+    assert len(headline_sentences(None, old)) == 1
+    assert "Sampled requests" not in text_of(render(None, old, tenant="acme", generated_at="now"))
+
+
+def test_cli_checks_differing_answers_against_the_described_policys_limit(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    drifted(ledger)
+    ledger.close()
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(POLICY), encoding="utf-8")
+    page = cli.build(tenant="acme", ledger=path, policy=policy_path)
+    assert 'class="alarm"' in page and "more than the policy&#x27;s quality limit of 2.00%" in page
+    assert 'class="alarm"' not in cli.build(tenant="acme", ledger=path)  # no policy, no limit to check against

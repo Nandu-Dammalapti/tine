@@ -35,6 +35,7 @@ from tine.data import read_outcomes  # noqa: E402
 from tine.ledger import Ledger  # noqa: E402
 from tine.pipeline import complete_tasks  # noqa: E402
 from tine.proxy import ProxyConfig, create_app  # noqa: E402
+from tine.shadow import WHOLE_REPLY_PATTERN  # noqa: E402
 
 
 def test_part(group_outcomes, frontier: str, seed: int, fractions) -> set[str]:
@@ -64,6 +65,9 @@ async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: 
     config = ProxyConfig(
         tenant_keys={"replay-token": tenant}, openai_api_key="replay", openai_frontier_model=frontier,
         prices={f"openai:{model}": rates for model, rates in prices.items()}, verified_cache=False,
+        # Each stand-in reply is a recorded answer and nothing else, so the whole reply is
+        # the answer, as it was when agreement was measured.
+        answer_pattern=WHOLE_REPLY_PATTERN,
         **({"route_policies": {tenant: {"openai": policy}}} if mode == "route" else
            {"shadow_policies": {tenant: {"openai": policy}}, "shadow_sample_rate": 1.0, "shadow_max_cost_usd": 1e9}))
     ledger = Ledger()
