@@ -11,6 +11,7 @@ import hmac
 import json
 import math
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,8 +23,10 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
+from starlette.background import BackgroundTask
 
 from .ledger import MAX_TOKEN_COUNT, Ledger
+from .shadow import ShadowStore, extract_answer, sampled, shadow_stages, validate_shadow_policy
 
 
 def _finite_number(value: Any) -> bool:
@@ -49,6 +52,11 @@ class ProxyConfig:
     allowed_models: dict[str, list[str]] = field(default_factory=dict)
     prices: dict[str, dict[str, float]] = field(default_factory=dict)
     verified_cache: bool = True
+    # Shadow mode (off unless a policy and a sample rate are set): tenant -> provider -> policy.
+    shadow_policies: dict[str, dict[str, dict]] = field(default_factory=dict)
+    shadow_sample_rate: float = 0.0
+    shadow_max_cost_usd: float | None = None
+    shadow_answer_pattern: str | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -71,6 +79,12 @@ class ProxyConfig:
             allowed_models=json.loads(os.environ.get("TINE_ALLOWED_MODELS", "{}")),
             prices=json.loads(os.environ.get("TINE_MODEL_PRICES", "{}")),
             verified_cache=os.environ.get("TINE_VERIFIED_CACHE", "true").lower() == "true",
+            shadow_policies=(json.loads(open(os.environ["TINE_SHADOW_POLICIES"], encoding="utf-8").read())
+                             if os.environ.get("TINE_SHADOW_POLICIES") else {}),
+            shadow_sample_rate=float(os.environ.get("TINE_SHADOW_SAMPLE_RATE", "0")),
+            shadow_max_cost_usd=(float(os.environ["TINE_SHADOW_MAX_COST_USD"])
+                                 if os.environ.get("TINE_SHADOW_MAX_COST_USD") else None),
+            shadow_answer_pattern=os.environ.get("TINE_SHADOW_ANSWER_PATTERN") or None,
         )
 
     def validate(self) -> None:
@@ -111,6 +125,33 @@ class ProxyConfig:
                 or parsed.fragment
             ):
                 raise ValueError("Provider base URLs must be HTTP(S) URLs without credentials")
+        if (not _finite_number(self.shadow_sample_rate) or isinstance(self.shadow_sample_rate, bool)
+                or not 0 <= self.shadow_sample_rate <= 1):
+            raise ValueError("shadow_sample_rate must be between 0 and 1")
+        if self.shadow_max_cost_usd is not None and (
+                not _finite_number(self.shadow_max_cost_usd) or self.shadow_max_cost_usd < 0):
+            raise ValueError("shadow_max_cost_usd must be a finite nonnegative amount")
+        if self.shadow_answer_pattern is not None:
+            try:
+                re.compile(self.shadow_answer_pattern)
+            except (re.error, TypeError):
+                raise ValueError("shadow_answer_pattern must be a valid regular expression") from None
+        if not isinstance(self.shadow_policies, dict):
+            raise ValueError("shadow_policies must map tenants to provider policies")
+        if self.shadow_sample_rate > 0 and self.shadow_policies and self.shadow_max_cost_usd is None:
+            raise ValueError("Shadow mode spends money: set shadow_max_cost_usd before sampling")
+        for name, by_provider in self.shadow_policies.items():
+            if name not in self.tenant_keys.values() or not isinstance(by_provider, dict):
+                raise ValueError("shadow_policies must map configured tenants to provider policies")
+            for provider, policy in by_provider.items():
+                if provider not in {"openai", "anthropic"}:
+                    raise ValueError("shadow_policies providers must be openai or anthropic")
+                try:
+                    validate_shadow_policy(policy, getattr(self, f"{provider}_frontier_model"))
+                except ValueError as error:
+                    raise ValueError(f"shadow_policies: {error}") from None
+                if policy.get("tenant") not in (None, name):
+                    raise ValueError("shadow_policies: a policy frozen for one tenant cannot be used for another")
         if not isinstance(self.prices, dict):
             raise ValueError("Model prices must map model names to USD rate objects")
         for rates in self.prices.values():
@@ -226,6 +267,8 @@ def create_app(
 
     app = FastAPI(title="Tine development proxy", lifespan=lifespan)
     app.state.ledger = store
+    shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
+    shadow_store = ShadowStore(store) if shadow_on else None
 
     def record_safely(**values) -> bool:
         # Persistence failure must not discard a provider's answer. The response
@@ -246,7 +289,8 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "routing": "frontier-default", "storage": "sqlite-development"}
+        return {"status": "ok", "routing": "frontier-default", "storage": "sqlite-development",
+                "shadow": "sampling" if shadow_on else "off"}
 
     @app.patch("/v1/outcomes/{request_id}")
     async def outcome(request_id: str, update: OutcomeUpdate, identity: str = Depends(tenant)):
@@ -259,6 +303,37 @@ def create_app(
     @app.get("/v1/savings")
     async def savings(identity: str = Depends(tenant)):
         return store.report(identity)
+
+    @app.get("/v1/shadow")
+    async def shadow_report(identity: str = Depends(tenant)):
+        if shadow_store is None:
+            raise HTTPException(status_code=404, detail="Shadow mode is not configured")
+        return shadow_store.report(identity)
+
+    async def run_shadow(*, request_id: str, identity: str, provider: str, policy: dict, body: dict,
+                         url: str, headers: dict, frontier_payload: dict, frontier_cost: float | None) -> None:
+        """Run the policy's cheaper stages for a request that was already answered.
+        Nothing here can reach the caller: every failure is contained."""
+        try:
+            if shadow_store.spend(identity) >= config.shadow_max_cost_usd:
+                return
+
+            async def call(model: str) -> dict:
+                response = await upstream.post(url, json={**body, "model": model}, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+                answer = extract_answer(provider, payload, config.shadow_answer_pattern)
+                if answer is None:
+                    raise ValueError("no comparable answer")
+                return {"answer": answer, "cost_usd": _cost(config, provider, model, _usage(provider, payload))}
+
+            outcome = await shadow_stages(policy, call)
+            shadow_store.record(
+                request_id=request_id, tenant=identity, provider=provider, policy=policy, outcome=outcome,
+                frontier_answer=extract_answer(provider, frontier_payload, config.shadow_answer_pattern),
+                frontier_cost_usd=frontier_cost)
+        except Exception:
+            return
 
     async def forward(request: Request, provider: str, identity: str):
         try:
@@ -416,10 +491,19 @@ def create_app(
             latency_ms=(time.monotonic() - started) * 1000,
         )
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
+        background = None
+        policy = config.shadow_policies.get(identity, {}).get(provider) if shadow_on else None
+        if (policy is not None and policy["stages"] and selected == frontier and not fallback
+                and response.status_code < 400 and isinstance(payload, dict)
+                and sampled(request_id, config.shadow_sample_rate)):
+            # After the response has been sent: the caller never waits for shadow calls.
+            background = BackgroundTask(
+                run_shadow, request_id=request_id, identity=identity, provider=provider, policy=policy,
+                body=dict(body), url=url, headers=dict(headers), frontier_payload=payload, frontier_cost=cost)
         return Response(
             raw, status_code=response.status_code,
             media_type=response.headers.get("content-type", "application/json"),
-            headers=result_headers,
+            headers=result_headers, background=background,
         )
 
     @app.post("/v1/chat/completions")

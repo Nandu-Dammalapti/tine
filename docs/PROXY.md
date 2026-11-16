@@ -42,3 +42,43 @@ Late outcome reversals or newer resolved failures invalidate prior cached succes
 `TINE_ALLOWED_MODELS` can explicitly allow client-requested development alternatives, with a single frontier retry on an upstream failure before a response is emitted. Supply a JSON object of provider names and model-name arrays, for example `{"openai": ["EXACT_MODEL_NAME"]}`. Names match exactly. A string in place of an array, an unknown provider key, or an empty model name causes startup to fail before a ledger is opened. This switch is not a calibrated router. Failure after streaming starts cannot safely be retried without duplicating output. Keep it unset for frontier-only operation.
 
 This is a development implementation: SQLite is not the planned production Postgres backend. Tests use mock upstreams, not paid API calls. Do not deploy it as a production guarantee or host it on Colab. No live provider credentials were requested or validated during this work.
+
+## Shadow mode
+
+Shadow mode shows what a frozen policy ([POLICY.md](POLICY.md)) would have saved on a tenant's real
+traffic, without changing anything the tenant sees. It is off unless configured.
+
+- `TINE_SHADOW_POLICIES`: path to a JSON file mapping tenant to provider to policy, for example
+  `{"acme": {"openai": { ...policy... }}}`. The policy's `frontier` must be that provider's configured
+  frontier model, and a policy frozen for one tenant cannot be given to another.
+- `TINE_SHADOW_SAMPLE_RATE`: the share of eligible requests to shadow, 0 to 1.
+- `TINE_SHADOW_MAX_COST_USD`: required when sampling. Shadow calls stop for a tenant once its recorded
+  shadow spend reaches this amount; the run in progress when the cap is crossed still completes.
+- `TINE_SHADOW_ANSWER_PATTERN`: optional regular expression; the comparable answer of a response is its
+  last match (first group if there is one). Without it, whole response texts are compared.
+
+A request is eligible when it was answered by the frontier model, without streaming, without a cache
+hit and without error. The caller receives the frontier's response first; the policy's cheaper stages
+then run in the background against the same provider with the same request, and one row is recorded:
+whether the policy would have accepted a cheaper answer, whether that answer equals the frontier's, and
+what each call cost. A failure anywhere in a shadow run is contained and changes nothing for the caller.
+
+`GET /v1/shadow` returns the tenant's report: requests shadowed, the share the policy would have
+answered with cheaper models, the share of those whose answer matched the frontier's, the frontier's
+cost against the policy's projected cost (every cheaper call, plus the frontier where nothing was
+accepted), and what shadow mode itself has spent.
+
+Limits to state with any number from it:
+
+- **Shadow calls are real calls on the tenant's provider account.** They cost money and they send the
+  tenant's prompt to the cheaper models on that account. Nothing goes to a third party.
+- **Equal answers are not proof of correctness.** The comparison is meaningful for exact answers (a
+  label, a number, a choice, usually with an answer pattern). Free-form answers rarely match word for
+  word, so such traffic shows low acceptance here. The quality limit comes from the policy's own
+  certification on graded tasks.
+- **Agreement stages only.** A stage whose check needs the tenant's repository or a judge call cannot be
+  shadowed by the proxy yet; such a policy is refused at startup.
+- Projected savings use only requests whose costs are all known, so every stage model needs a price in
+  `TINE_MODEL_PRICES`. Streaming requests are never shadowed.
+- Shadow results store no prompt or response text; the request record already holds the tenant's request
+  and the frontier's response.
