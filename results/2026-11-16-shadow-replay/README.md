@@ -25,6 +25,8 @@ shadow mode, and reads the report back from `GET /v1/shadow`.
 | --- | --- | --- | --- |
 | requests answered by cheaper models | 77.7% (would be) | 77.7% | 77.7% |
 | cost against always using the frontier | 53.5% lower | 53.5% lower | 52.5% lower |
+
+Percentages in this table are rounded to the nearest tenth (53.46%); the savings report page rounds savings down and shows 53.4%.
 | accuracy (from the recorded grades) | 88.9% | 88.9% | 88.9% |
 | frontier accuracy | 87.0% | 87.0% | 87.0% |
 | tasks lost that the frontier solves | 0.99% | 0.99% | 0.99% |
