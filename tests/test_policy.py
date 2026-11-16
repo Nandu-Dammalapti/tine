@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -78,6 +79,18 @@ def test_run_policy_escalates_on_disagreement_and_on_a_failed_cheap_call():
     assert outcome["answer_cost_usd"] == 10.0 and outcome["routing_cost_usd"] is None
     assert outcome["known_routing_cost_usd"] == 1.0
     assert outcome["unknown_cost_calls"] == 2 and outcome["calls"][1]["error"] == "TimeoutError"
+    assert "status" not in outcome["calls"][1]  # no HTTP reply, so no status
+
+
+def test_a_failed_call_records_the_http_status_it_was_refused_with():
+    request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+
+    def call(model):
+        if model == "b":
+            httpx.Response(404, request=request).raise_for_status()
+        return {"answer": "1", "cost_usd": 1.0}
+    outcome = run_policy({**POLICY, "stages": POLICY["stages"][:1]}, call)
+    assert outcome["calls"][1] == {"model": "b", "cost_usd": None, "error": "HTTPStatusError", "status": 404}
 
 
 def test_a_frontier_failure_is_raised_and_missing_answers_never_agree():

@@ -58,9 +58,11 @@ def _has_table(ledger: Ledger, name: str) -> bool:
     return row is not None
 
 
-def reports_from_ledger(path: Path, tenant: str) -> tuple[dict, dict | None]:
+def reports_from_ledger(path: Path, tenant: str, epsilon: float | None = None) -> tuple[dict, dict | None]:
     """The tenant's ledger report, and its shadow report if the ledger has shadow rows
-    to read. A ledger that never ran shadow mode has no shadow table and gives None."""
+    to read. A ledger that never ran shadow mode has no shadow table and gives None.
+    ``epsilon``, the described policy's quality limit, is what differing answers are
+    checked against, as ``GET /v1/shadow`` does with the policy it runs."""
     ledger = open_read_only(path)
     try:
         if not _has_table(ledger, "requests"):
@@ -69,7 +71,7 @@ def reports_from_ledger(path: Path, tenant: str) -> tuple[dict, dict | None]:
         if _has_table(ledger, "shadow_runs"):
             store = ShadowStore.__new__(ShadowStore)
             store._ledger = ledger
-            shadow_report = store.report(tenant)
+            shadow_report = store.report(tenant, epsilon=epsilon)
         return ledger.report(tenant), shadow_report
     finally:
         ledger.close()
@@ -125,12 +127,16 @@ def build(*, tenant: str, ledger: Path | None = None, report_json: Path | None =
     """The HTML page for one tenant from a ledger file or a saved report."""
     if (ledger is None) == (report_json is None):
         raise ValueError("Give exactly one of a ledger file and a saved report")
-    ledger_report, shadow_report = reports_from_ledger(ledger, tenant) if ledger else reports_from_json(report_json)
+    described = read_policy(policy, tenant) if policy else None
+    guarantee = described.get("guarantee") if described and described["stages"] else None
+    epsilon = guarantee.get("epsilon") if isinstance(guarantee, dict) else None
+    epsilon = epsilon if isinstance(epsilon, (int, float)) and not isinstance(epsilon, bool) else None
+    ledger_report, shadow_report = (reports_from_ledger(ledger, tenant, epsilon) if ledger
+                                    else reports_from_json(report_json))
     for report in (ledger_report, shadow_report):
         if isinstance(report, dict) and report.get("tenant") not in (None, tenant):
             raise ValueError(f"The saved report is for tenant {report.get('tenant')!r}, not {tenant!r}")
     when = generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    described = read_policy(policy, tenant) if policy else None
     notes = [note] if note else []
     if described is not None and ledger:
         mismatch = policy_mismatch_note(ledger, tenant, described)

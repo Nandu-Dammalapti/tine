@@ -619,3 +619,82 @@ def test_cli_builds_from_a_saved_report_and_refuses_mismatches(tmp_path, capsys)
     cli.main(["--report-json", str(saved), "--tenant", "acme", "--note", "A replay.", "--output", str(output)])
     text = text_of(output.read_text(encoding="utf-8"))
     assert "their costs are not known, so no saving is projected" in text and "Note. A replay." in text
+
+
+def drifted(ledger: Ledger, matching: int = 18, differing: int = 12) -> ShadowStore:
+    """Accepted answers of which ``differing`` differ from the frontier's: cheap models
+    that agree on wrong answers, which also makes the projected saving look larger."""
+    store = ShadowStore(ledger)
+    accepted = {"accepted": True, "stage": 0, "served_by": "small-a", "answer": "A",
+                "calls": [{"model": "small-a", "cost_usd": 0.1, "error": None}]}
+    for index in range(matching + differing):
+        store.record(request_id=f"d{index}", tenant="acme", provider="openai", policy=POLICY, outcome=accepted,
+                     frontier_answer="A" if index < matching else "B", frontier_cost_usd=1.0)
+    return store
+
+
+def test_a_drift_warning_heads_the_page_above_the_saving():
+    report = drifted(Ledger()).report("acme", epsilon=0.02)
+    sentences = headline_sentences(None, report)
+    assert sentences[0] == report["drift_warning"] and sentences[1].startswith("Of 30 shadowed requests")
+    assert headline(None, report).startswith("Cannot confirm the certification on this traffic: 12 of 30 accepted "
+                                             "cheaper answers (40.00%) differ from the frontier model's answer")
+    page = render(None, report, tenant="acme", generated_at="now", policy=POLICY)
+    # Shown first, set apart above the title line, and not repeated as the title.
+    assert page.index('class="kicker"') < page.index('class="alarm"') < page.index("<h1>")
+    assert "Cannot confirm" not in page[page.index("<h1>"):page.index("</h1>")]
+    text = text_of(page)
+    assert text.count("Cannot confirm the certification on this traffic") == 2  # headline, and the shadow section
+    assert "Warning. Cannot confirm the certification" in text
+    assert "Accepted answers that differ from the frontier model's 12 (40.0% of those compared)" in text
+    assert "Checked against the policy's quality limit warning" in text
+    calm = drifted(Ledger(), matching=30, differing=0).report("acme", epsilon=0.02)
+    page = render(None, calm, tenant="acme", generated_at="now")
+    assert 'class="alarm"' not in page and "Checked against the policy's quality limit within the limit" in text_of(page)
+    # A report with no warning field (older JSON), or no shadowed request, shows none.
+    assert 'class="alarm"' not in render(None, {**report, "drift_warning": None}, tenant="acme", generated_at="now")
+    assert 'class="alarm"' not in render(None, {**report, "shadowed_requests": 0}, tenant="acme", generated_at="now")
+
+
+def test_the_page_shows_what_the_sample_left_out_beside_the_projection():
+    ledger = Ledger()
+    store = add_shadow_rows(ledger)
+    for name, times in (("skipped_busy", 3), ("failed", 1), ("streamed", 2)):
+        for _ in range(times):
+            store.count("acme", name)
+    report = store.report("acme")
+    assert (report["sampled_requests"], report["shadow_coverage"]) == (8, 0.5)
+    sentences = headline_sentences(None, report)
+    assert sentences[1] == ("Shadow mode ran on 4 of 8 sampled requests (50.0%); the rest were skipped (3 while shadow "
+                            "runs were busy and 1 because the shadow run failed), so busy periods count for less "
+                            "than they should. 2 more sampled requests were streamed, and shadow mode does not run "
+                            "streamed requests.")
+    text = text_of(render(None, report, tenant="acme", generated_at="now"))
+    for expected in ("Projected saving $2.70 (90.0%) Sampled requests shadow mode could have run 8 (50.0% shadowed)",
+                     "Skipped because shadow runs were busy 3", "Skipped because shadowing had stopped 0",
+                     "Shadow runs that failed before they were recorded 1",
+                     "Sampled requests that were streamed, never shadowed 2"):
+        assert expected in text, expected
+    # Under live routing the same sentence follows the projection it qualifies.
+    routed = headline_sentences(routed_ledger().report("acme"), report)
+    assert routed[routed.index(next(s for s in routed if s.startswith("Projected, not measured"))) + 1] == sentences[1]
+    # Nothing left out, or a report from before the counts: no sentence, and no rows without counts.
+    full = add_shadow_rows(Ledger()).report("acme")
+    assert len(headline_sentences(None, full)) == 1
+    old = {key: value for key, value in report.items() if key not in (
+        "sampled_requests", "skipped_busy", "skipped_stopped", "failed_shadow_runs", "streamed_not_shadowed",
+        "shadow_coverage")}
+    assert len(headline_sentences(None, old)) == 1
+    assert "Sampled requests" not in text_of(render(None, old, tenant="acme", generated_at="now"))
+
+
+def test_cli_checks_differing_answers_against_the_described_policys_limit(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    drifted(ledger)
+    ledger.close()
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(POLICY), encoding="utf-8")
+    page = cli.build(tenant="acme", ledger=path, policy=policy_path)
+    assert 'class="alarm"' in page and "more than the policy&#x27;s quality limit of 2.00%" in page
+    assert 'class="alarm"' not in cli.build(tenant="acme", ledger=path)  # no policy, no limit to check against
