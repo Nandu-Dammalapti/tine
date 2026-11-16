@@ -1,0 +1,4 @@
+traffic,requests_shadowed,frontier_cost_usd,shadow_cost_usd,saving_vs_frontier,latency_p50_frontier_s,latency_p95_frontier_s,latency_p50_routed_s,latency_p95_routed_s
+multiple choice,297,3.395,1.239,0.478,5.0,10.4,3.6,13.9
+free text,20,1.110,0.344,-0.310,34.7,51.7,49.8,87.1
+both (proxy report),317,4.504,1.583,0.284,,,,

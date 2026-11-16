@@ -10,11 +10,13 @@ commands that regenerate it. This page says what each experiment asked, what it
 found, and how the findings fit together. Update it whenever a results folder is
 added.
 
-All results are offline, on recorded benchmark answers (LLMRouterBench, and
-xRouteBench from 2026-11-14). No model generated an answer that was routed. Models
-were called only to judge or to read: a Claude Code session and open models as judges
-(judge-pilot), pinned Claude models through the paid API ($47.73 in total: api-judge
-$12.69, judge-probes $31.02, judge-prompt $4.02),
+All results but one are offline, on recorded benchmark answers (LLMRouterBench, and
+xRouteBench from 2026-11-14). The exception is the live pilot (2026-11-17), where
+current Claude models answered public benchmark questions through the real proxy
+($23.65), in shadow mode and routed live. Otherwise models were called only to judge
+or to read: a Claude Code session and open models as judges (judge-pilot), pinned
+Claude models through the paid API ($47.73: api-judge $12.69, judge-probes $31.02,
+judge-prompt $4.02; $71.38 in all with the live pilot),
 and frozen encoders for embeddings and hidden states. Only small summary tables are in
 Git; the benchmark archives, per-task outputs, prompts and embeddings are not (see
 "Where the data is").
@@ -67,6 +69,7 @@ Git; the benchmark archives, per-task outputs, prompts and embeddings are not (s
 | 2026-11-16 | [judge-designs](2026-11-16-judge-designs/README.md) | Offline: does a tiered judge, a judge that picks among several cheap patches, or recalibration beat the plain chain? | No. A Haiku-then-Sonnet tier matches Sonnet's catch rate at 43-55% of its cost but judge calls are only 2.5% of frontier spend, so chains barely change. Selecting among patches adds little; its apparent gain comes from reaching more models, which longer chains also do. Recalibration halves calibration error without helping decisions. Reading 60 errors: 21 of 30 false rejects name a real flaw the hidden tests do not check, so the measured false-reject rate overstates the judge's mistakes. |
 | 2026-11-17 | [measured-shortlist](2026-11-17-measured-shortlist/README.md) | Does building chains from candidates ranked by their measured checks, not by savings under a perfect check, certify more? | Mixed. Opt-in `--shortlist measured` raises certified savings where there are hundreds of agreement groups (MMLU-Pro test_1000 wide pool triples at 4%: 15.0% to 30.5%; pool-wide triples: 5.9% to 23.0%) and xRouteBench pairs at 2% (45.2% to 54.3%), lowers 7 of 44 certified cells by 0.2-2.2 points, and changes nothing on code. The default is unchanged and reproduces every published number. |
 | 2026-11-17 | [judge-prompt](2026-11-17-judge-prompt/README.md) | Does a stricter judge prompt, written from the error reading, catch more wrong patches? (Paid: $4.02.) | No. Haiku and Sonnet catch slightly fewer wrong patches with it, within run-to-run noise. Prompt, context and hardening have all failed to move the judge; only a stronger model has. The original prompt stays. |
+| 2026-11-17 | [live-pilot](2026-11-17-live-pilot/README.md) | Does Tine work end to end with real current models, as one customer would run it? (Paid: $23.65; plan written before any call.) | Yes, on exact-answer traffic. Haiku+Sonnet agreement, else Opus 5.5, certified at 4% and 2% on 1,000 MMLU-Pro questions; on 300 new ones in shadow mode it lost 2.0% and would have saved 47.8%; routed live on 200 more it scored 91.5% against Opus's 91.7-92.2% at about 52% lower cost. Every pre-registered check passed. Free text on the same token cost 31% more; `/v1/savings` showed nothing under live routing. |
 
 ## How the findings fit together
 

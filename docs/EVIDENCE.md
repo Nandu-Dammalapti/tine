@@ -91,9 +91,20 @@ None of this has run on real traffic. The code path was tested with stand-ins on
 with recorded SWE-bench data. Not built: nightly retraining per customer, distillation, a
 production datastore, streaming under a policy, and a way to measure the saving under live
 routing (that needs a random share of requests always sent to the frontier). Paid model
-calls so far total $47.73, all for judge measurements: $12.69 in
+calls so far total $71.38: $47.73 for judge measurements ($12.69 in
 `2026-11-14-api-judge/README.md`, $31.02 in `2026-11-16-judge-probes/README.md` and $4.02
-in `2026-11-17-judge-prompt/README.md`.
+in `2026-11-17-judge-prompt/README.md`) and $23.65 for the live pilot below.
+
+**A live pilot with real models** (`2026-11-17-live-pilot/README.md`). Three current
+Claude models answered MMLU-Pro questions, as stand-in exact-answer traffic, through
+the real proxy. A policy (Haiku and Sonnet must agree, else `claude-opus-5-5`) certified
+at 4% and 2% on 1,000 graded questions. On 300 new questions in shadow mode, it lost
+2.0% against Opus and would have saved 47.8%. On 200 more questions routed live, it
+answered 91.5% right, against Opus's 91.7-92.2%, at about 52% lower cost. Free text
+on the same token was never accepted but cost 31% more than Opus alone. Tine's own
+`/v1/savings` reported no saving for the routed run, since that needs a frontier
+holdout. Public benchmark questions, one afternoon, the proxy run in-process: not
+customer evidence.
 
 ## 5. What we do not know yet
 
