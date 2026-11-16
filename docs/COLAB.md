@@ -16,7 +16,7 @@ The notebook keeps `EPSILON = 0.02`, `DELTA = 0.05`, and `SEED = 42`. Thresholds
 
 ## Step 2: pool the coding datasets
 
-Run [`notebooks/tine_colab_step2_coding.ipynb`](../notebooks/tine_colab_step2_coding.ipynb) on a CPU runtime after Step 1. It imports the graded HumanEval, MBPP and SWE-bench Verified results from the archive already on Drive. It pools them with LiveCodeBench into one `coding` group with `tine combine-outcomes`, which keeps only models present in every dataset, drops models whose recorded cost is zero on every row, and excludes `openrouter` (a router, not a model). It then evaluates against `gpt-5` and `claude-sonnet-4`. The pooled guarantee covers tasks drawn like that mix, not each dataset on its own.
+Run [`notebooks/tine_colab_step2_coding.ipynb`](../notebooks/tine_colab_step2_coding.ipynb) on a CPU runtime after Step 1. It imports the graded HumanEval, MBPP and SWE-bench Verified results from the archive already on Drive and pools with LiveCodeBench the largest combination that keeps `gpt-5` and at least eight shared models. In practice that is LiveCodeBench plus SWE-bench Verified (1,555 tasks, 13 models): HumanEval and MBPP only cover small open models and are left out. The pool is one `coding` group made with `tine combine-outcomes`, which keeps only models present in every dataset, drops models whose recorded cost is zero on every row, and excludes `openrouter` (a router, not a model). It then evaluates against `gpt-5` and `claude-sonnet-4`. The pooled guarantee covers tasks drawn like that mix, not each dataset on its own.
 
 ## Repository tests on SWE-bench patches
 
@@ -69,6 +69,6 @@ The default encoder is `sentence-transformers/all-MiniLM-L6-v2`. Its full commit
 - The pinned [benchmark archive](https://huggingface.co/datasets/NPULH/LLMRouterBench/blob/b95870f9e60c589e82f7972c91ffa8de9ca89f85/bench-release.tar.gz) is about 1.28 GB compressed. Drive holds the archive and extracted results. The helper limits extraction to 20 GB and verifies the published LFS checksum when available.
 - Missing costs, fractional/ambiguous grades, incompatible schemas, and conflicting runs produce errors. Do not turn missing values into zero or choose an arbitrary success threshold to force an import.
 - If Git clone cannot read a private repository, upload and extract your authorized repository ZIP so `/content/tine/pyproject.toml` exists, then rerun setup. ZIP sources are recorded without a Git revision; never paste tokens into saved cells.
-- CPU modules and local helper behavior are tested in the development environment. The real Hugging Face download and Colab encoder path still need validation when this notebook is run; they are not described as already executed.
+- CPU modules and local helper behavior are tested in the development environment. The Hugging Face download, the import and the Colab encoder path have since been run (`results/2026-11-09-coding-benchmark`).
 
 Keep the report directories, data/source manifests, encoder config, and embedding files/checkpoints on Drive. After saving the outputs, choose **Runtime → Disconnect and delete runtime**. Do not host Tine's proxy on Colab.

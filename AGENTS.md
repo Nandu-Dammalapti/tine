@@ -4,7 +4,7 @@ Read this file before writing code. It records the project direction supplied by
 
 ## Current scope
 
-This repository starts with lightweight development prerequisites and environment smoke checks. The current request excludes model downloads, model training, inference servers, bulk dataset downloads, and paid API calls. Do not expand setup into product implementation without a task requesting it.
+This repository began as development prerequisites and smoke checks. Later requests widened it to the offline toolkit, the development proxy, shadow mode and frozen policies described in section 12. Model downloads, Colab compute, bulk dataset downloads and paid API calls still need the task's explicit authorisation, and paid calls need a spending cap. Do not expand scope without a task requesting it.
 
 Use the existing checkout. Cloud tasks are already isolated; do not create a Git worktree unless the user explicitly requests one. Inspect existing files and preserve user changes before modifying them. Never commit virtual environments, caches, credentials, customer prompts, model weights, or generated benchmark outputs.
 
@@ -194,10 +194,12 @@ This section records measured results and built components. It is a snapshot: ch
 
 ### What the evidence says
 
-1. **A prompt-only router does not certify savings.** Every representation tried (TF-IDF, sentence embeddings, Qwen3 embeddings, hidden states of a frozen 7B model) with logistic, kNN and cluster routers certifies 0-5% on coding at the working limits. The official Avengers-Pro code cannot hold a limit. Five routers from the LLMRouter library, run unmodified, either send everything to the frontier or lose 9-47 points of accuracy; they certify under 1% on our pools and on their own benchmark. OpenRouter's auto-router has no quality limit.
+1. **A prompt-only router does not certify savings.** Every representation tried (TF-IDF, sentence embeddings, Qwen3 embeddings, hidden states of a frozen 7B model) with logistic, kNN and cluster routers certifies 0-5% on coding at the working limits with the default rule. The opt-in relative rule reaches 8-9% on `lcb-swe`, and 18% with the net-loss guarantee, but that gain rests on gpt-5's formatting failures on SWE-bench. The official Avengers-Pro code cannot hold a limit. Five routers from the LLMRouter library, run unmodified, either send everything to the frontier or lose 9-47 points of accuracy; they certify under 1% on our pools and on their own benchmark. OpenRouter's auto-router has no quality limit.
 2. **Checking the answer certifies large savings.**
-   - *Exact-answer work:* agreement between two or three cheap models saves 45-64% at the 2-4% limits on MMLU-Pro and on xRouteBench multiple choice, with accuracy at or above the frontier's. Math is weaker (16-20%).
-   - *Code:* free checks (the patch applies, files parse, the repository's existing tests pass) catch about two thirds of wrong patches and certify nothing alone. A strong judge reading what passes (`claude-sonnet-5-5`: rejects 79% of the remaining wrong patches and 9% of right ones, $0.008 per check; `claude-haiku-5-5`: 72% and 9%, $0.0005) gives a chain about a third cheaper than `claude-opus-4.1` and five points more accurate on 274 SWE-bench tasks, net of the judge. It certifies 22% at a 4% limit when half the tasks certify and nothing at 2%: the limit is the number of graded tasks, not the chain.
+   - *Exact-answer work:* agreement between two or three cheap models certifies 32% at the 2% limit and 64% at 4% on MMLU-Pro, and 45-53% at 2% on xRouteBench multiple choice (74% at 4% with pairs, over the limit in 2 of 10 runs), with accuracy at or above the frontier's. Math is weaker (16-20%). It did not repeat on 16 other LLMRouterBench datasets (`results/2026-11-16-agreement-more-datasets`): almost nothing certifies at 2% and only arcc (39%) and math500 (12%) pass 10% at 4%. It needs cheap models close to the frontier in accuracy, about 300 certify tasks for the 4% limit and about 900 for 2%, and answers that compare as strings.
+   - *Code:* free checks (the patch applies, files parse, the repository's existing tests pass) catch about two thirds of wrong patches and certify nothing alone. A strong judge reading what passes (`claude-sonnet-5-5`: rejects 79% of the remaining wrong patches and 9% of right ones, $0.008 per check; `claude-haiku-5-5`: 72% and 9%, $0.0005) gives a chain about a third cheaper than `claude-opus-4.1` and five points more accurate on 274 SWE-bench tasks, net of the judge. This judged chain certifies 22% at a 4% limit when half the tasks certify and nothing at 2%: the limit is the number of graded tasks, not the chain. "Nothing at 2%" is about the judged SWE-bench chain only. Small certified figures on code at 2% exist elsewhere: 3.6% for the response-size check on LiveCodeBench, and 2.3-2.9% for the relative-rule router on `lcb-swe`, which exploits gpt-5's formatting failures.
+   - For one chain named in advance and a true loss rate of 0.73%, an 80% chance to certify needs 156 certify tasks at 4%, 257 at 3% and 655 at 2%; with the current many-chain sequence these are lower limits and the measured gap is large (`docs/PLANNING.md`).
+   - Agreement between cheap models' patches gives no reliable gain on code: identical patches are too rare (0.5% of pair-tasks), and chains of pairs that accept on similar patches save within about a point of the plain chain either way once a model is not paid twice, and certify no more (`results/2026-11-16-swe-agreement-and-judge`). Similar patches that the judge also accepts are right 90-92% of the time; a chain that needs both certifies in every run at 4% with Sonnet but saves only 3-6% (post hoc).
    - Open models up to 32B and classifiers trained on graded patches do not work as a judge for code.
 3. **The benchmark's SWE-bench grades under-credit patches that need a fuzzy apply.** Prefer grades from our own test run where they exist (`results/2026-11-10-swe-static-checks`).
 
@@ -211,14 +213,20 @@ For each tenant and task type, a frozen policy: cheaper models in order, each be
 | --- | --- | --- |
 | Outcome data, calibration, prompt routers, baselines | `tine/data.py`, `calibration.py`, `routing.py`, `pipeline.py`; `scripts/avengers_pro_baseline.py`, `scripts/llmrouter_baseline.py` | Built and tested; used for the results above |
 | Chains with measured or simulated checks, certified by fixed-sequence Clopper-Pearson | `tine/cascade.py`, `tine cascade` | Built and tested |
-| Agreement check from recorded answers | `scripts/agreement_pairs.py` | Built and tested |
+| Agreement check from recorded answers | `scripts/agreement_pairs.py`; `scripts/agreement_datasets.py` runs it over several datasets | Built and tested |
 | Free checks on patches; repository tests without Docker | `scripts/swe_patch_checks.py`, `scripts/swe_repo_tests.py`, Colab notebook | Built; run on 277 of 500 SWE-bench Verified tasks |
 | Judge: prompt, one call, spending cap, scoring, join to chains | `tine/judge.py`, `scripts/judge_patches.py` | Built and tested; measured with paid calls ($12.69 total, authorised) |
+| Agreement between patches as a check on code (groups, soft agreement, judge fallback) | `scripts/swe_agreement_checks.py` | Built and tested; no reliable gain |
+| Certification planning: tasks needed for a limit, pass probability, split planning | `tine/planning.py`, `scripts/plan_certification.py`, `docs/PLANNING.md` | Built and tested; exact arithmetic for one chain tested alone, no data |
 | Frozen policies and a runner with routing cost | `tine/policy.py`, `tine freeze-policy`, `docs/POLICY.md` | Built and tested |
 | Proxy with tenant auth, ledger, verified cache, net-of-routing savings | `tine/proxy.py`, `tine/ledger.py`, `docs/PROXY.md` | Development quality; SQLite |
 | Shadow mode, live routing through a policy, named checks (tests behind a webhook, a judge call) | `tine/shadow.py`, `tine/runtime_checks.py`, `tine/proxy.py`, `scripts/shadow_replay.py` | Built and tested with stand-in providers; a replay of recorded answers reproduces the offline estimate. Never run on real traffic |
+| Savings report page (one self-contained HTML file from the ledger and shadow reports) | `tine/report_page.py`, `scripts/savings_report.py`, `docs/REPORT.md` | Built and tested with stand-in data; never viewed rendered, never seen by a customer or made from real traffic |
+| Container packaging | `Dockerfile`, `docker-compose.yml`, `deploy/`, `docs/DEPLOY.md` | Written and checked by tests as text; the image has never been built or run |
+| Learning loop: certifying a tenant's policy from its own traffic | `docs/LEARNING_LOOP.md` | A design. Not built |
+| Evidence brief for outside readers | `docs/EVIDENCE.md` | Written; every number carries its results file |
 
-Not built: nightly per-tenant retraining, distillation, the per-enterprise server beyond the proxy, a production datastore, streaming under a policy.
+Not built: nightly per-tenant retraining (a design for certifying a policy from a tenant's own traffic is in `docs/LEARNING_LOOP.md`), distillation, the per-enterprise server beyond the proxy, a production datastore, streaming under a policy.
 
 ### Rules learned the hard way
 

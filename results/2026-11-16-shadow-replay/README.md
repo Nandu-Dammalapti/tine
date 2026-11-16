@@ -58,6 +58,12 @@ cost and simply fails the agreement check. Fixed before this result, with a test
 - This checks that the proxy does what the policy says. It is not new evidence about
   the policy's quality, which rests on its certification.
 
+- Note added 2026-11-16 after a code review: the proxy now treats a reply with no
+  answer in it as a provider failure. The stand-in provider sends an empty reply where
+  no answer was extracted, so a re-run of the replay reports 317 failed shadow calls
+  where the recorded JSON has 0. The reviewer's re-run reproduced every money,
+  acceptance and accuracy figure above in both modes.
+
 ## Reproduce
 
 ```bash

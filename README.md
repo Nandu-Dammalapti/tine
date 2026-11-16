@@ -6,21 +6,38 @@ Read [AGENTS.md](AGENTS.md) for the project context, Gacrux routing design, cons
 
 ## Current state
 
-The CPU workflow is implemented: validated outcome import, logistic/kNN/cluster baselines, held-out probability and risk calibration, independent test evaluation, and cost-quality reports. There is also an authenticated development proxy with a SQLite ledger, late outcome updates, and a verified exact-answer cache. The proxy defaults to the frontier; it does not automatically deploy an offline routing policy.
+The offline toolkit is implemented: validated outcome import, logistic/kNN/cluster routers, held-out calibration, independent test evaluation, cost-quality reports, escalation chains with measured or simulated checks (`tine cascade`), agreement and judge checks, and frozen policies (`tine freeze-policy`). There is also an authenticated development proxy with a SQLite ledger, late outcome updates and a verified exact-answer cache. The proxy sends every request to the frontier unless a frozen policy is configured; it can then run that policy in shadow mode (report only) or serve answers from it. Shadow mode and policy routing are tested with stand-in providers and a replay of recorded answers only. Nothing has served real traffic. See AGENTS.md section 12 for the current state.
 
-The initial setup-only scope in AGENTS.md is superseded by the user's request for this CPU implementation. No LLM weights, benchmark archive, paid API calls, or Colab GPU jobs have been run here. Synthetic fixtures are integration checks, not measured benchmark or customer savings.
+The initial setup-only scope in AGENTS.md was widened by later requests. Since then the LLMRouterBench and xRouteBench archives have been imported, Colab jobs have run (embeddings, hidden states, repository tests, an open-model judge), and one authorised paid run called Claude models as a judge ($12.69 in total, `results/2026-11-14-api-judge`). All results are on recorded answers from public benchmarks. Synthetic fixtures are integration checks, not measured benchmark or customer savings.
 
 ## Results
 
-Latest offline benchmark findings and how to reproduce them: [results/2026-11-09-coding-benchmark](results/2026-11-09-coding-benchmark/README.md).
+Start with the index of all results, [results/README.md](results/README.md), and the one-page comparison, [results/SCOREBOARD.md](results/SCOREBOARD.md). A short summary with a source for every number: [docs/EVIDENCE.md](docs/EVIDENCE.md).
+First coding benchmark findings: [results/2026-11-09-coding-benchmark](results/2026-11-09-coding-benchmark/README.md).
 Predictor-gated escalation chains: [results/2026-11-10-gated-chains](results/2026-11-10-gated-chains/README.md).
-Index of all results: [results/README.md](results/README.md). Outside research: [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md).
+Outside research: [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md).
 Avengers-Pro head-to-head: [results/2026-11-10-avengers-pro](results/2026-11-10-avengers-pro/README.md) and [docs/AVENGERS_PRO.md](docs/AVENGERS_PRO.md).
 Static patch checks on SWE-bench: [results/2026-11-10-swe-static-checks](results/2026-11-10-swe-static-checks/README.md).
 Judge check pilot: [results/2026-11-11-judge-pilot](results/2026-11-11-judge-pilot/README.md) and [docs/JUDGE.md](docs/JUDGE.md).
 Agreement check on exact-answer tasks: [results/2026-11-11-agreement-check](results/2026-11-11-agreement-check/README.md).
 Router rule and guarantee options: [results/2026-11-11-router-rules](results/2026-11-11-router-rules/README.md). Architecture status: [docs/ARCHITECTURE_STATUS.md](docs/ARCHITECTURE_STATUS.md).
 Response check for escalation chains: [results/2026-11-10-response-check](results/2026-11-10-response-check/README.md).
+Hidden-state representations: [results/2026-11-11-hidden-states](results/2026-11-11-hidden-states/README.md). Trained verifier: [results/2026-11-13-trained-verifier](results/2026-11-13-trained-verifier/README.md).
+Agreement on a second benchmark and LLMRouter baselines: [results/2026-11-14-xroutebench](results/2026-11-14-xroutebench/README.md).
+Paid judge and the first code chains that certify: [results/2026-11-14-api-judge](results/2026-11-14-api-judge/README.md).
+Shadow mode and live routing replayed: [results/2026-11-16-shadow-replay](results/2026-11-16-shadow-replay/README.md).
+Agreement on more exact-answer datasets: [results/2026-11-16-agreement-more-datasets](results/2026-11-16-agreement-more-datasets/README.md). Agreement between patches on code: [results/2026-11-16-swe-agreement-and-judge](results/2026-11-16-swe-agreement-and-judge/README.md).
+
+## Documentation
+
+- [docs/EVIDENCE.md](docs/EVIDENCE.md): evidence brief for outside readers, with a source for every number.
+- [docs/PROXY.md](docs/PROXY.md): the development proxy, ledger, shadow mode, routing through a policy and named checks.
+- [docs/POLICY.md](docs/POLICY.md): frozen policies.
+- [docs/REPORT.md](docs/REPORT.md): the savings report page. `scripts/savings_report.py` writes a tenant's savings report as one HTML file.
+- [docs/DEPLOY.md](docs/DEPLOY.md): container packaging. The image has not been built or run.
+- [docs/PLANNING.md](docs/PLANNING.md): how many graded tasks certification needs.
+- [docs/LEARNING_LOOP.md](docs/LEARNING_LOOP.md): a design for certifying a tenant's policy from its own traffic. Not built.
+- [docs/CHECKS.md](docs/CHECKS.md), [docs/SWE_CHECKS.md](docs/SWE_CHECKS.md), [docs/JUDGE.md](docs/JUDGE.md): checks for chains.
 
 ## Setup
 
@@ -92,7 +109,7 @@ When supplying embeddings, `summary.json` records `embedding_sha256` alongside t
 
 The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The default `--loss degradation` bounds the event that the frontier succeeds and the selected model fails. Optional `--loss net` bounds overall accuracy loss using a degradation upper bound minus a gain lower bound; individual tasks may regress even when overall accuracy improves. Both use multiple-testing corrections, require IID representative tasks, and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
 
-Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on existing outcomes. See [measured check evidence](docs/CHECKS.md) for the `--checks` schema, tenant isolation, missing-check behavior, and the limits of simulated check results. Cascade reports publish together and retain synthetic labels; reported costs exclude running the checks.
+Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on existing outcomes. See [measured check evidence](docs/CHECKS.md) for the `--checks` schema, tenant isolation, missing-check behavior, and the limits of simulated check results. Cascade reports publish together and retain synthetic labels. `tine cascade` adds no check cost of its own. For a result net of routing cost, the check's cost must already be in the outcomes it reads: `scripts/agreement_pairs.py` charges every member of a group, and `scripts/judge_patches.py checks` adds each judge's recorded cost to the answers it read. Test-run compute and check latency are not costed anywhere yet.
 
 `python -m tine combine-outcomes` can append fresh outcome files to an existing pool while preserving `source_task_type` and reporting every source. Missing source labels use another recorded label for the same tenant/task, or that row's current task type, before `--task-type` relabels the pool. Conflicting source labels for one task are rejected. Source names such as `NA` remain literal text when reloading CSV files.
 
@@ -115,10 +132,10 @@ Pinned source files used to verify the loaders are [OpenAI's HumanEval](https://
 
 Open [the Colab notebook](https://colab.research.google.com/github/Nandu-Dammalapti/tine/blob/main/notebooks/tine_colab.ipynb) and follow [the Colab instructions](docs/COLAB.md). Use CPU and run setup through Section 2 to finish Step 1. Set `FRONTIER` to your intended baseline when prompted. The preflight reports overlapping graded outcomes, split counts, and whether the risk sample could support the default quality bound.
 
-The optional fixed-embedding stage pins a small sentence encoder, checks 50 prompts on CPU first, supports GPU batches, and saves resumable checkpoints on Drive. Its NPZ output plugs directly into `tine run --embeddings`. The archive metadata and the original HumanEval and sanitized MBPP inputs were checked locally. The full graded archive and Colab paths still need a run.
+The optional fixed-embedding stage pins a small sentence encoder, checks 50 prompts on CPU first, supports GPU batches, and saves resumable checkpoints on Drive. Its NPZ output plugs directly into `tine run --embeddings`. The archive metadata and the original HumanEval and sanitized MBPP inputs were checked locally. The archive download, import and the Colab embedding path have since been run (`results/2026-11-09-coding-benchmark`).
 
 ## Development proxy
 
-See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, and cache isolation are tested with mocked providers. SQLite is a local development backend. Learned live routing, production Postgres, real provider validation, shadow jobs, nightly retraining, a calibrated deployment process, and model generation/distillation remain future work; none is claimed by the offline report.
+See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, cache isolation, shadow mode and routing through a frozen policy (with named checks: a tests webhook and a judge call) are tested with mocked providers. SQLite is a local development backend. None of this has served real traffic. Production Postgres, real provider validation, streaming under a policy, nightly retraining and model generation/distillation remain future work; none is claimed by the offline report. Container packaging is in [docs/DEPLOY.md](docs/DEPLOY.md); the image has not been built or run.
 
-The ledger records answer-generation and routing/checking costs separately. Verified savings subtract both; requests with unknown routing costs are excluded from that comparison. Supply measured `routing_cost_usd` through the outcome endpoint, including for cache hits. Existing records retain unknown routing costs after migration.
+The ledger records answer-generation and routing/checking costs separately. Verified savings subtract both; requests with unknown routing costs are excluded from that comparison. With a route policy the proxy records routing cost itself for requests the policy handled. Otherwise supply measured `routing_cost_usd` through the outcome endpoint, including for cache hits. Existing records retain unknown routing costs after migration.

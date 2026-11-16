@@ -3,7 +3,7 @@
 
 This is Gacrux stage 4 applied after the answer: a judge reads the issue and a
 cheaper model's patch and says whether the patch resolves the issue. Nothing is
-executed. Three steps, each a subcommand:
+executed. Four steps, each a subcommand:
 
 ``prepare``  Pick the patches that already passed the free checks (static checks and
              the repository's existing tests) and write them as judge cases, with the

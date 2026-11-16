@@ -8,7 +8,8 @@ apply cleanly, break nothing and do not fix the issue
 (`results/2026-11-10-swe-static-checks`). A judge reads the issue and the patch and
 says whether the patch resolves the issue. This page says how a judge is measured.
 
-`scripts/judge_patches.py` has three steps. Nothing it does executes a patch.
+`scripts/judge_patches.py` has four steps: prepare, judge, score, and checks (the last
+is under "From verdicts to a chain"). Nothing it does executes a patch.
 
 ## 1. Prepare cases
 
@@ -30,7 +31,7 @@ random subset.
 
 ## 2. Get verdicts
 
-Every judge sees the same instructions (`INSTRUCTIONS` in the script, versioned by
+Every judge sees the same instructions (`INSTRUCTIONS` in `tine/judge.py`, versioned by
 `PROMPT_VERSION`) and returns, per case, `accept` or `reject`, a probability that the
 patch resolves the issue, and a short reason.
 

@@ -55,6 +55,11 @@ check passes, and otherwise calls the frontier. It reports:
   separately: pass it to `Ledger.record(routing_cost_usd=...)`, and the ledger's
   savings are then net of it. Pass `0.0` when no routing call was made: the ledger
   treats a missing routing cost as unknown and leaves that request out of savings.
+  It is `None` when any call or check has no known cost (a cheaper call that failed,
+  a check that reported no cost): the routing cost is then not known, and passing
+  `None` on keeps the request out of savings. `unknown_cost_calls` counts those
+  calls, and `known_routing_cost_usd` is the part that is known. Do not record the
+  known part as the routing cost.
 
 A stage with a named check is decided by a function the caller supplies:
 
@@ -79,6 +84,23 @@ names a check that was not supplied, `run_policy` raises before calling any mode
 A cheaper model that fails or times out is treated as having no answer and the
 request moves on. A frontier failure is raised: there is nothing left to fall back to.
 
+## What a policy file is checked for
+
+`validate_policy` refuses a file whose version is not the number 1, whose stages
+are malformed, that repeats a model within a stage, that has stages without a
+certified guarantee, or whose `bound` is above its `epsilon` when both are given.
+The proxy also requires `tenant` to be the tenant the policy is configured for.
+Nothing checks that the stages are the ones that were certified: a file edited
+after freezing still loads. `task_type` is recorded and not read by the runner.
+
+Two answers agree when they are equal after collapsing whitespace. The words
+`None`, `[None]` and `null` count as no answer, as they did when agreement was
+measured (`scripts/agreement_pairs.py`).
+
+A policy may carry an `answer_pattern` key: the regular expression the proxy uses to
+read a comparable answer for that policy ([PROXY.md](PROXY.md)). It is not written
+by `freeze-policy` and is not part of what was certified.
+
 ## Not done yet
 
 - The proxy can run a policy in shadow mode (report only) or serve answers from it,
@@ -87,5 +109,9 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
   has served real traffic.
 - Running a repository's tests on a live patch happens outside Tine, behind a webhook
   the tenant hosts; Tine supplies the judge half of a `tests+judge` check.
-- Members of a stage are called one after another, not in parallel.
-- Extracting the comparable answer from a response is the caller's job.
+- `run_policy` calls the members of a stage one after another, and extracting the
+  comparable answer is its caller's job. The proxy calls a stage's members together
+  and reads the answer itself (`TINE_ANSWER_PATTERN`, or the policy's own
+  `answer_pattern`).
+- Certifying a policy from a tenant's own traffic is designed in
+  [LEARNING_LOOP.md](LEARNING_LOOP.md) and not built.

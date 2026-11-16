@@ -42,7 +42,8 @@ The commands at the bottom regenerate everything.
 - Prompt length matters for any text features: LiveCodeBench prompts average 1,408
   characters, SWE-bench prompts 69,562 (median 46,616): a short `<issue>` block, then
   repository files and an example patch. Truncated encoders mostly see the start of
-  the issue; issue-only features (extract `<issue>...</issue>`) are untested.
+  the issue. Issue-only features (extract `<issue>...</issue>`) were tested on
+  2026-11-10 and did not help (`results/2026-11-10-gated-chains`).
 - Calibration uses fixed-sequence testing over thresholds (PR #5): one group with
   three methods needs >= 203 risk-calibration tasks at zero degradations; `lcb`
   has 211, `lcb-swe` 311.

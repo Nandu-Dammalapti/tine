@@ -6,8 +6,9 @@ so ``catch=1.0`` (every wrong answer is caught) is an optimistic upper bound;
 ``catch < 1`` lets that share of wrong answers ship as failures instead of
 escalating. Real check quality must be measured before claiming results.
 
-A chain is chosen on one random half of the tasks and scored on the other half,
-repeated over several seeds, so reported numbers are held-out. No model calls.
+Each seed splits tasks into choose / certify / test parts (40 / 30 / 30 by default):
+a chain is chosen on the first, certified on the second and scored on the third, so
+reported numbers are held-out. No model calls.
 
 A chain can also be gated by the router's predictor: a cheaper model is tried only
 on tasks where its predicted success is at least ``tau``, so fewer wrong answers
