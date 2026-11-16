@@ -125,6 +125,65 @@ def test_duplicate_recorded_answers_cannot_overwrite_each_other(tmp_path):
         agreement.recorded_answers(tmp_path)
 
 
+@pytest.mark.parametrize("contents", [
+    "task_id,model,answer\nquiz:1,cheap,A\nquiz:1,cheap,B\n",
+    "task_id,model,answer,answer\nquiz:1,cheap,A,B\n",
+    "task_id,model,answer\nquiz:1,cheap,A,extra\n",
+    "task_id,model,answer\nquiz:1,cheap\n",
+    "task_id,model,answer\n,cheap,A\n",
+    "task_id,model,answer\nquiz:1, ,A\n",
+    "task_id,model\nquiz:1,cheap\n",
+])
+def test_csv_answers_reject_ambiguous_or_incomplete_evidence(tmp_path, contents):
+    path = tmp_path / "answers.csv"
+    path.write_text(contents)
+    with pytest.raises(ValueError):
+        agreement.answers_from_csv(path)
+
+
+@pytest.mark.parametrize("output", ["--output", "--checks"])
+def test_cli_refuses_to_overwrite_csv_answers(tmp_path, output):
+    source = tmp_path / "answers.csv"
+    source.write_text("preserve source")
+    paths = {"--output": tmp_path / "groups.jsonl", "--checks": tmp_path / "checks.csv"}
+    paths[output] = source
+    with pytest.raises(SystemExit) as error:
+        agreement.main(["--input", str(tmp_path / "missing.jsonl"), "--answers", str(source),
+                        "--frontier", "big", "--output", str(paths["--output"]),
+                        "--checks", str(paths["--checks"])])
+    assert error.value.code == 2
+    assert source.read_text() == "preserve source"
+
+
+def test_csv_answers_reject_multiple_tenants_even_when_keys_differ(tmp_path):
+    path = tmp_path / "answers.csv"
+    path.write_text("tenant,task_id,model,answer\na,one,cheap,A\nb,two,cheap,B\n")
+    with pytest.raises(ValueError, match="tenant"):
+        agreement.answers_from_csv(path)
+
+
+def test_csv_answers_preserve_literal_text_quoted_answers_and_missing_values(tmp_path):
+    path = tmp_path / "answers.csv"
+    path.write_text('\ufeff\n \ntenant,task_id,model,answer\nt,NA,001," A,\nB "\nt,002,null,\n')
+    assert agreement.answers_from_csv(path, tenant="t") == {("NA", "001"): "A, B", ("002", "null"): None}
+
+
+@pytest.mark.parametrize("tenant", ["other-tenant", ""])
+def test_cli_csv_tenant_must_match_outcomes_before_outputs_are_written(tmp_path, tenant):
+    source = tmp_path / "outcomes.jsonl"
+    outcomes_frame().to_json(source, orient="records", lines=True)
+    answers = tmp_path / "answers.csv"
+    answers.write_text(f"tenant,task_id,model,answer\n{tenant},quiz:test:1,cheap,A\n")
+    output, checks = tmp_path / "groups.jsonl", tmp_path / "checks.csv"
+    output.write_text("previous groups")
+    checks.write_text("previous checks")
+    with pytest.raises(ValueError, match="tenant"):
+        agreement.main(["--input", str(source), "--answers", str(answers), "--frontier", "big",
+                        "--output", str(output), "--checks", str(checks)])
+    assert output.read_text() == "previous groups"
+    assert checks.read_text() == "previous checks"
+
+
 @pytest.mark.parametrize("collision", ["frontier", "another-group"])
 def test_generated_group_identifiers_must_not_collide(collision):
     frame = outcomes_frame()
