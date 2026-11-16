@@ -1,0 +1,5 @@
+judge,scores,cases,with_probability,brier,auc,ece
+haiku,raw,1110,1094,0.1282,0.8976,0.0655
+haiku,isotonic-cv,1110,1094,0.126,0.8851,0.0257
+sonnet,raw,1110,1092,0.1088,0.9284,0.0614
+sonnet,isotonic-cv,1110,1092,0.1058,0.9185,0.0302

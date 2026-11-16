@@ -1,0 +1,85 @@
+design,judge,tau,set,split,eps,method,saved,acc,front,degr_max,over,none,saved_cascade_charge,runs_reusing_a_model,judge_calls_per_100,judge_cost_pct_of_frontier,frontier_calls_per_100,most_common_chain
+single judge,haiku,verdict,singles,d,0.02,uncertified,0.401,0.553,0.503,0.026,2,0,0.401,0,103.6,0.18,45.3,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku,verdict,singles,d,0.03,uncertified,0.39,0.547,0.503,0.026,0,0,0.39,0,101.7,0.17,46.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku,verdict,singles,d,0.04,uncertified,0.393,0.548,0.503,0.026,0,0,0.393,0,103.8,0.17,46.5,qwen3-235b-a22b-2507 > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,d,0.04,certified,0.021,0.505,0.503,0.013,0,9,0.021,0,10.5,0.02,94.2,claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.02,uncertified,0.381,0.544,0.492,0.039,2,0,0.381,0,102.1,0.18,46.7,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.03,uncertified,0.382,0.55,0.492,0.029,0,0,0.382,0,101.2,0.18,46.7,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.04,uncertified,0.379,0.546,0.492,0.029,0,0,0.379,0,99.8,0.17,47.1,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku,verdict,singles,c50,0.04,certified,0.085,0.505,0.492,0.02,0,7,0.085,0,29.0,0.05,84.7,claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.02,uncertified,0.334,0.564,0.503,0.026,1,0,0.334,0,101.7,2.53,47.6,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.03,uncertified,0.336,0.562,0.503,0.026,0,0,0.336,0,102.2,2.55,47.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.04,uncertified,0.336,0.561,0.503,0.026,0,0,0.336,0,101.7,2.53,47.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+single judge,sonnet,verdict,singles,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.02,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.3,2.59,47.5,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.03,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.5,2.59,47.5,deepseek-v3.1-terminus > kimi-k2-0905 > deepseek-r1-0528 > claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.03,certified,0.031,0.495,0.492,0.019,0,9,0.031,0,9.1,0.2,95.1,claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.04,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.5,2.59,47.5,deepseek-v3.1-terminus > kimi-k2-0905 > deepseek-r1-0528 > claude-opus-4.1
+single judge,sonnet,verdict,singles,c50,0.04,certified,0.219,0.527,0.492,0.019,0,3,0.219,0,69.2,1.67,64.3,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.02,uncertified,0.296,0.563,0.503,0.013,0,0,0.296,0,103.7,1.49,52.1,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.03,uncertified,0.297,0.562,0.503,0.026,0,0,0.297,0,104.6,1.5,52.1,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.04,uncertified,0.297,0.561,0.503,0.026,0,0,0.297,0,105.0,1.5,52.1,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,d,0.04,certified,0.039,0.506,0.503,0.0,0,9,0.039,0,11.2,0.17,94.4,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.02,uncertified,0.296,0.551,0.492,0.02,0,0,0.296,0,105.3,1.5,52.6,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.03,uncertified,0.293,0.559,0.492,0.02,0,0,0.293,0,105.4,1.52,52.4,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.03,certified,0.038,0.495,0.492,0.0,0,9,0.038,0,11.2,0.18,94.6,claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.04,uncertified,0.29,0.556,0.492,0.02,0,0,0.29,0,105.1,1.52,52.8,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+single judge,haiku-then-sonnet,verdict,singles,c50,0.04,certified,0.225,0.538,0.492,0.017,0,2,0.225,0,83.8,1.17,63.1,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.02,uncertified,0.347,0.562,0.503,0.038,2,0,0.347,0,96.1,1.37,47.8,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.03,uncertified,0.348,0.555,0.503,0.038,1,0,0.348,0,97.7,1.41,48.0,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.04,uncertified,0.35,0.555,0.503,0.038,0,0,0.35,0,98.0,1.41,48.1,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.02,uncertified,0.341,0.554,0.492,0.038,1,0,0.341,0,102.8,1.42,48.4,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.03,uncertified,0.338,0.55,0.492,0.038,1,0,0.338,0,102.5,1.41,48.4,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.04,uncertified,0.337,0.546,0.492,0.038,0,0,0.337,0,102.2,1.38,48.6,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo10,verdict,singles,c50,0.04,certified,0.091,0.514,0.492,0.038,0,7,0.091,0,30.3,0.39,85.1,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.02,uncertified,0.321,0.555,0.503,0.026,1,0,0.321,0,104.9,0.98,51.1,deepseek-v3.1-terminus > qwen3-235b-a22b-2507 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.03,uncertified,0.32,0.559,0.503,0.026,0,0,0.32,0,102.4,0.98,50.8,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.04,uncertified,0.319,0.557,0.503,0.026,0,0,0.319,0,102.5,1.0,50.6,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.02,uncertified,0.327,0.545,0.492,0.019,0,0,0.327,0,106.4,0.97,50.9,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.03,uncertified,0.324,0.553,0.492,0.019,0,0,0.324,0,107.4,0.98,50.7,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.04,uncertified,0.322,0.551,0.492,0.019,0,0,0.322,0,105.8,0.96,50.7,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi90-lo30,verdict,singles,c50,0.04,certified,0.072,0.505,0.492,0.0,0,8,0.072,0,20.4,0.2,90.1,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.02,uncertified,0.314,0.562,0.503,0.026,2,0,0.314,0,101.6,1.98,50.3,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.03,uncertified,0.318,0.56,0.503,0.024,0,0,0.318,0,102.2,1.97,50.3,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.04,uncertified,0.318,0.558,0.503,0.024,0,0,0.318,0,102.3,1.96,50.3,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.02,uncertified,0.323,0.555,0.492,0.019,0,0,0.323,0,105.0,2.0,49.9,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.03,uncertified,0.321,0.553,0.492,0.019,0,0,0.321,0,103.7,1.99,49.9,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.03,certified,0.028,0.495,0.492,0.019,0,9,0.028,0,9.1,0.16,95.3,claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.04,uncertified,0.322,0.549,0.492,0.019,0,0,0.322,0,103.1,1.96,49.9,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo10,verdict,singles,c50,0.04,certified,0.155,0.519,0.492,0.019,0,5,0.155,0,49.3,0.95,75.1,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.02,uncertified,0.309,0.565,0.503,0.013,0,0,0.309,0,104.9,1.54,51.5,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.03,uncertified,0.31,0.563,0.503,0.013,0,0,0.31,0,104.0,1.54,51.6,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.04,uncertified,0.31,0.563,0.503,0.013,0,0,0.31,0,104.0,1.54,51.6,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,d,0.04,certified,0.2,0.541,0.503,0.012,0,4,0.2,0,63.2,0.94,69.6,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.02,uncertified,0.317,0.547,0.492,0.019,0,0,0.317,0,107.6,1.56,51.4,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.03,uncertified,0.315,0.556,0.492,0.019,0,0,0.315,0,108.6,1.58,51.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.03,certified,0.065,0.501,0.492,0.0,0,8,0.065,0,21.9,0.32,90.3,claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.04,uncertified,0.313,0.553,0.492,0.019,0,0,0.313,0,106.0,1.56,51.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+tiered,tiered-hi95-lo30,verdict,singles,c50,0.04,certified,0.211,0.528,0.492,0.017,0,3,0.211,0,72.5,1.07,66.9,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1

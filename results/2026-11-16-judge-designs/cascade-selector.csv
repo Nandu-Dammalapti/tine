@@ -1,0 +1,229 @@
+design,judge,tau,set,split,eps,method,saved,acc,front,degr_max,over,none,saved_cascade_charge,runs_reusing_a_model,judge_calls_per_100,judge_cost_pct_of_frontier,frontier_calls_per_100,most_common_chain
+sequential,haiku,verdict,singles,d,0.02,uncertified,0.401,0.553,0.503,0.026,2,0,0.401,0,103.6,0.18,45.3,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,verdict,singles,d,0.03,uncertified,0.39,0.547,0.503,0.026,0,0,0.39,0,101.7,0.17,46.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,verdict,singles,d,0.04,uncertified,0.393,0.548,0.503,0.026,0,0,0.393,0,103.8,0.17,46.5,qwen3-235b-a22b-2507 > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,d,0.04,certified,0.021,0.505,0.503,0.013,0,9,0.021,0,10.5,0.02,94.2,claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.02,uncertified,0.381,0.544,0.492,0.039,2,0,0.381,0,102.1,0.18,46.7,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.03,uncertified,0.382,0.55,0.492,0.029,0,0,0.382,0,101.2,0.18,46.7,deepseek-v3.1-terminus > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.04,uncertified,0.379,0.546,0.492,0.029,0,0,0.379,0,99.8,0.17,47.1,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > deepseek-r1-0528 > claude-opus-4.1
+sequential,haiku,verdict,singles,c50,0.04,certified,0.085,0.505,0.492,0.02,0,7,0.085,0,29.0,0.05,84.7,claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.02,uncertified,0.454,0.574,0.503,0.026,1,0,0.447,10,163.6,0.27,38.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-v3-0324 > kimi-k2-0905+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.03,uncertified,0.442,0.57,0.503,0.026,0,0,0.443,10,161.8,0.27,39.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.04,uncertified,0.444,0.57,0.503,0.026,0,0,0.439,10,162.9,0.27,39.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.02,uncertified,0.427,0.564,0.492,0.02,0,0,0.425,10,161.3,0.27,41.0,deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.03,uncertified,0.412,0.558,0.492,0.02,0,0,0.417,10,156.6,0.26,42.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.04,uncertified,0.413,0.56,0.492,0.02,0,0,0.412,10,159.4,0.26,41.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,pairs,c50,0.04,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,d,0.02,uncertified,0.441,0.572,0.503,0.026,1,0,0.422,10,189.7,0.31,38.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,triples,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,d,0.03,uncertified,0.443,0.575,0.503,0.026,0,0,0.431,10,190.3,0.31,39.0,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,triples,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,d,0.04,uncertified,0.446,0.573,0.503,0.026,0,0,0.433,10,192.3,0.31,39.0,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,triples,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.034,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.02,uncertified,0.343,0.547,0.492,0.043,1,2,0.324,8,155.8,0.26,52.3,claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.03,uncertified,0.427,0.569,0.492,0.019,0,0,0.405,10,188.3,0.31,40.1,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.04,uncertified,0.429,0.565,0.492,0.02,0,0,0.4,10,190.0,0.31,40.1,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,triples,c50,0.04,certified,0.0,0.492,0.492,0.0,0,10,0.034,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.02,uncertified,0.439,0.569,0.503,0.026,1,0,0.416,10,180.9,0.29,39.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.03,uncertified,0.442,0.571,0.503,0.026,0,0,0.422,10,174.6,0.28,39.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.04,uncertified,0.445,0.571,0.503,0.026,0,0,0.42,10,183.9,0.3,39.1,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.034,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.02,uncertified,0.376,0.554,0.492,0.02,0,1,0.34,9,152.1,0.25,47.2,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > kimi-k2-0905+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.03,uncertified,0.421,0.57,0.492,0.02,0,0,0.389,10,174.1,0.29,40.5,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > kimi-k2-0905+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.04,uncertified,0.418,0.562,0.492,0.02,0,0,0.386,10,170.9,0.28,41.0,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > kimi-k2-0905+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,verdict,mixed,c50,0.04,certified,0.0,0.492,0.492,0.0,0,10,0.034,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,p90,singles,d,0.02,uncertified,0.154,0.534,0.503,0.013,0,0,0.154,0,120.3,0.2,69.2,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,p90,singles,d,0.03,uncertified,0.154,0.534,0.503,0.013,0,0,0.154,0,120.3,0.2,69.2,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,p90,singles,d,0.04,uncertified,0.154,0.534,0.503,0.013,0,0,0.154,0,120.3,0.2,69.2,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,d,0.04,certified,0.023,0.507,0.503,0.013,0,8,0.023,0,19.1,0.03,94.5,claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.02,uncertified,0.134,0.51,0.492,0.019,0,0,0.134,0,118.6,0.2,70.8,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.03,uncertified,0.137,0.508,0.492,0.019,0,0,0.137,0,121.8,0.21,70.6,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.04,uncertified,0.137,0.508,0.492,0.019,0,0,0.137,0,121.8,0.21,70.6,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+sequential,haiku,p90,singles,c50,0.04,certified,0.118,0.503,0.492,0.02,0,3,0.118,0,82.1,0.14,77.4,qwen3-235b-a22b-2507 > deepseek-v3.1-terminus > kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,d,0.02,uncertified,0.154,0.533,0.503,0.013,0,0,0.148,10,136.5,0.22,68.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,pairs,d,0.03,uncertified,0.154,0.533,0.503,0.013,0,0,0.148,10,136.5,0.22,68.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,pairs,d,0.04,uncertified,0.154,0.533,0.503,0.013,0,0,0.148,10,136.5,0.22,68.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,d,0.04,certified,0.085,0.525,0.503,0.013,0,4,0.084,5,85.6,0.14,81.3,claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.02,uncertified,0.145,0.514,0.492,0.02,0,0,0.141,10,150.1,0.25,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.03,uncertified,0.146,0.514,0.492,0.02,0,0,0.14,10,146.1,0.24,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.03,certified,0.04,0.499,0.492,0.0,0,8,0.008,2,32.0,0.06,92.6,claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.04,uncertified,0.146,0.514,0.492,0.02,0,0,0.14,10,146.1,0.24,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,pairs,c50,0.04,certified,0.134,0.51,0.492,0.02,0,1,0.111,9,135.4,0.22,71.6,qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,p90,triples,d,0.02,uncertified,0.15,0.534,0.503,0.013,0,0,0.148,5,166.3,0.26,68.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,triples,d,0.03,uncertified,0.15,0.534,0.503,0.013,0,0,0.148,5,166.3,0.26,68.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,triples,d,0.04,uncertified,0.15,0.534,0.503,0.013,0,0,0.148,5,166.3,0.26,68.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,d,0.04,certified,0.06,0.514,0.503,0.013,0,6,0.073,3,72.0,0.11,87.2,claude-opus-4.1
+selector,haiku,p90,triples,c50,0.02,uncertified,0.144,0.518,0.492,0.02,0,0,0.143,4,172.2,0.28,68.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,triples,c50,0.03,uncertified,0.143,0.516,0.492,0.02,0,0,0.139,4,165.4,0.26,68.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,triples,c50,0.04,uncertified,0.143,0.516,0.492,0.02,0,0,0.139,4,165.4,0.26,68.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,triples,c50,0.04,certified,0.112,0.511,0.492,0.02,0,2,0.106,4,135.9,0.22,75.3,claude-opus-4.1
+selector,haiku,p90,mixed,d,0.02,uncertified,0.152,0.533,0.503,0.013,0,0,0.147,10,133.1,0.22,68.9,qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,p90,mixed,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,mixed,d,0.03,uncertified,0.152,0.533,0.503,0.013,0,0,0.147,10,133.1,0.22,68.9,qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,p90,mixed,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,mixed,d,0.04,uncertified,0.152,0.533,0.503,0.013,0,0,0.147,10,133.1,0.22,68.9,qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > claude-opus-4.1
+selector,haiku,p90,mixed,d,0.04,certified,0.077,0.52,0.503,0.013,0,5,0.068,5,71.2,0.11,84.1,claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.02,uncertified,0.144,0.514,0.492,0.02,0,0,0.144,9,148.9,0.24,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.03,uncertified,0.145,0.514,0.492,0.02,0,0,0.143,9,145.6,0.24,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.04,uncertified,0.145,0.514,0.492,0.02,0,0,0.143,9,145.6,0.24,69.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,haiku,p90,mixed,c50,0.04,certified,0.134,0.51,0.492,0.02,0,1,0.111,8,131.2,0.22,72.0,qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+kimi-k2-0905+deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.02,uncertified,0.334,0.564,0.503,0.026,1,0,0.334,0,101.7,2.53,47.6,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.03,uncertified,0.336,0.562,0.503,0.026,0,0,0.336,0,102.2,2.55,47.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.04,uncertified,0.336,0.561,0.503,0.026,0,0,0.336,0,101.7,2.53,47.5,deepseek-v3.1-terminus > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,d,0.04,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.02,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.3,2.59,47.5,deepseek-v3.1-terminus > deepseek-r1-0528 > glm-4.6 > claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.03,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.5,2.59,47.5,deepseek-v3.1-terminus > kimi-k2-0905 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.03,certified,0.031,0.495,0.492,0.019,0,9,0.031,0,9.1,0.2,95.1,claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.04,uncertified,0.343,0.551,0.492,0.019,0,0,0.343,0,103.5,2.59,47.5,deepseek-v3.1-terminus > kimi-k2-0905 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,verdict,singles,c50,0.04,certified,0.219,0.527,0.492,0.019,0,3,0.219,0,69.2,1.67,64.3,claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.02,uncertified,0.35,0.578,0.503,0.02,0,0,0.336,9,155.7,3.75,42.8,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+deepseek-r1-0528 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.03,uncertified,0.352,0.578,0.503,0.02,0,0,0.345,8,157.7,3.8,42.5,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+deepseek-r1-0528 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.04,uncertified,0.352,0.578,0.503,0.02,0,0,0.345,8,157.7,3.8,42.5,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+deepseek-r1-0528 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,verdict,pairs,d,0.04,certified,0.101,0.53,0.503,0.013,0,7,0.1,2,47.0,1.11,83.7,claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.02,uncertified,0.332,0.562,0.492,0.029,1,0,0.328,10,147.1,3.58,45.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-r1-0528 > glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.03,uncertified,0.337,0.564,0.492,0.029,0,0,0.328,10,145.7,3.53,44.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-r1-0528 > glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.03,certified,0.03,0.497,0.492,0.019,0,9,0.03,1,13.0,0.28,94.5,claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.04,uncertified,0.337,0.564,0.492,0.029,0,0,0.329,10,145.7,3.54,44.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+deepseek-r1-0528 > glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,pairs,c50,0.04,certified,0.135,0.515,0.492,0.029,0,6,0.129,4,58.3,1.39,77.1,claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.02,uncertified,0.347,0.584,0.503,0.013,0,0,0.325,10,191.0,4.54,41.1,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.03,uncertified,0.347,0.584,0.503,0.013,0,0,0.326,10,191.6,4.56,41.1,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.04,uncertified,0.347,0.584,0.503,0.013,0,0,0.326,10,191.6,4.56,41.1,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,d,0.04,certified,0.029,0.512,0.503,0.013,0,9,0.025,1,20.1,0.43,94.6,claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.02,uncertified,0.326,0.577,0.492,0.029,1,0,0.312,10,188.8,4.52,43.2,qwen3-235b-a22b-2507+kimi-k2-0905+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.03,uncertified,0.325,0.573,0.492,0.029,0,0,0.311,10,192.9,4.62,43.0,qwen3-235b-a22b-2507+kimi-k2-0905+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.03,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.04,uncertified,0.325,0.573,0.492,0.029,0,0,0.311,10,192.9,4.62,43.0,qwen3-235b-a22b-2507+kimi-k2-0905+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,triples,c50,0.04,certified,0.195,0.539,0.492,0.029,0,4,0.16,6,113.8,2.65,64.9,claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.02,uncertified,0.348,0.578,0.503,0.013,0,0,0.318,10,164.7,3.97,42.5,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.03,uncertified,0.348,0.578,0.503,0.013,0,0,0.321,10,164.7,3.97,42.5,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.04,uncertified,0.348,0.578,0.503,0.013,0,0,0.321,10,164.7,3.97,42.5,deepseek-v3.1-terminus+deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+kimi-k2-0905+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,d,0.04,certified,0.1,0.53,0.503,0.013,0,7,0.091,3,47.8,1.13,83.7,claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.02,uncertified,0.333,0.565,0.492,0.029,1,0,0.31,10,145.6,3.54,45.1,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.03,uncertified,0.333,0.561,0.492,0.029,0,0,0.31,10,145.4,3.57,45.1,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.03,certified,0.03,0.497,0.492,0.019,0,9,0.028,1,13.0,0.28,94.5,claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.04,uncertified,0.333,0.561,0.492,0.029,0,0,0.31,10,145.4,3.57,45.1,qwen3-235b-a22b-2507+deepseek-r1-0528 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-r1-0528 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+selector,sonnet,verdict,mixed,c50,0.04,certified,0.181,0.529,0.492,0.029,0,4,0.167,6,85.1,2.07,68.3,claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.02,uncertified,0.214,0.545,0.503,0.013,0,0,0.214,0,112.0,2.71,59.7,deepseek-v3.1-terminus > deepseek-v3-0324 > kimi-k2-0905 > claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.03,uncertified,0.214,0.545,0.503,0.013,0,0,0.214,0,112.0,2.71,59.7,deepseek-v3.1-terminus > deepseek-v3-0324 > kimi-k2-0905 > claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.04,uncertified,0.214,0.545,0.503,0.013,0,0,0.214,0,112.0,2.71,59.7,deepseek-v3.1-terminus > deepseek-v3-0324 > kimi-k2-0905 > claude-opus-4.1
+sequential,sonnet,p90,singles,d,0.04,certified,0.076,0.516,0.503,0.011,0,7,0.076,0,32.4,0.79,85.9,claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.02,uncertified,0.198,0.528,0.492,0.0,0,0,0.198,0,114.8,2.84,61.2,deepseek-v3.1-terminus > deepseek-v3-0324 > kimi-k2-0905 > claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.02,certified,0.0,0.492,0.492,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.03,uncertified,0.201,0.532,0.492,0.0,0,0,0.201,0,114.2,2.82,61.0,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.03,certified,0.113,0.509,0.492,0.015,0,6,0.113,0,44.7,1.21,80.5,claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.04,uncertified,0.201,0.532,0.492,0.0,0,0,0.201,0,114.2,2.82,61.0,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+sequential,sonnet,p90,singles,c50,0.04,certified,0.194,0.526,0.492,0.015,0,1,0.194,0,97.9,2.43,64.3,deepseek-v3.1-terminus > kimi-k2-0905 > deepseek-v3-0324 > claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.02,uncertified,0.213,0.55,0.503,0.0,0,0,0.219,10,149.8,3.53,58.5,deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.03,uncertified,0.213,0.55,0.503,0.0,0,0,0.219,10,149.8,3.53,58.5,deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.04,uncertified,0.213,0.55,0.503,0.0,0,0,0.219,10,149.8,3.53,58.5,deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,pairs,d,0.04,certified,0.2,0.543,0.503,0.0,0,1,0.23,9,132.6,3.1,63.0,deepseek-v3.1-terminus+deepseek-v3-0324 > deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.02,uncertified,0.198,0.531,0.492,0.017,0,0,0.197,10,151.1,3.62,59.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6 > claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.02,certified,0.024,0.495,0.492,0.0,0,9,0.024,1,15.9,0.36,95.5,claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.03,uncertified,0.2,0.533,0.492,0.017,0,0,0.2,10,151.8,3.64,58.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6 > claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.03,certified,0.142,0.526,0.492,0.017,0,3,0.139,7,110.3,2.58,71.4,claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.04,uncertified,0.2,0.533,0.492,0.017,0,0,0.2,10,152.2,3.65,58.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6 > claude-opus-4.1
+selector,sonnet,p90,pairs,c50,0.04,certified,0.161,0.526,0.492,0.017,0,2,0.158,8,124.6,2.98,66.8,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+kimi-k2-0905 > qwen3-235b-a22b-2507+glm-4.6 > claude-opus-4.1
+selector,sonnet,p90,triples,d,0.02,uncertified,0.211,0.55,0.503,0.0,0,0,0.196,7,175.8,4.06,57.9,qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,triples,d,0.03,uncertified,0.211,0.55,0.503,0.0,0,0,0.198,7,175.8,4.06,57.9,qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,triples,d,0.04,uncertified,0.211,0.55,0.503,0.0,0,0,0.198,7,175.8,4.06,57.9,qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,d,0.04,certified,0.214,0.55,0.503,0.0,0,0,0.15,7,174.0,4.02,58.3,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.02,uncertified,0.203,0.532,0.492,0.017,0,0,0.191,8,177.6,4.14,59.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.02,certified,0.023,0.495,0.492,0.0,0,9,0.0,1,18.2,0.41,95.5,claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.03,uncertified,0.206,0.536,0.492,0.017,0,0,0.193,9,179.3,4.18,58.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.03,certified,0.164,0.527,0.492,0.017,0,2,0.109,7,142.4,3.28,67.1,claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.04,uncertified,0.206,0.536,0.492,0.017,0,0,0.193,9,179.5,4.19,58.9,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,triples,c50,0.04,certified,0.165,0.527,0.492,0.017,0,2,0.157,7,142.7,3.28,67.3,claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.02,uncertified,0.219,0.549,0.503,0.0,0,0,0.212,10,145.8,3.42,58.4,qwen3-235b-a22b-2507+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.03,uncertified,0.219,0.549,0.503,0.0,0,0,0.212,10,145.8,3.42,58.4,qwen3-235b-a22b-2507+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.04,uncertified,0.219,0.549,0.503,0.0,0,0,0.212,10,145.8,3.42,58.4,qwen3-235b-a22b-2507+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,d,0.04,certified,0.22,0.549,0.503,0.0,0,0,0.2,10,143.5,3.37,58.5,qwen3-235b-a22b-2507+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.02,uncertified,0.206,0.532,0.492,0.015,0,0,0.195,10,146.2,3.47,59.9,deepseek-v3.1-terminus+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.02,certified,0.024,0.495,0.492,0.0,0,9,0.0,1,15.9,0.36,95.5,claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.03,uncertified,0.208,0.536,0.492,0.015,0,0,0.196,10,147.7,3.5,59.3,deepseek-v3.1-terminus+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.03,certified,0.17,0.529,0.492,0.0,0,2,0.135,8,116.5,2.74,67.4,claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.04,uncertified,0.208,0.536,0.492,0.015,0,0,0.196,10,148.1,3.52,59.3,deepseek-v3.1-terminus+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3.1-terminus+kimi-k2-0905 > claude-opus-4.1
+selector,sonnet,p90,mixed,c50,0.04,certified,0.17,0.529,0.492,0.0,0,2,0.184,8,116.9,2.75,67.4,claude-opus-4.1
+oracle,none,,singles,d,0.02,uncertified,0.306,0.581,0.503,0.012,0,0,0.306,0,0.0,0.0,52.6,qwen3-235b-a22b-2507 > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,singles,d,0.03,uncertified,0.306,0.581,0.503,0.012,0,0,0.306,0,0.0,0.0,52.6,qwen3-235b-a22b-2507 > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,singles,d,0.04,uncertified,0.306,0.581,0.503,0.012,0,0,0.306,0,0.0,0.0,52.6,qwen3-235b-a22b-2507 > deepseek-v3-0324 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,d,0.04,certified,0.218,0.551,0.503,0.012,0,3,0.218,0,0.0,0.0,66.3,claude-opus-4.1
+oracle,none,,singles,c50,0.02,uncertified,0.305,0.572,0.492,0.0,0,0,0.305,0,0.0,0.0,53.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,c50,0.02,certified,0.026,0.495,0.492,0.0,0,9,0.026,0,0.0,0.0,95.7,claude-opus-4.1
+oracle,none,,singles,c50,0.03,uncertified,0.305,0.572,0.492,0.0,0,0,0.305,0,0.0,0.0,53.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,c50,0.03,certified,0.261,0.556,0.492,0.0,0,2,0.261,0,0.0,0.0,60.1,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,c50,0.04,uncertified,0.305,0.572,0.492,0.0,0,0,0.305,0,0.0,0.0,53.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,singles,c50,0.04,certified,0.305,0.572,0.492,0.0,0,0,0.305,0,0.0,0.0,53.2,qwen3-235b-a22b-2507 > glm-4.6 > deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,d,0.02,uncertified,0.325,0.601,0.503,0.0,0,0,0.323,9,0.0,0.0,47.2,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,pairs,d,0.03,uncertified,0.325,0.601,0.503,0.0,0,0,0.323,9,0.0,0.0,47.2,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,pairs,d,0.04,uncertified,0.325,0.601,0.503,0.0,0,0,0.323,9,0.0,0.0,47.2,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,d,0.04,certified,0.325,0.601,0.503,0.0,0,0,0.323,9,0.0,0.0,47.2,qwen3-235b-a22b-2507+glm-4.6 > deepseek-v3-0324+kimi-k2-0905 > deepseek-v3.1-terminus+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,c50,0.02,uncertified,0.313,0.584,0.492,0.0,0,0,0.312,9,0.0,0.0,50.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+glm-4.6 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,c50,0.02,certified,0.027,0.497,0.492,0.0,0,9,0.027,1,0.0,0.0,95.5,claude-opus-4.1
+oracle,none,,pairs,c50,0.03,uncertified,0.313,0.584,0.492,0.0,0,0,0.312,9,0.0,0.0,50.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+glm-4.6 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,c50,0.03,certified,0.313,0.584,0.492,0.0,0,0,0.312,9,0.0,0.0,50.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+glm-4.6 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,c50,0.04,uncertified,0.313,0.584,0.492,0.0,0,0,0.312,9,0.0,0.0,50.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+glm-4.6 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,pairs,c50,0.04,certified,0.313,0.584,0.492,0.0,0,0,0.312,9,0.0,0.0,50.2,qwen3-235b-a22b-2507+deepseek-v3.1-terminus > qwen3-235b-a22b-2507+glm-4.6 > qwen3-235b-a22b-2507+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,d,0.02,uncertified,0.324,0.604,0.503,0.0,0,0,0.318,10,0.0,0.0,46.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3-0324+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,d,0.02,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,triples,d,0.03,uncertified,0.324,0.604,0.503,0.0,0,0,0.318,10,0.0,0.0,46.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3-0324+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,d,0.03,certified,0.0,0.503,0.503,0.0,0,10,0.0,0,0.0,0.0,100.0,claude-opus-4.1
+oracle,none,,triples,d,0.04,uncertified,0.324,0.604,0.503,0.0,0,0,0.318,10,0.0,0.0,46.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3-0324+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,d,0.04,certified,0.324,0.604,0.503,0.0,0,0,0.318,10,0.0,0.0,46.4,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+deepseek-v3-0324 > qwen3-235b-a22b-2507+deepseek-v3-0324+kimi-k2-0905 > qwen3-235b-a22b-2507+deepseek-v3-0324+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,c50,0.02,uncertified,0.312,0.587,0.492,0.0,0,0,0.297,10,0.0,0.0,49.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,c50,0.02,certified,0.026,0.497,0.492,0.0,0,9,0.025,1,0.0,0.0,95.5,claude-opus-4.1
+oracle,none,,triples,c50,0.03,uncertified,0.312,0.587,0.492,0.0,0,0,0.297,10,0.0,0.0,49.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,c50,0.03,certified,0.312,0.587,0.492,0.0,0,0,0.297,10,0.0,0.0,49.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,c50,0.04,uncertified,0.312,0.587,0.492,0.0,0,0,0.297,10,0.0,0.0,49.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1
+oracle,none,,triples,c50,0.04,certified,0.312,0.587,0.492,0.0,0,0,0.297,10,0.0,0.0,49.5,qwen3-235b-a22b-2507+deepseek-v3.1-terminus+glm-4.6 > qwen3-235b-a22b-2507+glm-4.6+deepseek-r1-0528 > claude-opus-4.1

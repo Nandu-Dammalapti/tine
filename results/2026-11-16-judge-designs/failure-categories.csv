@@ -1,0 +1,18 @@
+kind,count_of,value,cases,of
+false-accept,category,partial-fix,10,30
+false-accept,category,behaviour-differs-from-tests,9,30
+false-accept,category,judge-misread-code,3,30
+false-accept,category,grade-questionable,8,30
+false-accept,suggested change,context,7,30
+false-accept,suggested change,none,12,30
+false-accept,suggested change,prompt,9,30
+false-accept,suggested change,second-look,2,30
+false-reject,category,judge-misread-code,5,30
+false-reject,category,judge-too-strict,2,30
+false-reject,category,issue-ambiguous,1,30
+false-reject,category,right-fix-different-route,1,30
+false-reject,category,grade-questionable,21,30
+false-reject,suggested change,context,2,30
+false-reject,suggested change,none,21,30
+false-reject,suggested change,prompt,6,30
+false-reject,suggested change,second-look,1,30

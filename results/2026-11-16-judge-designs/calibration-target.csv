@@ -1,0 +1,11 @@
+judge,scores,target_false_reject,catch_rate,false_reject_rate,repeats
+haiku,own verdict,,0.7167,0.0947,1
+haiku,raw,0.05,0.5742,0.0455,10
+haiku,raw,0.1,0.7223,0.0944,10
+haiku,isotonic-cv,0.05,0.5485,0.0438,10
+haiku,isotonic-cv,0.1,0.7058,0.0845,10
+sonnet,own verdict,,0.794,0.0901,1
+sonnet,raw,0.05,0.6676,0.0508,10
+sonnet,raw,0.1,0.8064,0.0952,10
+sonnet,isotonic-cv,0.05,0.6534,0.047,10
+sonnet,isotonic-cv,0.1,0.7966,0.0943,10
