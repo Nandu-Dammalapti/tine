@@ -322,6 +322,8 @@ def test_a_sampled_request_with_tools_is_counted_at_the_frontier_without_shadow_
     seen = []
     _, report, _ = ask(config(shadow_max_cost_usd=0.0), serve(SAME, seen), extra=tools)
     assert report.json()["shadowed_requests"] == 0
+    # It is still counted, so the coverage figures say what was not shadowed.
+    assert report.json()["skipped_stopped"] == 1 and report.json()["sampled_requests"] == 1
 
 
 def flaky(fail_on, status=503):
@@ -492,7 +494,7 @@ def test_too_many_answers_that_differ_from_the_frontier_cannot_confirm_the_certi
 
 
 def test_the_shadow_endpoint_checks_differing_answers_against_the_policys_limit():
-    limited = {**POLICY, "guarantee": {"certified": True, "epsilon": 0.02}}
+    limited = {**POLICY, "guarantee": {**POLICY["guarantee"], "epsilon": 0.02, "bound": 0.01}}
     agree_wrongly = serve({"frontier": "B", "small-a": "A", "small-b": "A"}, [])
     _, report, _ = ask(config(shadow_policies={"a": {"openai": limited}}), agree_wrongly, count=30)
     body = report.json()
@@ -500,8 +502,10 @@ def test_the_shadow_endpoint_checks_differing_answers_against_the_policys_limit(
         "Cannot confirm the certification on this traffic: 30 of 30 accepted cheaper answers")
     _, report, _ = ask(config(shadow_policies={"a": {"openai": limited}}), serve(SAME, []), count=30)
     assert report.json()["drift_warning"] is None and report.json()["drift_check"].startswith("within the limit")
-    _, report, _ = ask(config(), agree_wrongly, count=30)  # a policy that states no limit is not checked
-    assert report.json()["drift_warning"] is None and report.json()["drift_epsilon"] is None
+    # A policy with stages must state its limit (validate_policy), so the endpoint always
+    # has one to check against; each tenant's own policy gives it.
+    _, report, _ = ask(config(), agree_wrongly, count=30)
+    assert report.json()["drift_epsilon"] == POLICY["guarantee"]["epsilon"] and report.json()["drift_warning"]
 
 
 def test_the_new_shadow_settings_are_read_from_the_environment_and_checked(monkeypatch):
