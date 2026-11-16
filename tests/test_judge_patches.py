@@ -129,3 +129,110 @@ def test_think_style_changes_the_instructions_only():
     assert judge_module.parse_verdict('1. ... 4. Decide.\n{"verdict": "reject", "probability": 0.2, "reason": "x"}')["verdict"] == "reject"
     with pytest.raises(ValueError):
         judge_module.build_messages(case, "guess")
+
+
+class FakeClaude:
+    """Stands in for anthropic.Anthropic: accepts odd-numbered cases, refuses one."""
+
+    def __init__(self):
+        self.messages, self.calls = self, []
+
+    def create(self, **request):
+        from types import SimpleNamespace as NS
+
+        self.calls.append(request)
+        text = request["messages"][0]["content"]
+        if "REFUSE" in text:
+            return NS(content=[], stop_reason="refusal", usage=NS(input_tokens=100, output_tokens=0))
+        verdict = "accept" if "GOOD" in text else "reject"
+        reply = json.dumps({"verdict": verdict, "probability": 0.9 if verdict == "accept" else 0.1, "reason": "r"})
+        return NS(content=[NS(type="thinking", thinking=""), NS(type="text", text=reply)], stop_reason="end_turn",
+                  usage=NS(input_tokens=1000, output_tokens=2000))
+
+
+def write_claude_cases(tmp_path, patches):
+    path = tmp_path / "cases.jsonl"
+    path.write_text("".join(json.dumps({"case_id": f"c{i}", "repository": "o/r", "issue": "i", "patch": patch}) + "\n"
+                                    for i, patch in enumerate(patches)))
+    return path
+
+
+def test_claude_judge_records_cost_and_refusals_and_resumes(tmp_path):
+    cases = write_claude_cases(tmp_path, ["GOOD", "BAD", "REFUSE"])
+    output, client = tmp_path / "verdicts.csv", FakeClaude()
+    report = judge_module.judge_anthropic(cases, output, model="claude-sonnet-5-5", max_cost_usd=5.0,
+                                          workers=1, client=client)
+    assert report["judged"] == 3 and report["unparsed"] == 1 and not report["stopped_at_cap"]
+    assert report["spent_usd"] == pytest.approx(2 * (1000 * 2 + 2000 * 10) / 1e6 + 100 * 2 / 1e6)
+    rows = {row["case_id"]: row for row in csv.DictReader(output.open())}
+    assert rows["c0"]["verdict"] == "accept" and rows["c1"]["verdict"] == "reject"
+    assert rows["c2"]["verdict"] == "unparsed" and rows["c2"]["reason"] == "refusal"
+    assert float(rows["c0"]["cost_usd"]) == pytest.approx(0.022)
+    request = client.calls[0]
+    assert request["output_config"] == {"effort": "medium"} and "temperature" not in request
+    assert request["system"].startswith("You are reviewing") and request["model"] == "claude-sonnet-5-5"
+    again = judge_module.judge_anthropic(cases, output, model="claude-sonnet-5-5", max_cost_usd=5.0,
+                                         workers=1, client=client)
+    assert again["judged"] == 0 and again["skipped"] == 3 and len(client.calls) == 3
+
+
+def test_claude_judge_stops_before_its_spending_cap(tmp_path):
+    cases = write_claude_cases(tmp_path, ["GOOD"] * 5)
+    output, client = tmp_path / "verdicts.csv", FakeClaude()
+    # Worst case per request is 8000 output tokens at $10 per million: $0.08. Each real reply costs $0.022.
+    report = judge_module.judge_anthropic(cases, output, model="claude-sonnet-5-5", max_cost_usd=0.13,
+                                          workers=1, client=client)
+    assert report["stopped_at_cap"] and report["judged"] == 3 and report["not_run"] == 2
+    assert report["spent_usd"] <= 0.13
+
+
+def test_chain_inputs_charge_each_judge_only_where_it_was_consulted(tmp_path):
+    key = tmp_path / "key.csv"
+    key.write_text("case_id,task_id,instance_id,patch_sha,models,benchmark_right,run_resolved\n"
+                   "c1,t1,i1,s,a;b,True,True\nc2,t2,i2,s,a,False,False\nc3,t3,i3,s,a,True,True\n")
+    def verdicts(name, rows):
+        path = tmp_path / f"{name}.csv"
+        with path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=judge_module.VERDICT_FIELDS)
+            writer.writeheader()
+            for case_id, verdict, probability, cost in rows:
+                writer.writerow({"case_id": case_id, "judge": name, "verdict": verdict,
+                                 "probability": probability, "cost_usd": cost})
+        return path
+    cheap = verdicts("cheap", [("c1", "accept", 0.9, 1), ("c2", "reject", 0.2, 1), ("c3", "accept", 0.6, 1)])
+    strong = verdicts("strong", [("c1", "accept", 0.9, 10), ("c2", "accept", 0.9, 10), ("c3", "reject", 0.1, 10)])
+    free = tmp_path / "free.csv"
+    free.write_text("task_id,model,passed\nt1,a,True\nt1,b,True\nt2,a,True\nt3,a,True\nt4,a,False\nt5,a,\nt6,a,True\n")
+    outcomes = tmp_path / "outcomes.jsonl"
+    outcomes.write_text("".join(json.dumps({"task_id": task, "model": model, "cost_usd": 100.0}) + "\n"
+                                for task, model in [("t1", "a"), ("t1", "b"), ("t2", "a"), ("t3", "a"), ("t4", "a")]))
+    report = judge_module.chain_inputs(key, [cheap, strong], free, outcomes, tmp_path / "checks.csv",
+                                       tmp_path / "judged.jsonl")
+    checks = {(row["task_id"], row["model"]): row["passed"] for row in csv.DictReader((tmp_path / "checks.csv").open())}
+    assert checks == {("t1", "a"): "True", ("t1", "b"): "True", ("t2", "a"): "False", ("t3", "a"): "False",
+                      ("t4", "a"): "False", ("t5", "a"): "", ("t6", "a"): ""}
+    costs = {(row["task_id"], row["model"]): row["cost_usd"]
+             for row in map(json.loads, (tmp_path / "judged.jsonl").read_text().splitlines())}
+    # t2: the cheap judge rejected, so the strong one was never paid. t4 failed the free checks: no judge.
+    assert costs == {("t1", "a"): 111.0, ("t1", "b"): 111.0, ("t2", "a"): 101.0, ("t3", "a"): 111.0, ("t4", "a"): 100.0}
+    assert report["judge_calls"] == [4, 3] and report["passed"] == 2
+    alone = judge_module.chain_inputs(key, [cheap], free, outcomes, tmp_path / "c2.csv", tmp_path / "j2.jsonl",
+                                      threshold=0.7)
+    assert alone["passed"] == 2 and alone["failed"] == 3  # c3 at 0.6 is below the threshold
+
+
+def test_patch_judge_check_accepts_on_the_verdict_or_a_threshold_and_fails_closed():
+    from tine.judge import patch_judge_check
+
+    client = FakeClaude()
+    good = {"repository": "o/r", "issue": "i", "patch": "GOOD"}
+    check = patch_judge_check(client, model="claude-haiku-5-5")
+    verdict = check(good)
+    assert verdict["passed"] and verdict["cost_usd"] == pytest.approx((1000 * 0.10 + 2000 * 0.50) / 1e6)
+    assert not check({**good, "patch": "BAD"})["passed"] and not check({**good, "patch": "REFUSE"})["passed"]
+    assert not patch_judge_check(client, model="claude-haiku-5-5", threshold=0.95)(good)["passed"]
+
+    class Down:
+        messages = property(lambda self: (_ for _ in ()).throw(ConnectionError()))
+    failed = patch_judge_check(Down(), model="claude-haiku-5-5")(good)
+    assert failed == {"passed": False, "cost_usd": None, "detail": "ConnectionError"}

@@ -205,7 +205,8 @@ def test_run_cli_recognizes_synthetic_provenance_in_mixed_data(tmp_path):
 
 
 @pytest.mark.parametrize("fixed_embeddings", [False, True])
-def test_latency_cli_reports_each_tenant_and_matches_frozen_batch_decisions(tmp_path, fixed_embeddings):
+@pytest.mark.parametrize("rule,loss", [("absolute", "degradation"), ("relative", "net")])
+def test_latency_cli_reports_each_tenant_and_matches_frozen_batch_decisions(tmp_path, fixed_embeddings, rule, loss):
     from tine.__main__ import main
     from tine.data import write_outcomes
 
@@ -216,6 +217,8 @@ def test_latency_cli_reports_each_tenant_and_matches_frozen_batch_decisions(tmp_
     write_outcomes(pd.concat([first, second]), source)
     output = tmp_path / "report"
     command = ["run", "--input", str(source), "--frontier", "frontier", "--output", str(output)]
+    command += ["--rule", rule, "--loss", loss]
+    command += ["--epsilon", "0.04" if loss == "net" else "0.02"]
     if fixed_embeddings:
         tasks = pd.concat([first, second]).drop_duplicates(["tenant", "task_id"])
         vectors = tmp_path / "embeddings.npz"
@@ -232,12 +235,14 @@ def test_latency_cli_reports_each_tenant_and_matches_frozen_batch_decisions(tmp_
         assert summary["embedding_sha256"] is None
     report = json.loads((output / "routing-latency.json").read_text())
     assert report["synthetic"] is True
+    assert report["rule"] == rule and report["loss"] == loss
     assert report["environment"]["machine"]
     assert "network" in report["scope"]
     assert len(report["results"]) == 6
     decisions = pd.read_csv(output / "decisions.csv").set_index(["tenant", "method", "task_id"])
     metrics = pd.read_csv(output / "metrics.csv").set_index(["tenant", "method"])
     for result in report["results"]:
+        assert result["rule"] == rule
         key = (result["tenant"], result["method"])
         assert result["samples"] == metrics.loc[key, "routing_latency_samples"] == 3
         assert 0 <= result["p50_ms"] <= result["p99_ms"] <= result["max_ms"]
@@ -268,10 +273,15 @@ def test_relative_rule_and_net_loss_are_recorded_and_validated(tmp_path):
     assert summary["rule"] == "relative" and summary["loss"] == "net"
     calibration = json.loads((tmp_path / "run" / "calibration.json").read_text())
     assert all(item["loss"].startswith("net_accuracy_loss") and "gains" in item for item in calibration)
+    assert all("difference of one-sided Clopper-Pearson bounds" in item["bound"] for item in calibration)
     report = (tmp_path / "run" / "report.md").read_text()
     assert "Rule: relative. Loss: net." in report and "Relative rule" in report and "Net loss" in report
+    assert "Calibration bounds net accuracy loss" in report
+    assert "Calibration bounds the event" not in report
+    assert "each at half the corrected error level" in report
     default = run_experiment(frame, "frontier", tmp_path / "default")
     assert default["rule"] == "absolute" and default["loss"] == "degradation"
-    for bad in [{"rule": "best"}, {"loss": "gross"}, {"rule": "relative", "latency_samples": 5}]:
+    assert "Calibration bounds the event" in (tmp_path / "default/report.md").read_text()
+    for bad in [{"rule": "best"}, {"loss": "gross"}]:
         with pytest.raises(ValueError):
             run_experiment(frame, "frontier", tmp_path / "bad", **bad)

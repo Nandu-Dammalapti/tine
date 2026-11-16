@@ -38,7 +38,7 @@ def test_late_outcomes_cost_updates_and_tenant_reports():
     ledger = Ledger()
     request_id = row(ledger)
     row(ledger, tenant="b", success=True, cost_usd=900, baseline_cost_usd=1000)
-    assert ledger.update_outcome("a", request_id, True, cost_usd=0.25, baseline_cost_usd=1.0)
+    assert ledger.update_outcome("a", request_id, True, cost_usd=0.25, routing_cost_usd=0.0, baseline_cost_usd=1.0)
     report = ledger.report("a")
     assert report["requests"] == 1
     assert report["verified_savings_usd"] == 0.75
@@ -62,14 +62,15 @@ def test_cache_needs_verified_outcome_and_exact_tenant_request():
     assert ledger.cached("a", "openai", body) is None
 
 
+@pytest.mark.parametrize("field", ["cost_usd", "routing_cost_usd", "baseline_cost_usd"])
 @pytest.mark.parametrize("invalid", [True, -1, float("nan"), float("inf"), "1"])
-def test_cost_validation(invalid):
+def test_cost_validation(invalid, field):
     ledger = Ledger()
     with pytest.raises(ValueError):
-        row(ledger, cost_usd=invalid)
+        row(ledger, **{field: invalid})
     request_id = row(ledger)
     with pytest.raises(ValueError):
-        ledger.update_outcome("a", request_id, True, cost_usd=invalid)
+        ledger.update_outcome("a", request_id, True, **{field: invalid})
 
 
 def test_nonboolean_outcomes_and_stream_cache_rejected():
@@ -121,12 +122,93 @@ def test_context_cache_keys_survive_reopen_and_exclude_legacy_entries(tmp_path):
 
 def test_known_cost_per_success_includes_failed_request_spend():
     ledger = Ledger()
-    row(ledger, success=True, cost_usd=1, baseline_cost_usd=2)
-    row(ledger, success=False, cost_usd=3)
+    row(ledger, success=True, cost_usd=1, routing_cost_usd=0, baseline_cost_usd=2)
+    row(ledger, success=False, cost_usd=3, routing_cost_usd=0)
     report = ledger.report("a")
     assert report["known_cost_per_verified_success_usd"] == 4
     assert report["verified_savings_usd"] == 1
     assert "not a billing amount" in report["savings_scope"]
+
+
+def test_routing_costs_can_exceed_apparent_answer_savings():
+    ledger = Ledger()
+    row(ledger, success=True, cost_usd=0.25, routing_cost_usd=0.9, baseline_cost_usd=1.0)
+    row(ledger, tenant="b", success=True, cost_usd=100, routing_cost_usd=500, baseline_cost_usd=1000)
+    report = ledger.report("a")
+    assert report["verified_answer_cost_usd"] == 0.25
+    assert report["verified_routing_cost_usd"] == 0.9
+    assert report["verified_cost_usd"] == pytest.approx(1.15)
+    assert report["verified_savings_usd"] == pytest.approx(-0.15)
+    assert report["savings_fraction"] == pytest.approx(-0.15)
+
+
+def test_unknown_routing_costs_require_explicit_measurement_for_net_savings():
+    ledger = Ledger()
+    request_id = row(ledger, success=True, cost_usd=0.25, baseline_cost_usd=1)
+    report = ledger.report("a")
+    assert report["unknown_routing_cost_requests"] == report["unknown_cost_requests"] == 1
+    assert report["unknown_answer_cost_requests"] == 0
+    assert report["comparable_verified_requests"] == 0
+    assert report["verified_savings_usd"] is None
+    assert report["known_cost_per_verified_success_usd"] is None
+    assert not ledger.update_outcome("b", request_id, True, routing_cost_usd=0)
+    assert ledger.get("a", request_id)["routing_cost_usd"] is None
+    assert ledger.update_outcome("a", request_id, True, routing_cost_usd=0)
+    assert ledger.report("a")["verified_savings_usd"] == 0.75
+    ledger.update_outcome("a", request_id, True, cost_usd=0.5)
+    assert ledger.get("a", request_id)["routing_cost_usd"] == 0
+    ledger.update_outcome("a", request_id, True, routing_cost_usd=None)
+    assert ledger.report("a")["verified_savings_usd"] is None
+
+
+def test_cost_per_success_includes_routing_on_failed_and_pending_attempts():
+    ledger = Ledger()
+    row(ledger, success=True, cost_usd=1, routing_cost_usd=0.5, baseline_cost_usd=2)
+    row(ledger, success=False, cost_usd=3, routing_cost_usd=0.25)
+    row(ledger, cost_usd=2, routing_cost_usd=0.75)
+    report = ledger.report("a")
+    assert report["known_answer_cost_total_usd"] == 6
+    assert report["known_routing_cost_total_usd"] == 1.5
+    assert report["known_cost_total_usd"] == report["known_cost_per_verified_success_usd"] == 7.5
+    assert report["verified_savings_usd"] == 0.5
+    row(ledger, cost_usd=None, routing_cost_usd=0.1)
+    report = ledger.report("a")
+    assert report["unknown_answer_cost_requests"] == 1
+    assert report["known_routing_cost_total_usd"] == pytest.approx(1.6)
+    assert report["known_cost_per_verified_success_usd"] is None
+
+
+def test_routing_cost_schema_upgrade_preserves_unknowns_and_updates(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger, success=True, cost_usd=0.25, baseline_cost_usd=1)
+    ledger.close()
+    with sqlite3.connect(path) as database:
+        database.execute("ALTER TABLE requests DROP COLUMN routing_cost_usd")
+    migrated = Ledger(path)
+    assert migrated.get("a", request_id)["cost_usd"] == 0.25
+    assert migrated.get("a", request_id)["routing_cost_usd"] is None
+    assert migrated.report("a")["comparable_verified_requests"] == 0
+    migrated.update_outcome("a", request_id, True, routing_cost_usd=0.1)
+    migrated.close()
+    reopened = Ledger(path)
+    assert reopened.report("a")["verified_savings_usd"] == pytest.approx(0.65)
+    reopened.close()
+
+
+def test_net_cost_overflow_stays_unknown_and_report_remains_json_serializable():
+    import json
+
+    ledger = Ledger()
+    row(ledger, success=True, cost_usd=1e308, routing_cost_usd=1e308, baseline_cost_usd=1)
+    report = ledger.report("a")
+    assert report["known_cost_total_usd"] is None
+    assert report["verified_cost_usd"] is None
+    assert report["verified_savings_usd"] is None
+    assert report["savings_fraction"] is None
+    json.dumps(report, allow_nan=False)
 
 
 @pytest.mark.parametrize("later_hour", [9, 10])

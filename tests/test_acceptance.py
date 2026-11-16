@@ -4,7 +4,7 @@ import pytest
 
 from tine.__main__ import main
 from tine.acceptance import ResponseCheck
-from tine.cascade import accept, certify_policies, run_cascade_experiment
+from tine.cascade import accept, gate, certify_policies, run_cascade_experiment
 from tine.data import synthetic_fixture, write_outcomes
 
 
@@ -51,6 +51,50 @@ def test_accept_combines_a_check_with_a_score_threshold():
     scores = np.array([[0.9, 0.2], [0.4, 0.9]])
     assert accept(passes, scores, None) is passes
     assert accept(passes, scores, 0.5).tolist() == [[True, False], [False, False]]
+
+
+@pytest.mark.parametrize("passes", [True, [True, False], [[True, False]], [[True], [False]],
+                                    [[1, 0], [1, 1]], [[True, None], [False, True]]])
+def test_accept_rejects_check_rows_that_could_broadcast_or_change_meaning(passes):
+    with pytest.raises(ValueError, match="passes"):
+        accept(passes, np.full((2, 2), 0.9), 0.5)
+
+
+@pytest.mark.parametrize("scores", [np.ones((2, 2), dtype=bool), np.ones((2, 2), dtype=complex),
+                                    [[True, 0.9], [0.8, 0.7]]])
+def test_gate_rejects_coercible_non_probability_types(scores):
+    with pytest.raises(ValueError, match="scores"):
+        gate(scores, 0.5)
+
+
+@pytest.mark.parametrize("stage", ["train", "calibration", "predict"])
+@pytest.mark.parametrize("column", [1, 2])
+@pytest.mark.parametrize("value", [True, 2 + 3j, 1.5])
+def test_response_check_rejects_ambiguous_token_counts(stage, column, value):
+    train = token_data(30)
+    calibration = token_data(20, seed=1)
+    check = ResponseCheck()
+    if stage == "predict":
+        check.fit(train, calibration)
+    bad = list(train if stage == "train" else calibration)
+    bad[column] = bad[column].astype(object)
+    bad[column][0, 0] = value
+    with pytest.raises(ValueError, match="tokens"):
+        if stage == "train":
+            check.fit(bad, calibration)
+        elif stage == "calibration":
+            check.fit(train, bad)
+        else:
+            check.predict_scores(*bad[1:])
+
+
+def test_empty_model_fit_is_rejected_and_failed_refit_disables_prediction():
+    check = ResponseCheck().fit(token_data(30), token_data(20, seed=1))
+    empty = (np.empty((5, 0), dtype=bool), np.empty((5, 0)), np.empty((5, 0)))
+    with pytest.raises(ValueError, match="nonempty"):
+        check.fit(empty, empty)
+    with pytest.raises(ValueError, match="Fit"):
+        check.predict_scores(*token_data(20)[1:])
 
 
 def test_certified_search_picks_the_variant_that_holds_on_the_certify_part():

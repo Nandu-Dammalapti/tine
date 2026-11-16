@@ -23,6 +23,7 @@ import re
 from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
+from threading import RLock
 
 import numpy as np
 import pandas as pd
@@ -36,17 +37,36 @@ CANONICAL_COLUMNS = [
 _REQUIRED = CANONICAL_COLUMNS[:7]
 _NUMERIC_OPTIONAL = ["input_tokens", "output_tokens", "cached_tokens", "latency_ms"]
 _TEXT_COLUMNS = ["tenant", "task_id", "prompt", "task_type", "model"]
+_CSV_LIMIT_LOCK = RLock()
 
 
-def _unique_csv_header(source):
-    """Reject duplicate field names before pandas can silently rename them."""
-    for header in csv.reader(source):
-        if not header or (len(header) == 1 and not header[0].strip()):
-            continue
-        if len(header) != len(set(header)):
-            raise ValueError("CSV must contain unique columns")
-        break
-    source.seek(0)
+def _validate_csv_structure(source):
+    """Reject ambiguous records before pandas infers an index or fills fields."""
+    # Prompts can exceed csv's default field limit. Bound it by the input size
+    # while checking, and serialize our changes to this process-global setting.
+    with _CSV_LIMIT_LOCK:
+        source.seek(0, 2)
+        size = source.tell()
+        source.seek(0)
+        previous_limit = csv.field_size_limit()
+        csv.field_size_limit(max(previous_limit, size))
+        reader = csv.reader(source, strict=True)
+        header = None
+        try:
+            for row in reader:
+                if not row or (len(row) == 1 and not row[0].strip()):
+                    continue
+                if header is None:
+                    header = row
+                    if len(header) != len(set(header)):
+                        raise ValueError("CSV must contain unique columns")
+                elif len(row) != len(header):
+                    raise ValueError(f"CSV record ending at line {reader.line_num} has {len(row)} fields; expected {len(header)}")
+        except csv.Error as error:
+            raise ValueError(f"Malformed CSV near line {reader.line_num}") from error
+        finally:
+            csv.field_size_limit(previous_limit)
+            source.seek(0)
 
 
 def _unique_json_object(pairs):
@@ -143,7 +163,7 @@ def read_outcomes(path: str | Path, *, require_known: bool = False) -> pd.DataFr
     path = Path(path)
     if path.suffix.lower() == ".csv":
         source = StringIO(path.read_text(encoding="utf-8-sig"))
-        _unique_csv_header(source)
+        _validate_csv_structure(source)
         frame = pd.read_csv(source, dtype=dict.fromkeys(_TEXT_COLUMNS, str))
         # Preserve literal text while retaining the usual missing-value and
         # numeric parsing for measurements and existing provenance columns.

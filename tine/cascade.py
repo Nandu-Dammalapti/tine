@@ -29,6 +29,7 @@ from tine.acceptance import RESPONSE_COLUMNS, ResponseCheck
 from tine.calibration import _integer, _matrices, _probability, clopper_pearson_upper
 from tine.artifacts import experiment_output
 from tine.checks import prepare_checks
+from tine.numeric import real_array
 from tine.pipeline import complete_tasks, embedding_fingerprint, load_embeddings, matrix
 from tine.routing import METHODS, TASK_COLUMNS, Router
 
@@ -47,7 +48,7 @@ def gate(scores, tau):
         return None
     if scores is None:
         raise ValueError("A gate threshold requires predicted scores")
-    scores = np.asarray(scores, dtype=float)
+    scores = real_array(scores, "scores")
     if scores.ndim != 2 or not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
         raise ValueError("scores must be a finite task-by-model matrix of probabilities")
     return scores >= _probability(tau, "tau")
@@ -56,9 +57,15 @@ def gate(scores, tau):
 def accept(passes, scores, tau):
     """Check results after a response check: an answer passes only if it passed
     before and its response score is at least ``tau``. ``tau=None`` changes nothing."""
+    passes = np.asarray(passes)
+    if passes.ndim != 2 or passes.dtype != np.dtype(bool):
+        raise ValueError("passes must be a task-by-model matrix of known Boolean check results")
     if tau is None:
         return passes
-    return np.asarray(passes) & gate(scores, tau)
+    eligible = gate(scores, tau)
+    if passes.shape != eligible.shape:
+        raise ValueError("passes and response scores must have the same task-by-model shape")
+    return passes & eligible
 
 
 def chain_metrics(chain, outcomes, costs, frontier_index: int, catch: float = 1.0,

@@ -67,6 +67,8 @@ This trains the CPU baselines on explicitly synthetic data, selects thresholds o
 
 Add `--latency-samples 100` to `demo` or `run` to measure warm single-request CPU routing on up to 100 distinct held-out tasks per tenant and method. The benchmark uses the fitted router and frozen calibration policies, with three untimed warm-up calls per method. It adds sample counts and p50/p99 milliseconds to `metrics.csv`, and writes individual timings, selected model names, and hardware context to `routing-latency.json`. Timings include task validation, feature transformation or lookup, calibrated scoring, cost estimation, and policy selection. They exclude DataFrame construction, embedding generation, the verified-answer cache, network, and provider calls. These are descriptive sample percentiles, not production latency guarantees. The default `--latency-samples 0` keeps this benchmark disabled; batch-average prediction timing is reported separately.
 
+Latency sampling supports both `--rule absolute` and `--rule relative`. Relative sampling includes comparing each model's score with the frontier's score inside the timed decision. The latency artifact records the rule and loss setting, and each observation uses the same frozen policy as the batch evaluation.
+
 Experiment outputs are generated in a temporary sibling directory and published together when the run succeeds. Reruns preserve the previous results on generation failure and keep unrelated files such as user notes. A hidden sibling `.tine.lock` file coordinates writers targeting the same directory on Linux and macOS. Choose a dedicated output directory outside the current working directory's ancestor chain. Output directories and generated artifact paths must be regular directories/files. If publication rollback fails, the error identifies the preserved recovery directory. Demo runs also publish their source outcome snapshot with the reports. Canonical CSV/JSONL exports use atomic file replacement to preserve existing data when encoding or writing fails. Reports recognize synthetic provenance even when those outcomes are reloaded through `tine run` or mixed with recorded data.
 
 For real data, import existing graded outcomes rather than regenerating answers:
@@ -84,11 +86,11 @@ python -m tine run --input artifacts/outcomes.jsonl --frontier EXACT_MODEL_NAME 
 
 Measurements, routing scores, and cost matrices must contain real numbers. Boolean and complex-valued measurements are rejected before conversion, including direct Python calls to routing, calibration, and evaluation. Success labels remain Boolean or pending.
 
-Outcome tables require unique column names. CSV imports reject duplicate headers before parsing, and JSON/JSONL imports reject duplicate object fields instead of silently choosing one value. Direct router calls also reject ambiguous thresholds, non-Boolean fallback switches, and Boolean embedding values.
+Outcome tables require unique column names. Outcome and check CSV imports reject duplicate headers, malformed quoted fields, and records with more or fewer fields than the header. Keep an explicit empty cell (including its delimiter) for an unknown value; quoted commas and multiline text are supported. JSON/JSONL imports reject duplicate object fields instead of silently choosing one value. Direct router calls also reject ambiguous thresholds, non-Boolean fallback switches, and Boolean embedding values.
 
 When supplying embeddings, `summary.json` records `embedding_sha256` alongside the outcome dataset fingerprint. It identifies the validated float64 feature values and task/prompt identities used in the experiment. Reordering or recompressing an embedding archive, or including unused rows, leaves this fingerprint unchanged; changing used vectors changes it. This identifies feature data, not the embedding model's training history.
 
-The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The calibration bound uses a conservative degradation event and a multiple-testing correction; it requires IID representative tasks and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
+The cluster method is an Avengers-style heuristic, **not** a claimed reproduction of Avengers-Pro. The oracle is hindsight only. The default `--loss degradation` bounds the event that the frontier succeeds and the selected model fails. Optional `--loss net` bounds overall accuracy loss using a degradation upper bound minus a gain lower bound; individual tasks may regress even when overall accuracy improves. Both use multiple-testing corrections, require IID representative tasks, and cannot promise quality under distribution shift. If evidence is insufficient, the selected policy explicitly falls back to the frontier.
 
 Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on existing outcomes. See [measured check evidence](docs/CHECKS.md) for the `--checks` schema, tenant isolation, missing-check behavior, and the limits of simulated check results. Cascade reports publish together and retain synthetic labels; reported costs exclude running the checks.
 
@@ -97,6 +99,8 @@ Use `python -m tine cascade` to evaluate try-cheap-first escalation policies on 
 ## Prepare original coding tasks
 
 Use the task-only loader when preparing inputs for later model generation and grading. It preserves original splits and check code as text and omits reference solutions. Keep its output separate from graded model outcomes. MBPP here refers to the sanitized subset.
+
+Task JSON must have unique field names; duplicate IDs or check fields within an object are rejected rather than silently replaced. Task exports use atomic file replacement, preserving an existing output if encoding or publication fails. Output-file symlinks are rejected.
 
 ```bash
 python -m tine import-coding-tasks --dataset humaneval --input HumanEval.jsonl.gz \
@@ -116,3 +120,5 @@ The optional fixed-embedding stage pins a small sentence encoder, checks 50 prom
 ## Development proxy
 
 See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, and cache isolation are tested with mocked providers. SQLite is a local development backend. Learned live routing, production Postgres, real provider validation, shadow jobs, nightly retraining, a calibrated deployment process, and model generation/distillation remain future work; none is claimed by the offline report.
+
+The ledger records answer-generation and routing/checking costs separately. Verified savings subtract both; requests with unknown routing costs are excluded from that comparison. Supply measured `routing_cost_usd` through the outcome endpoint, including for cache hits. Existing records retain unknown routing costs after migration.

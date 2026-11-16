@@ -1,0 +1,178 @@
+# xRouteBench: agreement checks and the LLMRouter library's routers, 2026-11-14
+
+Offline results on recorded outcomes. No model was called. Small summary tables only.
+
+Two questions, both prompted by the LLMRouter library
+(<https://github.com/ulab-uiuc/LLMRouter>, see `docs/RESEARCH_NOTES.md`):
+
+1. Does the agreement check, which certified large savings on MMLU-Pro
+   (`results/2026-11-11-agreement-check`), hold on a different benchmark with different
+   models?
+2. How do the library's own routers do on our pools once a quality limit is applied?
+
+## Data
+
+xRouteBench, `ulab-ai/xRouteBench` on Hugging Face at revision `ea4b6e1b`, config
+`llmrouter_generic` (train and test files together): every query run on 18 open
+models, with each model's response, a score and token counts. Imported with
+`scripts/import_xroutebench.py`. Cost per row is tokens times the benchmark's own
+price table. The answer a model gave is extracted from its response: the last
+parenthesised letter (multiple choice), the last number (GSM8K-style) or the last
+`\boxed{}` (MATH). For multiple choice, "extracted letter equals the reference"
+matches the benchmark's score on 100% of 85,716 rows.
+
+| group | tasks in it | queries | frontier (most accurate) | its accuracy |
+| --- | --- | --- | --- | --- |
+| multiple choice | ARC-Challenge, BoolQ, CommonsenseQA, HellaSwag, MMLU, MMLU-Pro, OpenbookQA | 4,762 | `cogito-v2-1-671b` | 88.6% |
+| math | GSM8K, MATH, AIME | 2,020 | `cogito-v2-1-671b` | 72.3% |
+
+`models-multiple-choice.csv`, `models-math.csv`. Left out: SQuAD (scored by F1, not
+right or wrong) and the two code tasks (no comparable answer; the cheapest model is
+also the most accurate there, so there is nothing to route).
+
+This pool differs from ours in a way that matters. All 18 models are open models at
+$0.05 to $1.25 per million input tokens. On multiple choice the second most accurate
+model costs 6% of the most accurate one and is 3 points behind it. There is no
+frontier API model in the pool.
+
+## Result 1: agreement
+
+Setup as on MMLU-Pro: `scripts/agreement_pairs.py` builds one candidate per pair (or
+triple) of cheaper models, costing the sum of its members because all are always
+called; its check passes when all members gave the same answer. Eight cheaper models
+costing at most a quarter of the frontier (one of two copies of the same model on
+different providers was dropped, since a model agreeing with itself is not a second
+opinion): 28 pairs, 56 triples (multiple choice), 53 triples (math). `tine cascade
+--checks`, 10 seeds, tasks split 40 / 30 / 30, chains of up to three groups ending in
+the frontier, delta 0.05. Savings are against always using the frontier and include
+every call made.
+
+Certified picks, mean over 10 seeds on held-out tasks:
+
+| group | epsilon | pairs: saved / accuracy / runs over | triples: saved / accuracy / runs over |
+| --- | --- | --- | --- |
+| multiple choice (frontier 88.9%) | 0.01 | 0% / 88.9% / 0 | 15.2% / 89.4% / 0 |
+| | 0.02 | **45.2% / 89.8% / 0** | **53.5% / 90.1% / 0** |
+| | 0.04 | 73.8% / 89.4% / 2 of 10 | 53.3% / 90.1% / 0 |
+| math (frontier 71.9%) | 0.01 | 0% / 71.9% / 0 | 0% / 71.9% / 0 |
+| | 0.02 | 16.4% / 72.5% / 0 | 2.5% / 71.3% / 0 |
+| | 0.04 | 19.7% / 71.6% / 0 | 4.8% / 71.2% / 0 |
+
+`agreement-pairs-*-summary.csv`, `agreement-triples-*-summary.csv`.
+
+- **The MMLU-Pro result repeats on a second benchmark with different models.** On
+  multiple choice, two cheap models that agree save 45% at the 2% limit and 74% at 4%,
+  and the routed answers are slightly more accurate than the frontier's.
+- **Why it works:** the pair `gpt-oss-120b` + `gpt-oss-20b` agrees on 82% of questions
+  and is right on 94.7% of those; the frontier is right on 93.4% of the same
+  questions. Where they disagree the frontier is right on 67%, so those go to it.
+- **At 4% the pairs went over the limit in 2 of 10 runs** (worst 4.9%). With delta
+  0.05 that should happen in about 1 run in 20, so 2 in 10 is more than expected and
+  is reported as it is; triples did not go over.
+- **Just switching to a cheaper model does not certify** (`agreement-singles-*`): 0%
+  at every limit. The best cheap model is 3.1 points less accurate than the frontier
+  overall, and it gets wrong 7.2% of the questions the frontier gets right, which is
+  what the limit counts.
+- Offering single models alongside the pairs (`agreement-pairs-singles-*`) gives
+  less at 2% (24%), not more. More candidates means more chains tried on the same
+  choosing data, and the picked chain fails certification more often (5 of 10 runs
+  fall back to the frontier).
+- **Math is weaker: 16-20%.** Two cheap models agree on about half the questions
+  (55%), against 82% on multiple choice, and the frontier itself is right on only 72%.
+- **Spelling of answers is not the reason.** A normaliser that gives `0.5`, `1/2` and
+  `\dfrac{1}{2}` one spelling was tried: it changed 6.5% of extracted answers, raised
+  agreement only from 55% to 58%, and certified savings did not improve (11.9% at the
+  2% limit, 20.1% at 4%). The pairs it newly matched were more often ones the
+  benchmark grades differently from each other, because its grader compares strings.
+  It was not kept. The extraction also finds no final answer in 11-27% of responses
+  per model, mostly reasoning cut off before the answer.
+
+## Limits
+
+- Open models only, with a narrow price range. Savings here are a share of a small
+  bill; what carries over is that the check certifies, not the dollar amount.
+- The choice of which eight models to pair used their recorded cost (at most a
+  quarter of the frontier), not their accuracy.
+- The benchmark's train and test files were pooled and re-split by seed. Its own
+  split was not used.
+- Exact-match comparison of extracted answers. Two models that agree by this
+  comparison were graded differently from each other by the benchmark on 1-3% of
+  agreed math questions, so some of its math grades depend on formatting. The math
+  rows count a group as wrong on every such question (`--grade-conflicts wrong`;
+  the first version of this page took the first member's grade and showed 14.8% and
+  19.5% for pairs). Multiple choice has no such case.
+
+## Result 2: the LLMRouter library's routers on LiveCodeBench
+
+`llmrouter-lcb-summary.csv`, `llmrouter-lcb-curve.csv`. `scripts/llmrouter_baseline.py`
+with the library at commit `c65ee01`: its kNN, SVM, MLP, matrix-factorisation and Elo
+routers and trainers, unmodified, with the hyperparameters of its own benchmark
+pipeline. Pool `lcb`: 1,055 LiveCodeBench tasks, 28 models, frontier `gpt-5` (86.1%).
+Query vectors: Qwen3-Embedding-0.6B, the encoder the library's benchmark uses. 10
+seeds, tasks split 50 / 25 / 25 into train / calibrate / test. Not run: GraphRouter
+(needs `torch_geometric`), RouterDC and CausalLM (they encode text with their own
+large models), AutoMix (needs live model calls), the two-model routers.
+
+The routers have no cost setting of their own. The library's benchmark makes them
+cost-aware by training on `alpha * performance - beta * cost`; here `alpha` is the
+weight and `beta` is one minus it.
+
+| router | weight 1.0: saved / accuracy | weight 0.9: saved / accuracy | certified at 2% or 4% |
+| --- | --- | --- | --- |
+| kNN | 0.1% / 86.1% | 88.6% / 39.4% | 0.2% |
+| SVM | 0% / 86.1% | 98.3% / 41.0% | 0% |
+| MLP | -4.2% / 85.8% | 80.9% / 45.8% | -0.2% to -0.4% |
+| matrix factorisation | -0.5% / 86.1% | 79.9% / 43.8% | 0.0% |
+| Elo | 0% / 86.1% | 99.8% / 46.1% | 0% |
+
+- **On this pool the library's routers have two settings and nothing between them.**
+  At weight 1 they send everything to gpt-5. At any lower weight (0.9 down to 0.2 give
+  the same picture) they send almost everything to a cheap model and accuracy falls
+  from 86% to 39-46%.
+- **Why:** each router is trained to predict one label per query, the model with the
+  highest reward. With right-or-wrong outcomes, any cost term at all makes that label
+  "the cheapest model that got it right", and the router learns which cheap model that
+  usually is. Nothing in the label says how likely the cheap model is to be wrong on
+  this query, so there is nothing to turn down gradually.
+- **Certified savings are zero**, as for every prompt-only router tried on this pool:
+  the only weight that passes the limit is the one that always uses gpt-5. The small
+  negative numbers for MLP are runs where its weight-1 choice passed the test on the
+  calibrate tasks and cost slightly more than gpt-5 on the test tasks.
+- This is the library used as its own benchmark pipeline uses it, on our data. Its
+  published results are on its own pool of open models with a narrow price range and
+  are measured as reward, not as savings under a quality limit.
+
+### The same on the pooled coding data
+
+`llmrouter-lcb-swe-summary.csv`, `llmrouter-lcb-swe-curve.csv`. Pool `lcb-swe`: 1,555
+tasks (LiveCodeBench and SWE-bench Verified), 13 models, frontier `gpt-5` (63.2%), 5
+seeds, same encoder on the issue view of each prompt.
+
+- Same two settings. At any weight below 1 the routers save 79-97% and accuracy falls
+  from 63% to 47-51%. Certified savings: 0% for all five, in every run.
+- At weight 1, kNN, MLP and matrix factorisation are 1.5 to 2 points **more accurate**
+  than gpt-5 (65%) and cost 15-19% more: they learn to send SWE-bench tasks to
+  `claude-opus-4.1`, which is better there and dearer. That is routing for quality,
+  which these routers do well; it is not a saving.
+
+### The library's routers on its own benchmark
+
+`llmrouter-xroutebench-mc-summary.csv`, `llmrouter-xroutebench-mc-curve.csv`. The same
+five routers on the xRouteBench multiple-choice group above (4,762 questions, 18
+models, frontier `cogito-v2-1-671b` at 88.9%), with Qwen3-Embedding-0.6B vectors as in
+the library's pipeline. 5 seeds, weights 1.0, 0.9, 0.8, 0.6, 0.4.
+
+| | saved | accuracy | holds a quality limit |
+| --- | --- | --- | --- |
+| library routers, weight 1.0 | 0-0.6% | 88.7-88.9% | yes, by using the frontier for 97-100% of questions |
+| library routers, any lower weight | 97-98% | 80.0-80.4% | no: 12-13% of questions the frontier gets right are lost |
+| library routers, certified at 2% or 4% | 0-0.6% | 88.7-88.9% | yes |
+| agreement, three models, certified at 2% (above) | 53.5% | 90.1% | yes |
+| agreement, two models, certified at 2% (above) | 45.2% | 89.8% | yes |
+
+- **The same two settings on their own data.** Below weight 1 every router sends
+  essentially every question to one cheap model, which is 97-98% cheaper and 9
+  points less accurate.
+- On the same questions and models, the agreement check certifies 45-53% savings
+  with accuracy above the frontier's. The difference is not the router's skill at
+  reading the prompt; it is checking the answer after it is produced.

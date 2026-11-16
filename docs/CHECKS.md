@@ -74,6 +74,14 @@ members' calls on every task and whose check passes when their recorded answers 
 identical. Certification and savings then include the second and third opinions.
 See `results/2026-11-11-agreement-check`.
 
+Build groups for one tenant at a time. The builder rejects conflicting known grades
+for agreeing answers, duplicate recorded answers, and group names that collide with
+existing models or other groups. Check rows include the tenant. The answer reader
+uses the latest JSON file in each model directory and verifies its bytes against
+the outcomes' `source_sha256` when present; a mismatch requires a matching benchmark
+run. Without source hashes, callers must verify that answers and grades came from
+the same run. Input outcomes, output outcomes, and checks must use distinct paths.
+
 ## Response check
 
 `tine cascade --response-check` adds a `response_certified` pick. A response check
@@ -83,6 +91,12 @@ only if the score is at least a threshold (`--response-threshold`, default 0.5 t
 0.95). For many models a long response goes with a wrong answer; the direction and
 strength differ, so each model has its own small classifier, calibrated on held-out
 tasks. It runs no tests and calls no model. An escalated answer has still been paid for.
+
+Direct Python calls require nonempty token matrices containing known, nonnegative
+whole counts. Boolean and complex token values are rejected before conversion.
+When combining checks with response scores, both matrices must have exactly the
+same task/model dimensions; a single check row cannot be reused implicitly across
+tasks. Check results must be Boolean and scores must be real probabilities.
 
 The search covers every chain with the setting's check alone or combined with the
 response check, through the same fixed-sequence certification. `--catch 0` makes the
@@ -96,3 +110,10 @@ train / score-calibration / choose / certify / test parts. The classifier has fo
 features, so most tasks go to certification. Response tokens must be recorded for
 every outcome and must mean the same thing in production as in the fitting data
 (for example, whether reasoning tokens are counted).
+
+`scripts/agreement_pairs.py` refuses data in which members of a group give the same answer and are
+graded differently, because the group's grade is then not defined by the answer. `--grade-conflicts
+wrong` keeps such data and counts the group as wrong on those tasks; the count is in the report. Use
+it for free-form answers extracted from responses, and say so with the result. `--answers` reads
+extracted answers from a CSV in place of a benchmark folder, and `--include-singles` also offers
+each cheaper model alone with no check, the alternative an agreement check has to beat.

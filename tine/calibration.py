@@ -183,8 +183,9 @@ def calibrate(
         "thresholds_tested": 0,
         "family_size": family_size,
         "corrected_alpha": alpha,
-        "bound": "one-sided Clopper-Pearson; fixed-sequence over thresholds (high to low); "
-                 "Bonferroni across groups and methods",
+        "bound": ("one-sided Clopper-Pearson" if loss == "degradation" else
+                  "difference of one-sided Clopper-Pearson bounds, each at half the corrected level")
+                 + "; fixed-sequence over thresholds (high to low); Bonferroni across groups and methods",
         "loss": ("frontier_success_and_selected_failure" if loss == "degradation"
                  else "net_accuracy_loss: degradation upper bound minus gain lower bound, "
                       "each at half the corrected level"),
@@ -242,18 +243,27 @@ def evaluate(choice_indices, outcomes, observed_costs, frontier_index: int) -> d
 
     Observed costs must include the actual cost of each completed attempt or
     retry bundle, according to the dataset's definition. They are for evaluation,
-    never inputs for choosing a deployable policy. The oracle is hindsight only:
+    never inputs for choosing a deployable policy. Choices must be integer model
+    indices, excluding booleans even in mixed sequences. The oracle is hindsight only:
     cheapest successful model, or frontier when every model failed.
     """
     outcomes, observed_costs, frontier_index = _matrices(
         outcomes, observed_costs, frontier_index
     )
-    choices = np.asarray(choice_indices)
+    # Preserve sequence element types before NumPy can promote booleans to ints.
+    choices = np.asarray(choice_indices) if isinstance(choice_indices, np.ndarray) else np.asarray(choice_indices, dtype=object)
     n, model_count = outcomes.shape
-    if choices.shape != (n,) or choices.dtype.kind not in "iu":
+    integer_values = choices.dtype.kind in "iu" or (
+        choices.dtype.kind == "O" and all(
+            isinstance(value, Integral) and not isinstance(value, (bool, np.bool_))
+            for value in choices.flat
+        )
+    )
+    if choices.shape != (n,) or not integer_values:
         raise ValueError("choice_indices must be one integer model index per task")
     if (choices < 0).any() or (choices >= model_count).any():
         raise ValueError("choice_indices contains an invalid model index")
+    choices = choices.astype(np.intp, copy=False)
     rows = np.arange(n)
     selected_success = outcomes[rows, choices]
     frontier_success = outcomes[:, frontier_index]

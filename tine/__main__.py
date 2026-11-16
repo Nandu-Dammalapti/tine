@@ -43,6 +43,8 @@ def main(argv=None):
                          help="Assumed share of wrong answers the check catches")
     cascade.add_argument("--seeds", type=int, default=10)
     cascade.add_argument("--checks", type=Path, help="Measured check results CSV (task_id, model, passed)")
+    cascade.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
+                         help="Task shares when no gate or response check is fitted (default 0.4 0.3 0.3)")
     cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
     cascade.add_argument("--catch-rates", type=Path,
@@ -60,6 +62,19 @@ def main(argv=None):
                          help="Task shares when a gate or response check is fitted")
     cascade.add_argument("--gate-threshold", type=float, nargs="+",
                          help="Predicted-success thresholds to try for the gate")
+    freeze = commands.add_parser("freeze-policy", help="Choose and certify one chain and write it as a policy file")
+    freeze.add_argument("--input", required=True, type=Path)
+    freeze.add_argument("--frontier", required=True)
+    freeze.add_argument("--checks", required=True, type=Path, help="Measured check results CSV (task_id, model, passed)")
+    freeze.add_argument("--epsilon", required=True, type=float)
+    freeze.add_argument("--delta", type=float, default=0.05)
+    freeze.add_argument("--seed", type=int, default=42)
+    freeze.add_argument("--max-length", type=int, default=3)
+    freeze.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
+                        default=[0.4, 0.3, 0.3])
+    freeze.add_argument("--single-check", default="none",
+                        help="Name of the check the results measured for a single model, e.g. tests+judge")
+    freeze.add_argument("--output", required=True, type=Path, help="Policy JSON")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
     combine.add_argument("--output", type=Path, required=True)
@@ -129,12 +144,27 @@ def main(argv=None):
                                         catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
                                         response_check=args.response_check,
                                         fit_fractions=args.fit_fractions,
+                                        **({"fractions": tuple(args.fractions)} if args.fractions else {}),
                                         **({"gate_thresholds": args.gate_threshold}
                                            if args.gate_threshold else {}),
                                         **({"response_thresholds": args.response_threshold}
                                            if args.response_threshold else {}))
         print(json.dumps(result["summary"], indent=2, default=float))
         print(f"Report: {args.output / 'report.md'}")
+    elif args.command == "freeze-policy":
+        from tine.artifacts import atomic_write_text
+        from tine.checks import read_checks
+        from tine.data import read_outcomes
+        from tine.policy import dumps, freeze_policy
+
+        policy = freeze_policy(read_outcomes(args.input), args.frontier, read_checks(args.checks),
+                               epsilon=args.epsilon, delta=args.delta, seed=args.seed,
+                               max_length=args.max_length, fractions=tuple(args.fractions),
+                               single_check=args.single_check)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(args.output, dumps(policy))
+        print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))
+        print(f"Policy: {args.output}")
     elif args.command == "combine-outcomes":
         from tine.data import combine_outcomes, read_outcomes, write_outcomes
 
