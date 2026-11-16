@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -326,5 +327,9 @@ class ShadowStore:
             "unknown_cost_shadow_calls": sum(entry["cost_usd"] is None for entry in calls),
             "shadow_calls": len(calls),
             "failed_shadow_calls": sum(entry["error"] is not None for entry in calls),
+            # Checks that rejected for a stated reason rather than on the answer, such as
+            # a request too long for the judge to read (its stage then calls no model).
+            "check_rejection_reasons": dict(sorted(Counter(
+                entry["reason"] for entry in calls if isinstance(entry.get("reason"), str)).items())),
             "scope": SHADOW_SCOPE,
         }
