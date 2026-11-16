@@ -41,10 +41,15 @@ def test_late_outcomes_cost_updates_and_tenant_reports():
     assert ledger.update_outcome("a", request_id, True, cost_usd=0.25, routing_cost_usd=0.0, baseline_cost_usd=1.0)
     report = ledger.report("a")
     assert report["requests"] == 1
-    assert report["verified_savings_usd"] == 0.75
-    assert report["savings_fraction"] == 0.75
+    # The caller supplied the baseline: its saving is reported, apart from verified savings.
+    assert report["verified_savings_usd"] is None and report["comparable_verified_requests"] == 0
+    assert report["caller_baseline_requests"] == 1 and report["caller_baseline_savings_usd"] == 0.75
     assert ledger.update_outcome("a", request_id, False)
-    assert ledger.report("a")["comparable_verified_requests"] == 0
+    assert ledger.report("a")["caller_baseline_requests"] == 0
+    measured = row(ledger, success=True, cost_usd=0.25, routing_cost_usd=0.0, baseline_cost_usd=1.0)
+    report = ledger.report("a")
+    assert ledger.get("a", measured)["baseline_source"] == "proxy_measured"
+    assert report["verified_savings_usd"] == 0.75 and report["savings_fraction"] == 0.75
 
 
 def test_cache_needs_verified_outcome_and_exact_tenant_request():
@@ -295,13 +300,16 @@ def test_an_estimated_baseline_is_stored_as_one_and_reported_apart_from_measured
     assert report["verified_savings_usd"] == 8.5 and report["savings_fraction"] == 0.85
     assert report["estimated_baseline_requests"] == 1 and report["estimated_baseline_savings_usd"] == 18.0
     assert "estimate" in report["estimated_baseline_scope"] and "estimated" in report["savings_scope"]
-    # Leaving the baseline alone keeps it an estimate; a baseline the caller supplies is measured.
+    # Leaving the baseline alone keeps it an estimate; a baseline the caller supplies is the caller's.
     assert ledger.update_outcome("a", estimated, True, cost_usd=2.0)
     assert ledger.get("a", estimated)["baseline_estimated"] == 1
+    assert ledger.get("a", estimated)["baseline_source"] == "estimated"
     assert ledger.update_outcome("a", estimated, True, baseline_cost_usd=30.0)
     report = ledger.report("a")
     assert ledger.get("a", estimated)["baseline_estimated"] == 0 and report["estimated_baseline_requests"] == 0
-    assert report["comparable_verified_requests"] == 2 and report["estimated_baseline_savings_usd"] is None
+    assert ledger.get("a", estimated)["baseline_source"] == "caller"
+    assert report["comparable_verified_requests"] == 1 and report["estimated_baseline_savings_usd"] is None
+    assert report["caller_baseline_requests"] == 1 and report["caller_baseline_savings_usd"] == 27.0
     with pytest.raises(ValueError):
         row(ledger, baseline_estimated="yes")
     with pytest.raises(ValueError):
@@ -327,4 +335,107 @@ def test_a_ledger_written_before_estimates_were_marked_still_opens_and_reports(t
     assert row(upgraded, success=True, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=4.0,
                baseline_estimated=True)
     assert upgraded.report("a")["estimated_baseline_requests"] == 1
+    upgraded.close()
+
+
+def test_a_caller_cannot_replace_a_baseline_the_proxy_measured():
+    from tine.ledger import MeasuredBaselineError
+    ledger = Ledger()
+    measured = row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0)
+    assert ledger.get("a", measured)["baseline_source"] == "proxy_measured"
+    for replacement in (0.02, None):
+        with pytest.raises(MeasuredBaselineError):
+            ledger.update_outcome("a", measured, True, baseline_cost_usd=replacement)
+    # Nothing of a refused update is kept, not even its outcome.
+    record = ledger.get("a", measured)
+    assert (record["success"], record["baseline_cost_usd"], record["baseline_source"]) == (None, 1.0, "proxy_measured")
+    assert ledger.outcome_events("a", measured) == []
+    assert ledger.update_outcome("a", measured, True, cost_usd=0.5)
+    assert ledger.report("a")["verified_savings_usd"] == 0.5
+    # A request with no baseline yet takes the caller's, and the caller may correct it.
+    unmeasured = row(ledger, cost_usd=1.0, routing_cost_usd=0.0)
+    assert ledger.update_outcome("a", unmeasured, True, baseline_cost_usd=3.0)
+    assert ledger.update_outcome("a", unmeasured, True, baseline_cost_usd=4.0)
+    report = ledger.report("a")
+    assert ledger.get("a", unmeasured)["baseline_source"] == "caller"
+    assert report["comparable_verified_requests"] == 1 and report["caller_baseline_savings_usd"] == 3.0
+    assert "caller" in report["caller_baseline_scope"] and "caller-supplied" in report["savings_scope"]
+    assert ledger.update_outcome("a", unmeasured, True, baseline_cost_usd=None)
+    assert ledger.get("a", unmeasured)["baseline_source"] is None
+    with pytest.raises(ValueError):
+        row(ledger, baseline_cost_usd=1.0, baseline_source="customer")
+    with pytest.raises(ValueError):
+        row(ledger, baseline_source="caller")  # a source of no baseline
+    with pytest.raises(ValueError):
+        row(ledger, baseline_cost_usd=1.0, baseline_estimated=True, baseline_source="proxy_measured")
+
+
+def test_every_outcome_update_is_kept_in_an_append_only_history():
+    import sqlite3
+    ledger = Ledger()
+    request_id = row(ledger, cost_usd=0.5)
+    assert ledger.update_outcome("a", request_id, True, cost_usd=0.25, baseline_cost_usd=1.0)
+    assert ledger.update_outcome("a", request_id, False, cost_usd=0.75)
+    assert not ledger.update_outcome("b", request_id, True)
+    events = ledger.outcome_events("a", request_id)
+    assert [event["fields"] for event in events] == [
+        {"success": True, "cost_usd": 0.25, "baseline_cost_usd": 1.0, "baseline_source": "caller"},
+        {"success": False, "cost_usd": 0.75}]
+    # What each update replaced, so the proxy's own figures are not lost.
+    assert [event["previous"] for event in events] == [
+        {"success": None, "cost_usd": 0.5, "baseline_cost_usd": None, "baseline_source": None},
+        {"success": True, "cost_usd": 0.25}]
+    assert events[0]["outcome_sequence"] < events[1]["outcome_sequence"] == ledger.get("a", request_id)["outcome_sequence"]
+    assert all(event["request_id"] == request_id and event["created_at"] for event in events)
+    assert ledger.outcome_events("b", request_id) == []
+    for statement in ("UPDATE outcome_events SET fields_json='{}'", "DELETE FROM outcome_events"):
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            with ledger._db:
+                ledger._db.execute(statement)
+    assert len(ledger.outcome_events("a", request_id)) == 2
+
+
+def test_a_routed_row_names_the_policy_digest_and_the_stage():
+    ledger = Ledger()
+    digest = "ab" * 32
+    served = row(ledger, model="cheap", policy_sha256=digest, route_stage=1)
+    escalated = row(ledger, policy_sha256=digest, route_stage="frontier")
+    assert (ledger.get("a", served)["policy_sha256"], ledger.get("a", served)["route_stage"]) == (digest, "1")
+    assert ledger.get("a", escalated)["route_stage"] == "frontier"
+    assert ledger.get("a", row(ledger))["policy_sha256"] is None
+    for invalid in ({"policy_sha256": "AB" * 32}, {"policy_sha256": "ab"}, {"policy_sha256": 1},
+                    {"route_stage": -1}, {"route_stage": True}, {"route_stage": "stage-0"}, {"route_stage": 1.0}):
+        with pytest.raises(ValueError):
+            row(ledger, **invalid)
+
+
+def test_a_ledger_from_before_baseline_sources_and_policy_traces_is_upgraded(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    ledger = Ledger(path)
+    untouched = row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=4.0)
+    updated = row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=3.0)
+    ledger.update_outcome("a", updated, True)
+    estimated = row(ledger, model="cheap", success=True, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=2.0,
+                    baseline_estimated=True)
+    ledger.close()
+    with sqlite3.connect(path) as database:
+        for name in ("baseline_source", "policy_sha256", "route_stage"):
+            database.execute(f"ALTER TABLE requests DROP COLUMN {name}")
+        database.execute("DROP TABLE outcome_events")
+    # Read without upgrading, as the report script does for a read-only file. Once an
+    # outcome was reported the caller may have replaced the baseline: it is not verified.
+    old = Ledger.__new__(Ledger)
+    old._lock, old._db = __import__("threading").RLock(), sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    old._db.row_factory = sqlite3.Row
+    before = old.report("a")
+    old.close()
+    assert (before["comparable_verified_requests"], before["caller_baseline_requests"],
+            before["estimated_baseline_requests"]) == (0, 1, 1)
+    upgraded = Ledger(path)
+    assert [upgraded.get("a", request_id)["baseline_source"] for request_id in (untouched, updated, estimated)] == [
+        "proxy_measured", "caller", "estimated"]
+    assert upgraded.get("a", untouched)["policy_sha256"] is upgraded.get("a", untouched)["route_stage"] is None
+    assert upgraded.report("a") == before
+    assert upgraded.update_outcome("a", updated, False) and len(upgraded.outcome_events("a", updated)) == 1
     upgraded.close()

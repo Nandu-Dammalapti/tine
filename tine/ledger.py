@@ -3,6 +3,11 @@
 Costs and outcomes are deliberately nullable: a successful HTTP response is not
 evidence that a task succeeded, and missing usage/pricing is not a zero cost.
 This is a local development store, not the planned production Postgres backend.
+
+Every baseline carries where it came from (``baseline_source``): measured by the
+proxy, supplied by the caller, or estimated. Only measured ones count as verified
+savings. ``requests`` holds the current state of a request; every outcome update is
+also appended to ``outcome_events`` with the values it replaced, so none is lost.
 """
 
 from __future__ import annotations
@@ -20,6 +25,26 @@ from typing import Any
 
 _UNSET = object()
 MAX_TOKEN_COUNT = 2**63 - 1  # SQLite INTEGER storage limit.
+# Where a baseline cost came from. Only a baseline the proxy measured, by calling the
+# frontier model for this request, counts toward verified savings.
+BASELINE_SOURCES = ("proxy_measured", "caller", "estimated")
+
+
+class MeasuredBaselineError(ValueError):
+    """An outcome update tried to replace a baseline the proxy measured itself."""
+
+
+def _legacy_baseline_source(columns) -> str:
+    """SQL for where a row's baseline came from, in a ledger written before the column.
+
+    Such a ledger cannot say. A baseline on a row whose outcome was never updated was
+    written by the proxy; once an outcome arrived, the caller may have replaced it, so
+    it is counted as the caller's. That can only move savings out of the verified total.
+    """
+    estimated = "baseline_estimated" if "baseline_estimated" in columns else "0"
+    untouched = "outcome_updated_at IS NULL" if "outcome_updated_at" in columns else "success IS NULL"
+    return (f"CASE WHEN baseline_cost_usd IS NULL THEN NULL WHEN {estimated} THEN 'estimated' "
+            f"WHEN {untouched} THEN 'proxy_measured' ELSE 'caller' END")
 
 
 def request_fingerprint(
@@ -99,7 +124,10 @@ class Ledger:
                     outcome_updated_at TEXT,
                     outcome_sequence INTEGER NOT NULL DEFAULT 0,
                     success INTEGER CHECK(success IN (0, 1) OR success IS NULL),
-                    baseline_estimated INTEGER NOT NULL DEFAULT 0
+                    baseline_estimated INTEGER NOT NULL DEFAULT 0,
+                    baseline_source TEXT,
+                    policy_sha256 TEXT,
+                    route_stage TEXT
                 )"""
             )
             self._db.execute(
@@ -123,6 +151,34 @@ class Ledger:
             if "baseline_estimated" not in columns:
                 # Older records hold baselines that were measured or supplied by the caller.
                 self._db.execute("ALTER TABLE requests ADD COLUMN baseline_estimated INTEGER NOT NULL DEFAULT 0")
+                columns.add("baseline_estimated")
+            if "baseline_source" not in columns:
+                self._db.execute("ALTER TABLE requests ADD COLUMN baseline_source TEXT")
+                self._db.execute(f"UPDATE requests SET baseline_source={_legacy_baseline_source(columns)}")
+            for name in ("policy_sha256", "route_stage"):
+                if name not in columns:
+                    # Older rows do not say which policy, if any, served them.
+                    self._db.execute(f"ALTER TABLE requests ADD COLUMN {name} TEXT")
+            # Append-only history of outcome updates: what each one set, and what it replaced.
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS outcome_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    outcome_sequence INTEGER NOT NULL,
+                    fields_json TEXT NOT NULL,
+                    previous_json TEXT NOT NULL
+                )"""
+            )
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS outcome_event_request ON outcome_events(tenant, request_id, event_id)"
+            )
+            for action in ("UPDATE", "DELETE"):
+                self._db.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS outcome_events_no_{action.lower()} BEFORE {action} "
+                    "ON outcome_events BEGIN SELECT RAISE(ABORT, 'outcome_events is append-only'); END"
+                )
             self._db.execute(
                 "CREATE TABLE IF NOT EXISTS ledger_state "
                 "(id INTEGER PRIMARY KEY CHECK(id=1), outcome_sequence INTEGER NOT NULL)"
@@ -166,14 +222,36 @@ class Ledger:
         baseline_cost_usd: float | None = None,
         latency_ms: float | None = None,
         baseline_estimated: bool = False,
+        baseline_source: str | None = None,
+        policy_sha256: str | None = None,
+        route_stage: int | str | None = None,
     ) -> str:
         """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
         was worked out, not measured: the frontier model was not called for this
-        request. The report keeps such rows out of verified savings."""
+        request. The report keeps such rows out of verified savings.
+
+        ``baseline_source`` says where a baseline came from (``BASELINE_SOURCES``); left
+        out, a baseline is ``estimated`` when so marked and ``proxy_measured`` otherwise.
+        ``policy_sha256`` and ``route_stage`` trace a request a route policy ran on: the
+        digest of the policy file and the index of the stage that answered, or
+        ``"frontier"``. The stage is stored as text."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
         if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
             raise ValueError("baseline_estimated must be a bool and needs a baseline_cost_usd")
+        if baseline_source is not None and (baseline_source not in BASELINE_SOURCES or baseline_cost_usd is None):
+            raise ValueError(f"baseline_source must be one of {BASELINE_SOURCES} and needs a baseline_cost_usd")
+        if baseline_cost_usd is not None:
+            baseline_source = baseline_source or ("estimated" if baseline_estimated else "proxy_measured")
+            if baseline_estimated and baseline_source != "estimated":
+                raise ValueError("an estimated baseline must have the source 'estimated'")
+        if policy_sha256 is not None and (
+                not isinstance(policy_sha256, str) or len(policy_sha256) != 64
+                or set(policy_sha256) - set("0123456789abcdef")):
+            raise ValueError("policy_sha256 must be a lowercase hexadecimal SHA-256 digest or None")
+        if route_stage is not None and route_stage != "frontier" and (
+                isinstance(route_stage, bool) or not isinstance(route_stage, int) or route_stage < 0):
+            raise ValueError("route_stage must be a stage index, 'frontier' or None")
         if success is not None and not isinstance(success, bool):
             raise ValueError("success must be bool or None")
         for name, value in (
@@ -222,7 +300,10 @@ class Ledger:
             "outcome_updated_at": now if success is not None else None,
             "outcome_sequence": 0,
             "success": None if success is None else int(success),
-            "baseline_estimated": int(baseline_estimated),
+            "baseline_estimated": int(baseline_source == "estimated"),
+            "baseline_source": baseline_source,
+            "policy_sha256": policy_sha256,
+            "route_stage": None if route_stage is None else str(route_stage),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
@@ -263,12 +344,16 @@ class Ledger:
         routing_cost_usd: Any = _UNSET,
         baseline_cost_usd: Any = _UNSET,
     ) -> bool:
-        """Apply a caller-supplied outcome and optional measured costs later. A baseline
-        supplied here replaces an estimated one and is no longer marked as an estimate."""
+        """Apply a caller-supplied outcome and optional costs later.
+
+        A baseline supplied here is the caller's (``baseline_source`` ``caller``). It may
+        replace an estimated or caller-supplied one, never one the proxy measured: that
+        raises ``MeasuredBaselineError`` and changes nothing. Each update is appended to
+        ``outcome_events`` with the values it replaced. Returns False when the tenant
+        has no such request."""
         if not isinstance(success, bool):
             raise ValueError("success must be a bool")
-        assignments = ["success=?", "outcome_updated_at=?"]
-        values: list[Any] = [int(success), datetime.now(timezone.utc).isoformat()]
+        fields: dict[str, Any] = {"success": success}
         for name, value in (
             ("cost_usd", cost_usd),
             ("routing_cost_usd", routing_cost_usd),
@@ -276,24 +361,54 @@ class Ledger:
         ):
             if value is not _UNSET:
                 _nonnegative(value, name)
-                assignments.append(f"{name}=?")
-                values.append(value)
-        if baseline_cost_usd is not _UNSET:
-            assignments.append("baseline_estimated=0")
-        values.extend([tenant, request_id])
+                fields[name] = value
+        if "baseline_cost_usd" in fields:
+            fields["baseline_source"] = None if fields["baseline_cost_usd"] is None else "caller"
+        now = datetime.now(timezone.utc).isoformat()
+        changes = {**fields, "success": int(success), "outcome_updated_at": now}
+        if "baseline_cost_usd" in fields:
+            changes["baseline_estimated"] = 0
         with self._lock, self._db:
-            cursor = self._db.execute(
-                f"UPDATE requests SET {', '.join(assignments)} "
+            # Hold the write lock from the read of the old values to the event that keeps them.
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT success, cost_usd, routing_cost_usd, baseline_cost_usd, baseline_source "
+                "FROM requests WHERE tenant=? AND request_id=?",
+                (tenant, request_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if "baseline_cost_usd" in fields and row["baseline_source"] == "proxy_measured":
+                raise MeasuredBaselineError("the proxy measured this request's baseline; it cannot be replaced")
+            previous = {name: row[name] for name in fields}
+            previous["success"] = None if row["success"] is None else bool(row["success"])
+            changes["outcome_sequence"] = sequence = self._next_outcome_sequence()
+            self._db.execute(
+                f"UPDATE requests SET {', '.join(f'{name}=?' for name in changes)} "
                 "WHERE tenant=? AND request_id=?",
-                values,
+                [*changes.values(), tenant, request_id],
             )
-            if cursor.rowcount:
-                sequence = self._next_outcome_sequence()
-                self._db.execute(
-                    "UPDATE requests SET outcome_sequence=? WHERE tenant=? AND request_id=?",
-                    (sequence, tenant, request_id),
-                )
-        return cursor.rowcount == 1
+            self._db.execute(
+                "INSERT INTO outcome_events (tenant, request_id, created_at, outcome_sequence, fields_json, "
+                "previous_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (tenant, request_id, now, sequence, json.dumps(fields, allow_nan=False),
+                 json.dumps(previous, allow_nan=False)),
+            )
+        return True
+
+    def outcome_events(self, tenant: str, request_id: str) -> list[dict[str, Any]]:
+        """Every outcome update of one request, oldest first: the fields it set and the
+        values they held before. Updates made before the table existed are not here."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM outcome_events WHERE tenant=? AND request_id=? ORDER BY event_id",
+                (tenant, request_id),
+            ).fetchall()
+        return [
+            {**{key: row[key] for key in ("event_id", "request_id", "created_at", "outcome_sequence")},
+             "fields": json.loads(row["fields_json"]), "previous": json.loads(row["previous_json"])}
+            for row in rows
+        ]
 
     def cached(
         self, tenant: str, provider: str, body: dict, *, cache_context: dict[str, Any] | None = None,
@@ -328,15 +443,16 @@ class Ledger:
     def report(self, tenant: str) -> dict[str, Any]:
         """Report known ledger amounts, never extrapolate missing costs.
 
-        Verified savings rest on measured baselines only. Successful requests whose
-        baseline is an estimate are counted and summed apart, under names that say so.
+        Verified savings rest on baselines the proxy measured only. Successful requests
+        whose baseline is an estimate, or was supplied by the caller, are counted and
+        summed apart, under names that say so.
         """
         with self._lock:
-            # A ledger opened read-only may predate the column: its baselines are all measured.
+            # A ledger opened read-only may predate the column: work its sources out as an upgrade would.
             columns = {row["name"] for row in self._db.execute("PRAGMA table_info(requests)")}
-            estimated_column = "baseline_estimated" if "baseline_estimated" in columns else "0 AS baseline_estimated"
+            source = "baseline_source" if "baseline_source" in columns else _legacy_baseline_source(columns)
             rows = self._db.execute(
-                f"SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from,{estimated_column} "
+                f"SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from,{source} AS baseline_source "
                 "FROM requests WHERE tenant=?",
                 (tenant,),
             ).fetchall()
@@ -348,11 +464,18 @@ class Ledger:
             and row["routing_cost_usd"] is not None
             and row["baseline_cost_usd"] is not None
         ]
-        comparable = [row for row in costed if not row["baseline_estimated"]]
-        estimated = [row for row in costed if row["baseline_estimated"]]
-        estimated_baseline = _cost_sum(row["baseline_cost_usd"] for row in estimated)
-        estimated_cost = _cost_sum(row[column] for row in estimated for column in ("cost_usd", "routing_cost_usd"))
+        comparable = [row for row in costed if row["baseline_source"] == "proxy_measured"]
         cost_columns = ("cost_usd", "routing_cost_usd")
+
+        def apart(name: str) -> tuple[int, float | None]:
+            """How many costed successes have a baseline from this source, and their net saving."""
+            chosen = [row for row in costed if row["baseline_source"] == name]
+            baseline = _cost_sum(row["baseline_cost_usd"] for row in chosen)
+            spent = _cost_sum(row[column] for row in chosen for column in cost_columns)
+            return len(chosen), (baseline - spent if chosen and baseline is not None and spent is not None else None)
+
+        estimated_requests, estimated_savings = apart("estimated")
+        caller_requests, caller_savings = apart("caller")
         verified_answer_cost = _cost_sum(row["cost_usd"] for row in comparable)
         verified_routing_cost = _cost_sum(row["routing_cost_usd"] for row in comparable)
         verified_cost = _cost_sum(row[column] for row in comparable for column in cost_columns)
@@ -397,24 +520,29 @@ class Ledger:
             "verified_baseline_cost_usd": verified_baseline,
             "verified_savings_usd": savings,
             "savings_fraction": fraction,
-            "estimated_baseline_requests": len(estimated),
-            "estimated_baseline_savings_usd": (
-                estimated_baseline - estimated_cost
-                if estimated and estimated_baseline is not None and estimated_cost is not None else None
-            ),
+            "estimated_baseline_requests": estimated_requests,
+            "estimated_baseline_savings_usd": estimated_savings,
             "estimated_baseline_scope": (
                 "successful requests answered by a cheaper model, where the frontier model was not called: the "
                 "baseline is an estimate (the returned answer's token counts at the frontier's prices), so this "
                 "figure is approximate and is not part of verified savings"
             ),
-            "scope": "development ledger; outcomes and baseline costs are caller-attested",
+            "caller_baseline_requests": caller_requests,
+            "caller_baseline_savings_usd": caller_savings,
+            "caller_baseline_scope": (
+                "successful requests whose baseline cost was supplied by the caller through the outcome endpoint "
+                "(in a ledger written before baseline sources were recorded, any request whose outcome was "
+                "updated): Tine did not measure it, so this figure is the caller's and is not part of verified savings"
+            ),
+            "scope": "development ledger; outcomes are caller-attested, verified baselines were measured by the proxy",
             "cost_scope": (
                 "answer generation plus routing/checking costs; known totals sum only measured "
                 "components and are incomplete when unknown_cost_requests is nonzero"
             ),
             "savings_scope": (
-                "net of routing costs on successful requests with known answer, routing, and baseline costs only; "
-                "failed, pending, and incompletely costed requests, and requests whose baseline is estimated, "
+                "net of routing costs on successful requests with known answer, routing, and baseline costs only, "
+                "where the proxy measured the baseline by calling the frontier model; failed, pending, and "
+                "incompletely costed requests, and requests whose baseline is estimated or caller-supplied, "
                 "are excluded from this subtotal, so it is not a billing amount"
             ),
         }

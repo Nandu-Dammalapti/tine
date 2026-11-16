@@ -10,6 +10,7 @@ guarantee.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import math
@@ -19,6 +20,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -28,7 +30,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
-from .ledger import MAX_TOKEN_COUNT, Ledger
+from .ledger import MAX_TOKEN_COUNT, Ledger, MeasuredBaselineError
 from .policy import run_stages_async
 from .runtime_checks import build_checks, validate_checks
 from .shadow import (
@@ -44,6 +46,24 @@ def _finite_number(value: Any) -> bool:
         return math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _json_file(variable: str) -> tuple[Any, bytes | None]:
+    """The JSON file an environment variable names, and its bytes; ``({}, None)`` when
+    the variable is unset. An error names the variable and the path."""
+    path = os.environ.get(variable)
+    if not path:
+        return {}, None
+    try:
+        raw = Path(path).read_bytes()
+        return json.loads(raw.decode("utf-8")), raw
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValueError(f"{variable}={path} could not be loaded as JSON: {type(error).__name__}: {error}") from None
+
+
+def _has_stages(policies: dict) -> bool:
+    """Whether any tenant's policy has a cheaper stage to run."""
+    return any(policy["stages"] for by_provider in policies.values() for policy in by_provider.values())
 
 
 @dataclass(repr=False)
@@ -84,6 +104,13 @@ class ProxyConfig:
     # How long a route policy's cheaper stages may take together before the request
     # goes to the frontier. None means timeout_seconds.
     route_deadline_seconds: float | None = None
+    # When true, a request whose ledger row cannot be written gets a 503 instead of an
+    # answer that would go unrecorded.
+    ledger_required: bool = False
+    # SHA-256 of the route policies file's bytes, read once at startup and written on
+    # every row a route policy ran for. None for a configuration built in code: the
+    # proxy then hashes the policies' canonical JSON.
+    route_policies_sha256: str | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -91,6 +118,9 @@ class ProxyConfig:
     @classmethod
     def from_env(cls) -> "ProxyConfig":
         """Read configuration, never print or persist credential values."""
+        shadow_policies, _ = _json_file("TINE_SHADOW_POLICIES")
+        # Hashed from the same bytes that are parsed, so the digest is of what runs.
+        route_policies, route_bytes = _json_file("TINE_ROUTE_POLICIES")
         return cls(
             tenant_keys=json.loads(os.environ.get("TINE_TENANT_KEYS", "{}")),
             openai_api_key=os.environ.get("TINE_OPENAI_API_KEY", ""),
@@ -106,23 +136,21 @@ class ProxyConfig:
             allowed_models=json.loads(os.environ.get("TINE_ALLOWED_MODELS", "{}")),
             prices=json.loads(os.environ.get("TINE_MODEL_PRICES", "{}")),
             verified_cache=os.environ.get("TINE_VERIFIED_CACHE", "true").lower() == "true",
-            shadow_policies=(json.loads(open(os.environ["TINE_SHADOW_POLICIES"], encoding="utf-8").read())
-                             if os.environ.get("TINE_SHADOW_POLICIES") else {}),
+            shadow_policies=shadow_policies,
             shadow_sample_rate=float(os.environ.get("TINE_SHADOW_SAMPLE_RATE", "0")),
             shadow_max_cost_usd=(float(os.environ["TINE_SHADOW_MAX_COST_USD"])
                                  if os.environ.get("TINE_SHADOW_MAX_COST_USD") else None),
-            route_policies=(json.loads(open(os.environ["TINE_ROUTE_POLICIES"], encoding="utf-8").read())
-                            if os.environ.get("TINE_ROUTE_POLICIES") else {}),
+            route_policies=route_policies,
+            route_policies_sha256=hashlib.sha256(route_bytes).hexdigest() if route_bytes is not None else None,
             route_estimate_baseline=os.environ.get("TINE_ROUTE_ESTIMATE_BASELINE", "false").lower() == "true",
-            checks=(json.loads(open(os.environ["TINE_CHECKS"], encoding="utf-8").read())
-                    if os.environ.get("TINE_CHECKS") else {}),
-            tenant_checks=(json.loads(open(os.environ["TINE_TENANT_CHECKS"], encoding="utf-8").read())
-                           if os.environ.get("TINE_TENANT_CHECKS") else {}),
+            checks=_json_file("TINE_CHECKS")[0],
+            tenant_checks=_json_file("TINE_TENANT_CHECKS")[0],
             answer_pattern=os.environ.get("TINE_ANSWER_PATTERN") or None,
             shadow_max_concurrent=int(os.environ.get("TINE_SHADOW_MAX_CONCURRENT", "8")),
             shadow_max_unknown_cost_calls=int(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20")),
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
+            ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
         )
 
     def checks_for(self, tenant: str) -> dict[str, list]:
@@ -180,6 +208,12 @@ class ProxyConfig:
                 raise ValueError("answer_pattern must be a valid regular expression") from None
         if not isinstance(self.route_estimate_baseline, bool):
             raise ValueError("route_estimate_baseline must be a boolean")
+        if not isinstance(self.ledger_required, bool):
+            raise ValueError("ledger_required must be a boolean")
+        if self.route_policies_sha256 is not None and (
+                not isinstance(self.route_policies_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", self.route_policies_sha256)):
+            raise ValueError("route_policies_sha256 must be a lowercase hexadecimal SHA-256 digest")
         if self.route_deadline_seconds is not None and (
                 not _finite_number(self.route_deadline_seconds) or self.route_deadline_seconds <= 0):
             raise ValueError("route_deadline_seconds must be finite and positive")
@@ -380,15 +414,30 @@ def create_app(
     shadow_running = 0
     route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
                       else config.timeout_seconds)
+    # Which route policies a routed ledger row was served under. Computed once: the
+    # policies are read only at startup.
+    policy_sha256 = config.route_policies_sha256 or (hashlib.sha256(json.dumps(
+        config.route_policies, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+        if config.route_policies else None)
+    # What /health reports: a policy file with no stages routes nothing.
+    routing_mode = "policy" if _has_stages(config.route_policies) else "frontier-default"
+    shadow_mode = "sampling" if shadow_on and _has_stages(config.shadow_policies) else "off"
 
     def record_safely(**values) -> bool:
-        # Persistence failure must not discard a provider's answer. The response
-        # header makes the missing audit record visible without leaking DB data.
+        # By default a persistence failure must not discard a provider's answer. The
+        # response header makes the missing audit record visible without leaking DB
+        # data; with ledger_required the caller gets a 503 instead (``unrecorded``).
         try:
             store.record(**values)
             return True
         except Exception:
             return False
+
+    def unrecorded(request_id: str) -> JSONResponse:
+        # With ledger_required, an answer that cannot be recorded is not served.
+        return JSONResponse(
+            {"error": {"message": "The request could not be recorded in the ledger", "type": "ledger_unavailable"}},
+            status_code=503, headers={"x-tine-request-id": request_id, "x-tine-ledger": "unavailable"})
 
     async def tenant(request: Request) -> str:
         authorization = request.headers.get("authorization", "")
@@ -400,14 +449,18 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "routing": "policy" if config.route_policies else "frontier-default",
-                "storage": "sqlite-development", "shadow": "sampling" if shadow_on else "off"}
+        return {"status": "ok", "routing": routing_mode, "storage": "sqlite-development", "shadow": shadow_mode}
 
     @app.patch("/v1/outcomes/{request_id}")
     async def outcome(request_id: str, update: OutcomeUpdate, identity: str = Depends(tenant)):
         fields = update.model_dump(exclude_unset=True)
         success = fields.pop("success")
-        if not store.update_outcome(identity, request_id, success, **fields):
+        try:
+            found = store.update_outcome(identity, request_id, success, **fields)
+        except MeasuredBaselineError:
+            raise HTTPException(status_code=409, detail="The proxy measured this request's baseline cost; "
+                                                        "it cannot be replaced") from None
+        if not found:
             raise HTTPException(status_code=404, detail="Request not found")
         return {"request_id": request_id, "success": success}
 
@@ -559,9 +612,12 @@ def create_app(
                     upstream_status=cached["upstream_status"], cost_usd=0.0,
                     baseline_cost_usd=cached["baseline_cost_usd"],
                     baseline_estimated=bool(cached.get("baseline_estimated")),
+                    baseline_source=cached.get("baseline_source"),
                     cached_from=cached["request_id"],
                     latency_ms=(time.monotonic() - started) * 1000,
                 )
+                if not recorded and config.ledger_required:
+                    return unrecorded(request_id)
                 return JSONResponse(
                     cached["response_body"], status_code=cached["upstream_status"],
                     headers={"x-tine-request-id": request_id, "x-tine-cache": "hit", "x-tine-ledger": "recorded" if recorded else "unavailable"},
@@ -571,7 +627,8 @@ def create_app(
         # goes wrong here leaves the request on the ordinary frontier path below.
         routing_spent: float | None = None
         route = config.route_policies.get(identity, {}).get(provider)
-        if route is not None and route["stages"] and not stream and selected == frontier:
+        routing_ran = route is not None and bool(route["stages"]) and not stream and selected == frontier
+        if routing_ran:
             try:
                 call, named_checks = stage_tools(identity, provider, route, body, url, headers)
                 routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
@@ -600,7 +657,10 @@ def create_app(
                         cached_tokens=tokens["cached_tokens"], cost_usd=answer_cost,
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
                         baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
+                        policy_sha256=policy_sha256, route_stage=routed["stage"],
                         latency_ms=(time.monotonic() - started) * 1000)
+                    if not recorded and config.ledger_required:
+                        return unrecorded(request_id)
                     return Response(
                         result["raw"], status_code=200, media_type="application/json",
                         headers={"x-tine-request-id": request_id, "x-tine-model": served,
@@ -636,9 +696,12 @@ def create_app(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
             stream=stream, fallback_used=fallback, cache_context=cache_context,
+            # A route policy ran and sent the request on to the frontier.
+            **({"policy_sha256": policy_sha256, "route_stage": "frontier"} if routing_ran else {}),
         )
         if response is None:
-            # What a route policy spent before the frontier failed is still known.
+            # What a route policy spent before the frontier failed is still known. No
+            # answer is served here, so ledger_required does not change the reply.
             recorded = record_safely(**common, routing_cost_usd=routing_spent,
                                      latency_ms=(time.monotonic() - started) * 1000)
             return JSONResponse(
@@ -655,6 +718,9 @@ def create_app(
             # Streaming never enters the verified answer cache. Costs stay unknown
             # until actual usage/cost is supplied through the outcome endpoint.
             recorded = record_safely(**common, upstream_status=response.status_code)
+            if not recorded and config.ledger_required:
+                await response.aclose()
+                return unrecorded(request_id)
             result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
 
             async def chunks():
@@ -695,6 +761,8 @@ def create_app(
             routing_cost_usd=routing_spent,
             latency_ms=(time.monotonic() - started) * 1000,
         )
+        if not recorded and config.ledger_required:
+            return unrecorded(request_id)
         if route is not None and route["stages"] and not stream:
             result_headers["x-tine-route"] = "frontier"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"

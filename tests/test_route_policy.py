@@ -315,18 +315,20 @@ def test_an_estimated_baseline_is_labelled_and_kept_out_of_verified_savings():
                 estimated = (await client.get("/v1/savings", headers=headers)).json()
                 await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
                                    json={"success": True, "baseline_cost_usd": 0.25})
-                measured = (await client.get("/v1/savings", headers=headers)).json()
-                return response, ledger.get("a", request_id), estimated, measured
-    response, row, estimated, measured = asyncio.run(scenario())
+                supplied = (await client.get("/v1/savings", headers=headers)).json()
+                return response, ledger.get("a", request_id), estimated, supplied
+    response, row, estimated, supplied = asyncio.run(scenario())
     assert response.headers["x-tine-baseline"] == "estimated"
     # The frontier was never called for this request: its cost here is an estimate.
     assert estimated["comparable_verified_requests"] == 0 and estimated["verified_savings_usd"] is None
     assert estimated["estimated_baseline_requests"] == 1
     assert estimated["estimated_baseline_savings_usd"] == pytest.approx(0.2 - 0.006)
     assert "estimate" in estimated["estimated_baseline_scope"]
-    # A baseline the caller then supplies is a measured one.
-    assert row["baseline_estimated"] == 0 and measured["estimated_baseline_requests"] == 0
-    assert measured["verified_savings_usd"] == pytest.approx(0.25 - 0.006)
+    # A baseline the caller then supplies is the caller's, reported apart from verified savings.
+    assert row["baseline_estimated"] == 0 and row["baseline_source"] == "caller"
+    assert supplied["estimated_baseline_requests"] == 0 and supplied["verified_savings_usd"] is None
+    assert supplied["caller_baseline_requests"] == 1
+    assert supplied["caller_baseline_savings_usd"] == pytest.approx(0.25 - 0.006)
 
 
 def test_no_baseline_header_without_an_estimate():
@@ -547,3 +549,89 @@ def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     defaults = ProxyConfig.from_env()
     assert (defaults.tenant_checks, defaults.route_deadline_seconds, defaults.shadow_max_concurrent,
             defaults.shadow_max_unknown_cost_calls) == ({}, None, 8, 20)
+
+
+def test_a_routed_row_names_the_policy_file_and_the_stage_that_answered(monkeypatch, tmp_path):
+    import hashlib
+    policies = {"a": {"openai": AGREE}}
+    canonical = hashlib.sha256(json.dumps(policies, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    routed = config(route_policies=policies)
+    _, served = ask(routed, world({"small-a": "42", "small-b": "42"}, []))
+    _, escalated = ask(routed, world({"small-a": "41", "small-b": "42", "frontier": "42"}, []))
+    assert (served["policy_sha256"], served["route_stage"]) == (canonical, "0")
+    assert (escalated["policy_sha256"], escalated["route_stage"]) == (canonical, "frontier")
+    # No policy ran: a streamed request, a tenant without one, a policy with no stages.
+    _, streamed = ask(routed, world({"frontier": "42"}, []),
+                      body={"model": "frontier", "stream": True, "messages": [{"role": "user", "content": "q"}]})
+    _, unrouted = ask(config(), world({"frontier": "42"}, []))
+    _, empty = ask(config(route_policies={"a": {"openai": {**AGREE, "stages": []}}}), world({"frontier": "42"}, []))
+    assert all(row["policy_sha256"] is row["route_stage"] is None for row in (streamed, unrouted, empty))
+    # Loaded from the environment, the digest is of the file's bytes as read.
+    path = tmp_path / "route-policies.json"
+    path.write_bytes(b'{"a": {"openai": ' + json.dumps(AGREE).encode() + b'}}\n')
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    monkeypatch.setenv("TINE_ROUTE_POLICIES", str(path))
+    for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES"):
+        monkeypatch.delenv(name, raising=False)
+    loaded = ProxyConfig.from_env()
+    assert loaded.route_policies == policies
+    assert loaded.route_policies_sha256 == hashlib.sha256(path.read_bytes()).hexdigest() != canonical
+    loaded.openai_api_key, loaded.openai_frontier_model, loaded.prices = "secret", "frontier", PRICES
+    _, row = ask(loaded, world({"small-a": "42", "small-b": "42"}, []))
+    assert row["policy_sha256"] == loaded.route_policies_sha256
+    for digest in ("A" * 64, "a" * 63, 1):
+        with pytest.raises(ValueError, match="route_policies_sha256"):
+            create_app(config(route_policies=policies, route_policies_sha256=digest), ledger=Ledger())
+
+
+@pytest.mark.parametrize("variable", ["TINE_ROUTE_POLICIES", "TINE_SHADOW_POLICIES", "TINE_CHECKS",
+                                      "TINE_TENANT_CHECKS"])
+def test_a_file_that_cannot_be_loaded_is_named_with_its_variable(monkeypatch, tmp_path, variable):
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token-a": "a"}')
+    for name in ("TINE_ROUTE_POLICIES", "TINE_SHADOW_POLICIES", "TINE_CHECKS", "TINE_TENANT_CHECKS"):
+        monkeypatch.delenv(name, raising=False)
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text('{"a": {"openai": ', encoding="utf-8")
+    for path in (corrupt, tmp_path / "missing.json", tmp_path):
+        monkeypatch.setenv(variable, str(path))
+        with pytest.raises(ValueError) as error:
+            ProxyConfig.from_env()
+        assert f"{variable}={path}" in str(error.value)
+
+
+def test_health_says_policy_only_when_a_loaded_policy_has_stages():
+    def health(app_config):
+        async def scenario():
+            app = create_app(app_config, ledger=Ledger())
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                return (await client.get("/health")).json()
+        return asyncio.run(scenario())
+    empty = {**AGREE, "stages": []}
+    assert health(config(route_policies={"a": {"openai": empty}}))["routing"] == "frontier-default"
+    assert health(config(route_policies={"a": {"openai": AGREE}}))["routing"] == "policy"
+    sampling = dict(shadow_sample_rate=1.0, shadow_max_cost_usd=1.0)
+    assert health(config(shadow_policies={"a": {"openai": empty}}, **sampling))["shadow"] == "off"
+    assert health(config(shadow_policies={"a": {"openai": AGREE}}, **sampling))["shadow"] == "sampling"
+
+
+def test_a_caller_cannot_replace_a_measured_baseline_and_every_update_is_kept():
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(world({"frontier": "42"}, []))) as upstream:
+            ledger = Ledger()
+            app = create_app(config(), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                response = await client.post("/v1/chat/completions", headers=headers, json={
+                    "model": "frontier", "messages": [{"role": "user", "content": "q"}]})
+                request_id = response.headers["x-tine-request-id"]
+                refused = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                             json={"success": True, "baseline_cost_usd": 99.0})
+                accepted = await client.patch(f"/v1/outcomes/{request_id}", headers=headers,
+                                              json={"success": True, "routing_cost_usd": 0.0})
+                report = (await client.get("/v1/savings", headers=headers)).json()
+                return refused, accepted, report, ledger.get("a", request_id), ledger.outcome_events("a", request_id)
+    refused, accepted, report, row, events = asyncio.run(scenario())
+    assert refused.status_code == 409 and "measured" in refused.json()["detail"]
+    assert accepted.status_code == 200 and row["baseline_cost_usd"] == pytest.approx(0.2)
+    assert row["baseline_source"] == "proxy_measured" and report["comparable_verified_requests"] == 1
+    assert [event["fields"] for event in events] == [{"success": True, "routing_cost_usd": 0.0}]
