@@ -322,10 +322,10 @@ def create_app(
                 response = await upstream.post(url, json={**body, "model": model}, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
-                answer = extract_answer(provider, payload, config.shadow_answer_pattern)
-                if answer is None:
-                    raise ValueError("no comparable answer")
-                return {"answer": answer, "cost_usd": _cost(config, provider, model, _usage(provider, payload))}
+                # A reply with no comparable answer was still paid for: keep its cost and
+                # let the stage fail on the missing answer.
+                return {"answer": extract_answer(provider, payload, config.shadow_answer_pattern),
+                        "cost_usd": _cost(config, provider, model, _usage(provider, payload))}
 
             outcome = await shadow_stages(policy, call)
             shadow_store.record(

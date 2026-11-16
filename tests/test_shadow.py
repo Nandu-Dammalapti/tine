@@ -134,3 +134,12 @@ def test_shadow_store_keeps_tenants_apart_and_stores_no_text():
     assert store.spend("a") == 0.5 and store.spend("b") == 0
     dumped = json.dumps([tuple(row) for row in ledger._db.execute("SELECT * FROM shadow_runs")])
     assert "secret answer" not in dumped
+
+
+def test_a_reply_with_no_comparable_answer_is_still_paid_for():
+    seen = []
+    provider = serve({"frontier": "(B)", "small-a": "no letter here", "small-b": "(B)"}, seen)
+    _, report, _ = ask(config(shadow_answer_pattern=r"\(([A-Z])\)"), provider)
+    body = report.json()
+    assert body["policy_would_accept"] == 0 and body["failed_shadow_calls"] == 0
+    assert body["unknown_cost_requests"] == 0 and body["projected_policy_cost_usd"] == pytest.approx(0.206)
