@@ -1,0 +1,23 @@
+# Allow-list: ignore everything, then admit only what the image needs.
+*
+!pyproject.toml
+!tine
+
+# Never in the build context, even if the allow-list above is loosened later.
+artifacts
+.tine-dev
+.git
+.env
+.env.*
+**/*.env
+deploy
+tests
+results
+notebooks
+scripts
+docs
+**/__pycache__
+**/*.py[cod]
+**/*.sqlite3
+**/*.sqlite3-wal
+**/*.sqlite3-shm

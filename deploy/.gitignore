@@ -1,0 +1,3 @@
+# Real configuration never goes into git. Only the *.example files do.
+*.env
+config/

@@ -86,7 +86,7 @@ stricter judge threshold (certifies 7.7% and 19.7% at epsilon 0.04 on the two sp
   certification (137) is what lets it pass. **The second split was chosen after
   seeing the first result**; it is a statement about sample size, reported next to
   the default, not a tuned headline. Nothing certifies at 2% with either split: that
-  needs about 150 certify tasks with zero failures, or more with any.
+  needs 149 certify tasks with zero failures, or more with any.
 - On all 274 tasks at once (no split, so only descriptive): that chain saves 36.5%,
   solves 55.5% against 48.2%, and loses 2 of the 274 tasks the frontier solves.
 
@@ -132,7 +132,11 @@ sonnet` means Sonnet reads only what Haiku accepted and both must accept):
   A stricter or stronger judge lowers the failure rate, but with 80 to 137 certify
   tasks the bound cannot go below 2.2-3.6% even with zero failures.
 - So the way to certified savings at 2-4% is more graded tasks, not a better judge:
-  about 150 certify tasks with no failures for 2%, about 500 graded tasks in all.
+  149 certify tasks with no failures for 2%, about 500 graded tasks in all. That
+  figure is optimistic: [docs/PLANNING.md](../../docs/PLANNING.md), written later,
+  gives one chain tested alone a 42% to 45% chance of certifying at 2% with all 500
+  SWE-bench Verified tasks graded, if its true loss rate is the observed 0.73%, and
+  the many-chain sequence run today needs more.
   Running Opus on all cases (about $14) was not done for that reason.
 
 ## What this means

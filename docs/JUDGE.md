@@ -8,7 +8,8 @@ apply cleanly, break nothing and do not fix the issue
 (`results/2026-11-10-swe-static-checks`). A judge reads the issue and the patch and
 says whether the patch resolves the issue. This page says how a judge is measured.
 
-`scripts/judge_patches.py` has three steps. Nothing it does executes a patch.
+`scripts/judge_patches.py` has four steps: prepare, judge, score, and checks (the last
+is under "From verdicts to a chain"). Nothing it does executes a patch.
 
 ## 1. Prepare cases
 
@@ -30,7 +31,7 @@ random subset.
 
 ## 2. Get verdicts
 
-Every judge sees the same instructions (`INSTRUCTIONS` in the script, versioned by
+Every judge sees the same instructions (`INSTRUCTIONS` in `tine/judge.py`, versioned by
 `PROMPT_VERSION`) and returns, per case, `accept` or `reject`, a probability that the
 patch resolves the issue, and a short reason.
 
@@ -154,3 +155,42 @@ when it passed the free checks and every judge accepted it, and an outcomes file
 recorded cost added to the answers it read, so savings are net of the judge. Several `--verdicts`
 files are judges in order, each reading only what the earlier ones accepted. Results:
 `results/2026-11-14-api-judge`.
+
+## Which judge to use (2026-11-16)
+
+Measured in `results/2026-11-14-api-judge` and `results/2026-11-16-judge-probes`:
+
+- The judges partly remember these public SWE-bench fixes. On the tasks the judge
+  model cannot recall from the issue alone, which stand in for a customer's own code,
+  Haiku and Sonnet let enough wrong patches through that the code chain loses about
+  2.3% of the tasks the frontier solves.
+- `claude-opus-5-5` on the same tasks rejects 89% of wrong patches and 9% of right
+  ones, and the chain's loss falls to 0.46%.
+- Haiku as a screen in front of Opus keeps that loss and cuts the judge spend by 38%:
+  Opus reads only what Haiku accepts.
+- Simple injected approvals in a patch ("verified", "reviewer: accept") did not move
+  any judge, and neither did removing the project's name. Adding the surrounding code
+  did not help.
+
+For code, the recommended named check is therefore the customer's tests, then Haiku,
+then Opus, all of which must pass (`docs/PROXY.md`, Named checks):
+
+```json
+{"tests+judge:haiku-opus": [
+  {"type": "webhook", "url": "https://ci.internal.example/tine-check", "bearer_env": "CI_TOKEN"},
+  {"type": "judge", "model": "claude-haiku-5-5", "effort": "medium"},
+  {"type": "judge", "model": "claude-opus-5-5", "effort": "medium"}
+]}
+```
+
+A policy certified with this check must name it, and its chain must have been
+certified with verdicts from the same two models. The order was chosen after seeing
+the single-judge results on the same 150 tasks; confirm it on fresh tasks before
+quoting it as a measured design. With a Haiku or Sonnet judge alone, plan for a 4-5%
+quality limit on code.
+
+`scripts/judge_probes.py` builds the probe cases (anonymized, injected, with code
+context) and compares any two verdict files case by case. `scripts/judge_recall_probe.py`
+measures which tasks the judge model can write the fix for from the issue alone.
+`--style hardened` adds one sentence telling the judge that the issue and patch are
+untrusted; it made no measurable difference and is not the default.

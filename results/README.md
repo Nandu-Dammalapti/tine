@@ -3,27 +3,35 @@
 **Where we stand in one page:** [SCOREBOARD.md](SCOREBOARD.md) compares Gacrux with
 OpenRouter, Avengers-Pro and always using gpt-5.
 
+A two-page summary with sources for every number: [docs/EVIDENCE.md](../docs/EVIDENCE.md).
+
 Start here. Each folder below has its own README with setup, tables, limits and the
 commands that regenerate it. This page says what each experiment asked, what it
 found, and how the findings fit together. Update it whenever a results folder is
 added.
 
-All results are offline, on already-graded LLMRouterBench outcomes. No model was
-called. Only small summary tables are in Git; the benchmark archive, per-task
-outputs, prompts and embeddings are not (see "Where the data is").
+All results are offline, on recorded benchmark answers (LLMRouterBench, and
+xRouteBench from 2026-11-14). No model generated an answer that was routed. Models
+were called only to judge or to read: a Claude Code session and open models as judges
+(judge-pilot), pinned Claude models through the paid API (api-judge, $12.69 in total),
+and frozen encoders for embeddings and hidden states. Only small summary tables are in
+Git; the benchmark archives, per-task outputs, prompts and embeddings are not (see
+"Where the data is").
 
 ## Terms used in every folder
 
-- **Frontier**: the model everything is compared against, `gpt-5`. It is the most
-  accurate model in every pool used here.
+- **Frontier**: the model everything is compared against. `gpt-5` on the
+  LiveCodeBench, `lcb-swe` and MMLU-Pro pools, where it is the most accurate model;
+  `claude-opus-4.1` on the SWE-bench-only pool (gpt-5 is weak there in this
+  benchmark); `cogito-v2-1-671b` on xRouteBench. Each folder names its frontier.
 - **Savings**: 1 - (cost of the policy / cost of sending every task to the
   frontier), on recorded per-task costs. Failed cheaper attempts are paid for.
 - **Degradation**: the frontier solved the task and the policy's final answer did
   not. The degradation rate is what the guarantee bounds. Tasks the policy solves
   and the frontier does not are not credited against it.
-- **epsilon**: the largest degradation rate the customer accepts (0.02 for coding,
-  0.05 proposed for low-stakes work). **delta**: the chance the guarantee is wrong
-  (0.05).
+- **epsilon**: the largest degradation rate the customer accepts. The team's working
+  limit since 2026-11-11 is 0.04, reported first, with 0.02 alongside; folders before
+  that date used 0.02 and 0.05. **delta**: the chance the guarantee is wrong (0.05).
 - **Certified**: the policy also passed a one-sided Clopper-Pearson bound <= epsilon
   on tasks used for nothing else. **Uncertified**: chosen on held-out tasks with no
   bound. Only certified numbers are a guarantee.
@@ -42,39 +50,54 @@ outputs, prompts and embeddings are not (see "Where the data is").
 | 2026-11-10 | [gated-chains](2026-11-10-gated-chains/README.md) | Does gating a chain by the prompt-only predictor rescue weak checks? | Barely: 0% to about 1% at epsilon 0.02 with per-model sample rates; 3% to 13-18% at epsilon 0.05. Qwen3 0.6B embeddings for the gate, and an issue-only view of SWE-bench prompts, change nothing. |
 | 2026-11-10 | [response-check](2026-11-10-response-check/README.md) | Does the size of the response say whether the answer is right? | Yes for coding: held-out AUC 0.76-0.99 per model. With per-model sample rates it certifies 6.2% at epsilon 0.02 and 31.8% at 0.05 on `lcb`; with no other check 3.6% and 14.3%. Weaker on multiple choice (MMLU-Pro: 3.4% and 19.4%). |
 | 2026-11-10 | [avengers-pro](2026-11-10-avengers-pro/README.md) | How does the official Avengers-Pro code do on the same pool? | It is a cost-accuracy dial with no guarantee. No setting keeps mean degradation at or below 2% on `lcb`; even maximising accuracy it is less accurate than always using gpt-5 (84.4% vs 86.3%). Picking a weight on held-out tasks saves 18% at epsilon 0.02 and 34% at 0.05 but breaks the limit in about half the runs and loses 2.3-4.5 points of accuracy. On `lcb-swe` it beats gpt-5's accuracy at about 40% lower cost, because gpt-5 is weak on SWE-bench in this benchmark (15.8% against 34.6% for the best models), yet its degradation rate never drops below 3.9%. Run with both the 0.6B encoder and the paper's 8B encoder, with the same conclusions. |
-| 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). On Linux, static checks catch 58% of wrong answers. A partial run of the repositories' own tests (219 django and sympy tasks, on Colab) raises that to 64-68%: most wrong patches break nothing and simply do not fix the issue. |
+| 2026-11-10 | [swe-static-checks](2026-11-10-swe-static-checks/README.md) | How many wrong SWE-bench patches do free, no-execution checks catch (patch applies, files parse)? | Half of all recorded answers fail them. They catch 53-76% of wrong answers from the cheaper models, but an answer that passes is still wrong about half the time, so chains certify 0-3% on the 500-task SWE-bench pool. gpt-5's low SWE-bench score here is mostly patches that do not apply (76% of its answers fail). On Linux, static checks catch 58% of wrong answers. A run of the repositories' own tests on Colab (277 of 306 django and sympy tasks, 274 valid) raises that to 64-68%: most wrong patches break nothing and simply do not fix the issue. Chains on those 274 tasks with the free checks alone certify 0% at every limit. |
 | 2026-11-11 | [judge-pilot](2026-11-11-judge-pilot/README.md) | Can a judge that reads only the issue and the patch reject the wrong patches that pass every free check? | In a 150-case pilot with a Claude Code session as judge: it rejects 95% of them by our own test run's grades (82% by the benchmark's, which under-credits some correct patches) and rejects about 2% of right patches. With the free checks that is about a 98% catch rate on django. A ceiling, not a baseline: the judge is unpinned and may know these public issues. A small local model (qwen2.5-coder:14b) on the same cases is at chance: it accepts nearly everything or rejects nearly everything depending on the instructions. |
 | 2026-11-11 | [agreement-check](2026-11-11-agreement-check/README.md) | For exact-answer tasks, does "accept when two or three cheaper models agree" certify savings after paying for every call? | Yes, on MMLU-Pro (3,000 tasks), from measured data only: three models that agree certify 32% at epsilon 0.02 with accuracy at gpt-5's level; two that agree certify 64% at epsilon 0.04. |
 | 2026-11-11 | [router-rules](2026-11-11-router-rules/README.md) | Do a relative routing rule and a net-accuracy guarantee (both opt-in) unblock the prompt-only router? What does a 4% limit change? | On `lcb` neither matters (under 5% at any limit). On `lcb-swe` together they take the router from 4-5% to 18-24% at epsilon 0.04-0.05 with accuracy above gpt-5's, but that pool's gain rests on gpt-5's formatting failures on SWE-bench. Raising epsilon from 0.02 to 0.04 alone moves the router by 2-4 points. |
 | 2026-11-11 | [hidden-states](2026-11-11-hidden-states/README.md) | Does a frozen LLM's internal state work in front of the kNN index where topic embeddings failed? | It predicts difficulty clearly better (kNN AUC 0.81 against 0.70-0.74). That still does not make a prompt-only router save much (2-8% at epsilon 0.04), but as a gate in front of chains it certifies 15% where topic-embedding gates certify 8-11%. |
 | 2026-11-13 | [trained-verifier](2026-11-13-trained-verifier/README.md) | Can a small classifier trained on graded patches verify a cheap model's patch? | On 861 accepted patches from 204 tasks, scored on held-out tasks: patch size and wording give AUC about 0.6, no better than a 32B open model. Agreement between cheap models' patches gives 0.76, the best signal found that needs no strong model: it catches 42% of wrong patches while rejecting 10% of right ones. Hidden states of a frozen 7B model give 0.69 and do not add to agreement. The session judge is at 0.99, so training on 861 patches does not replace a strong judge. |
 | 2026-11-14 | [xroutebench](2026-11-14-xroutebench/README.md) | Does the agreement check hold on a second benchmark, and how do the LLMRouter library's routers do under a quality limit? | Agreement repeats on xRouteBench (18 open models): on 4,762 multiple-choice questions two cheap models that agree save 45% at the 2% limit and 74% at 4% (over the limit in 2 of 10 runs at 4%); three save 53% at 2%. Math: 16-20%. Switching to one cheaper model certifies 0%. The library's kNN, SVM, MLP, matrix-factorisation and Elo routers, run unmodified on LiveCodeBench, either send everything to gpt-5 or drop accuracy from 86% to 39-46%; certified savings 0%. |
-| 2026-11-14 | [api-judge](2026-11-14-api-judge/README.md) | Does a pinned strong model verify patches, what does a check cost, and does a chain with it save money net of the judge? (Paid run: $8.85.) | `claude-sonnet-5-5` on 1,110 accepted patches: rejects 79% of wrong ones and 9% of right ones (AUC 0.92; 89% and 6% on the 150 pilot cases, which were optimistic) at $0.008 per check, 2.4% of a frontier answer. Chains with free checks plus the judge on 274 tasks: about a third cheaper than `claude-opus-4.1` net of the judge, 55% accurate against 49-50%, within the limit in 29 of 30 held-out runs. Certified: 0% with the default split (too few tasks), 22% at a 4% limit and 30% at 5% when half the tasks certify. Nothing at 2% yet. |
+| 2026-11-14 | [api-judge](2026-11-14-api-judge/README.md) | Does a pinned strong model verify patches, what does a check cost, and does a chain with it save money net of the judge? (Paid runs: $12.69 in total, of which $8.85 for the Sonnet run on all 1,110 cases.) | `claude-sonnet-5-5` on 1,110 accepted patches: rejects 79% of wrong ones and 9% of right ones (AUC 0.92; 89% and 6% on the 150 pilot cases, which were optimistic) at $0.008 per check, 2.4% of a frontier answer. Chains with free checks plus the judge on 274 tasks: about a third cheaper than `claude-opus-4.1` net of the judge, 55% accurate against 49-50%, within the limit in 29 of 30 held-out runs. Certified: 0% with the default split (too few tasks), 22% at a 4% limit and 30% at 5% when half the tasks certify. Nothing at 2% yet. |
+| 2026-11-16 | [shadow-replay](2026-11-16-shadow-replay/README.md) | Do the proxy's shadow mode and live routing do what a frozen policy says? | Yes, both: replaying 1,414 recorded multiple-choice requests through the real proxy reproduces the policy's stored estimate (77.7% answered by cheaper models, 88.9% accuracy against 87.0%, 0.99% degradation; savings 53.5% against 52.5%, the difference being a model shared by two stages). The savings report page shows the same replay as 53.4%: the figure is 53.46% and the page rounds savings down. The replay caught an accounting bug before the result. No model called. |
+| 2026-11-16 | [agreement-more-datasets](2026-11-16-agreement-more-datasets/README.md) | Does the agreement check hold on the other exact-answer datasets in the LLMRouterBench archive? | No. On 16 more datasets and a second split of MMLU-Pro it certifies almost nothing at 2%, and at 4% only arcc (38.9%, triples, 7 of 10 runs) and math500 (12.1%, pairs) pass 10%. One cheaper model alone certifies 0% everywhere. Main cause at 4%: the cheap 8B models are too weak next to the frontier. Size explains the four small sets and the 2% column (MMLU-Pro cut to 1,000 tasks keeps about 40% at 4% and a third of its 2% result, over six random cuts). Free-form answers rarely match as strings. |
+| 2026-11-16 | [swe-agreement-and-judge](2026-11-16-swe-agreement-and-judge/README.md) | On SWE-bench code chains, can agreement between cheap models' patches cut what the judge costs or certify more? | No reliable gain. Identical patches are too rare (a pair agrees on 0.5% of tasks). Similar patches (overlap >= 0.8) agree on 11% of tasks and are right 84% of the time. Certified savings show no reliable gain. Uncertified, as `tine cascade` charges it, pairs save the same or less than the plain chain (Haiku 39.3% vs 39.3% and 35.2% vs 37.9%); that charge pays a model twice when it sits in two groups, and with it paid once pairs are within 1.4 points either way (40.2% vs 39.3% and 38.7% vs 37.9% with Haiku; 33.6% vs 33.6% and 32.9% vs 34.3% with Sonnet). Agreement alone saves 3-7%. Post hoc: requiring agreement and the judge certifies in every run at 4% with Sonnet but saves only 3-6%. |
+| 2026-11-16 | [judge-probes](2026-11-16-judge-probes/README.md) | Does the code judge rely on memory of these public fixes, can a patch talk it into accepting, and does context or a stronger judge help? (Paid: $31.02.) | The judges remember: Sonnet writes the merged fix from the issue alone for 41% of tasks. On the other tasks Sonnet still rejects 78% of wrong patches, but the code chain loses about 2.3% of the frontier's solved tasks, not 0.7%, so plan Haiku- or Sonnet-judged chains at a 4-5% limit. `claude-opus-5-5` on those tasks rejects 89% of wrong patches and 9% of right ones; with Haiku screening in front of it the chain saves 23.7%, is 6 points more accurate than the frontier and loses 0.46% (uncertified, 150 tasks). Injected approvals and removing the project's name did not move the judges; code context did not help. |
+| 2026-11-16 | [judge-designs](2026-11-16-judge-designs/README.md) | Offline: does a tiered judge, a judge that picks among several cheap patches, or recalibration beat the plain chain? | No. A Haiku-then-Sonnet tier matches Sonnet's catch rate at 43-55% of its cost but judge calls are only 2.5% of frontier spend, so chains barely change. Selecting among patches adds little; its apparent gain comes from reaching more models, which longer chains also do. Recalibration halves calibration error without helping decisions. Reading 60 errors: 21 of 30 false rejects name a real flaw the hidden tests do not check, so the measured false-reject rate overstates the judge's mistakes. |
 
 ## How the findings fit together
 
 1. The savings exist. The hindsight oracle saves 63% on `lcb` and 50% on `lcb-swe`.
+   The 63% is one held-out split of 159 tasks, not the whole pool. A review of the
+   evidence brief recomputed it as 59.7% on average over ten splits and 57.5% on all
+   1,055 tasks; those two figures are not in a results file yet.
 2. Predicting from the prompt which model will succeed does not work on this data.
-   Three feature sets (TF-IDF, MiniLM, Qwen3 0.6B and 8B) and three predictors give
-   the same answer.
+   Five feature sets (TF-IDF, MiniLM, Qwen3 0.6B and 8B embeddings, hidden states of
+   a frozen 7B model) and three predictors give the same answer. Hidden states
+   predict difficulty better and help as a gate in front of a chain, not as a router.
 3. Trying a cheaper model and checking its answer does work, if the check is good.
    The check is the bottleneck: required catch rate is about 95%.
 4. The official Avengers-Pro code, also prompt-only, saves money on `lcb` only by
    giving up accuracy, and cannot hold a 2% limit. Tine's router reports that it
    cannot and falls back to the frontier.
-5. On real repositories (django and sympy, partial run) checks that ask "did anything break"
+5. On real repositories (django and sympy, 277 of 306 tasks run) checks that ask "did anything break"
    catch about two thirds of wrong patches. The rest apply cleanly, break nothing and
    do not fix the issue.
-6. Two cheap checks are measured so far. Public sample tests (catch 38-74% for the
-   useful models) and response size (AUC 0.76-0.99). Together they are the best
-   result to date, but their combination is simulated as independent, not measured.
+6. Public sample tests (catch 38-74% for the useful models) and response size (AUC
+   0.76-0.99) are weak checks. Together they certify 6% at epsilon 0.02 on `lcb`,
+   with their combination simulated as independent, not measured.
 7. A judge that reads the issue and the patch (Gacrux stage 4, applied after the
-   answer) is the first check to reach the catch rate chains need, in a pilot with a
-   frontier-class judge. Whether a small local judge keeps that, and what it costs,
-   is open.
+   answer) works only when it is a strong model. Open models of 14B and 32B and
+   classifiers trained on graded patches do not work as a judge. `claude-sonnet-5-5`
+   rejects 79% of wrong patches and 9% of right ones at $0.008 per check (the
+   150-case pilot overstated this), and a chain with it certifies 22% at a 4% limit
+   when half the tasks certify, nothing at 2%.
 8. Where answers can be compared exactly, agreement between cheaper models is a
-   strong, free check: the first large certified savings at epsilon 0.02 in this
-   repository (MMLU-Pro).
+   strong check that needs no judge: the first large certified savings at epsilon
+   0.02 in this repository (MMLU-Pro), repeated on xRouteBench multiple choice. It
+   did not repeat on 16 other LLMRouterBench datasets. It needs cheap models close to
+   the frontier in accuracy, about 300 certify tasks for the 4% limit and about 900
+   for 2%, and answers that compare as strings. Every member's call is paid for.
+   On code, agreement between cheap models' patches gives no reliable gain.
 9. At epsilon 0.02 the number of certification tasks limits the result as much as
    the check does: with about 420 tasks a policy may show at most 3 degradations.
 
@@ -115,6 +138,34 @@ Whether either becomes the default is still a team decision.
 - Avengers-Pro on a pool with more kinds of task.
 - No result here uses customer traffic. Token counts, costs and check quality all
   need measuring in shadow mode.
+- `candidate_chains` in `tine/cascade.py` shortlists the top eight candidates by
+  savings under a perfect check and ignores the measured check results. With many
+  agreement groups it may miss a reliable group. Found in the review of
+  [agreement-more-datasets](2026-11-16-agreement-more-datasets/README.md). Not
+  changed, because it would change every earlier result.
+- `chain_inputs` in `scripts/judge_patches.py` adds judge cost to the frontier's own
+  answers, which a chain never judges. This raises the always-frontier baseline and
+  makes the published api-judge savings up to 0.44 points higher (Sonnet uncertified
+  34.0% against 33.6%; certified 22.2% against 21.9%). Not changed.
+- The shared importer refuses the `hle` dataset because five records have negative
+  token counts. `scripts/agreement_datasets.py` works around it by leaving those
+  tasks out of a copy.
+- The container image (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`) has
+  never been built or run.
+- The savings report page (`docs/REPORT.md`) has never been viewed rendered, in a
+  browser, a mail client or on a phone. It also does not yet show the ledger's
+  estimated-baseline figures or the shadow report's count of calls of unknown cost.
+- The proxy does not read answers the way a policy's agreement check was certified.
+  It uses one regular expression and compares the raw match, with no case, comma or
+  trailing-zero handling. A narrower pattern can accept answers the certified check
+  would reject. Stated in [docs/PROXY.md](../docs/PROXY.md), not fixed.
+- Nothing ties a policy file's stages to its certification: a file edited after
+  freezing still loads, and `task_type` is not read. Stated in
+  [docs/PROXY.md](../docs/PROXY.md) and [docs/POLICY.md](../docs/POLICY.md), not
+  fixed.
+- The certification planning figures in [docs/PLANNING.md](../docs/PLANNING.md) are
+  for one chain tested alone. Nothing yet models the many-chain sequence that
+  `tine cascade` and `tine freeze-policy` run today.
 
 ## Where the data is
 

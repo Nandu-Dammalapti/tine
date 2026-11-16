@@ -2,14 +2,15 @@
 
 Escalation chains (`docs/CHECKS.md`) need a check that decides, at request time,
 whether a cheaper model's answer is good enough to return. For a code change in a
-real repository there are three kinds of check, from free to expensive. This page
+real repository there are several kinds of check, from free to expensive. This page
 says how each is measured on the recorded SWE-bench answers in LLMRouterBench.
 
 | Check | Needs | Script | Status |
 | --- | --- | --- | --- |
-| Static: the patch applies and its Python files parse | the repository | `scripts/swe_patch_checks.py` | Run on macOS, 2026-11-10: `results/2026-11-10-swe-static-checks` |
-| Existing tests: tests that passed before still pass | the repository's test environment | `scripts/swe_repo_tests.py`, `notebooks/tine_colab_swe_repo_tests.ipynb` | Partial run on Colab, 2026-11-12 (222 of 303 django and sympy tasks): `results/2026-11-10-swe-static-checks` |
+| Static: the patch applies and its Python files parse | the repository | `scripts/swe_patch_checks.py` | Run on macOS and rerun on Linux with GNU patch, 2026-11-10: `results/2026-11-10-swe-static-checks` |
+| Existing tests: tests that passed before still pass | the repository's test environment | `scripts/swe_repo_tests.py`, `notebooks/tine_colab_swe_repo_tests.ipynb` | Run on Colab, 277 of 306 django and sympy tasks as of 2026-11-14: `results/2026-11-10-swe-static-checks` |
 | Response check: response size | the ledger | `tine cascade --response-check` | Run: `results/2026-11-10-response-check` |
+| Judge: a model reads the issue and the patch | a model call | `scripts/judge_patches.py`, `docs/JUDGE.md` | Run with paid Claude models, 2026-11-14: `results/2026-11-14-api-judge` |
 
 ## Static checks: `scripts/swe_patch_checks.py`
 

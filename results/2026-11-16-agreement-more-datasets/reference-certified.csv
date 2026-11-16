@@ -1,0 +1,13 @@
+dataset,kind,epsilon,savings_mean,savings_min,savings_max,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs,frontier_call_rate,most_common_chain,tasks_used
+mmlupro-3000,pairs,0.02,0.1108,0.0,0.5663,0.8723,0.8728,0.0034,0.0214,1,8,0.8294,gpt-5,3000
+mmlupro-3000,pairs,0.04,0.6376,0.5163,0.6989,0.8685,0.8728,0.0237,0.0381,0,0,0.1068,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > deepseek-v3.1-terminus+intern-s1-new > gpt-5,3000
+mmlupro-3000,pairs-every-group,0.02,0.0566,0.0,0.5663,0.8723,0.8728,0.0021,0.0214,1,9,0.9147,gpt-5,3000
+mmlupro-3000,pairs-every-group,0.04,0.6146,0.5163,0.6828,0.8718,0.8728,0.0179,0.0237,0,0,0.1364,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,triples,0.02,0.3226,0.0,0.4572,0.8763,0.8728,0.008,0.0159,0,1,0.3063,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,triples,0.04,0.4258,0.3956,0.4648,0.8747,0.8728,0.0142,0.0189,0,0,0.1444,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > deepseek-v3.1-terminus+kimi-k2-0905+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,triples-every-group,0.02,0.3108,0.0,0.4572,0.8769,0.8728,0.007,0.0159,0,1,0.3149,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,triples-every-group,0.04,0.4275,0.4017,0.4576,0.8753,0.8728,0.0092,0.0159,0,0,0.2381,deepseek-v3-0324+deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,pairs+singles,0.02,0.0,0.0,0.0,0.8728,0.8728,0.0,0.0,0,10,1.0,gpt-5,3000
+mmlupro-3000,pairs+singles,0.04,0.6033,0.0,0.72,0.8671,0.8728,0.0234,0.0341,0,1,0.1883,deepseek-v3.1-terminus+qwen3-235b-a22b-2507 > gpt-5,3000
+mmlupro-3000,singles,0.02,0.0,0.0,0.0,0.8728,0.8728,0.0,0.0,0,10,1.0,gpt-5,3000
+mmlupro-3000,singles,0.04,0.0,0.0,0.0,0.8728,0.8728,0.0,0.0,0,10,1.0,gpt-5,3000

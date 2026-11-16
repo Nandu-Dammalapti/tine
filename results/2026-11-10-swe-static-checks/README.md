@@ -13,8 +13,8 @@ touches still parse? How many wrong SWE-bench answers do these catch, and is tha
 enough to certify savings?
 
 This is the first of two steps. The second, running each repository's existing tests
-on the patches that pass these checks, executes model-written code and needs an
-isolated Linux machine. It has not been run.
+on the patches that pass these checks, executes model-written code and was run on
+Colab only: 277 of 306 django and sympy tasks so far (sections below).
 
 ## Setup
 
@@ -226,7 +226,8 @@ missing is a check aimed at the change itself.
 
 ## Limits
 
-- Apple `patch`, not GNU patch (see Setup).
+- The first tables use Apple `patch`, not GNU patch (see Setup). The Linux rerun
+  above uses GNU patch.
 - Single-shot patch generation. Applies-or-not failures are common here and would be
   rare with an agent harness, so these catch rates do not transfer to agent traffic.
 - 500 tasks from 12 Python repositories.
@@ -235,8 +236,8 @@ missing is a check aimed at the change itself.
 
 ## Next
 
-1. Finish the test run (the rest of django, then sympy) and run `tine cascade
-   --checks` on the result. It resumes from `MyDrive/tine/swe/repo-tests.csv`.
+1. Finish the test run (277 of 306 django and sympy tasks are done; chains on them
+   are in the sections above) and run `tine cascade --checks` on the full result. It resumes from `MyDrive/tine/swe/repo-tests.csv`.
 2. Measure a check aimed at the change: tests written for the issue by a model, or
    a stronger model judging the patch. The hidden issue tests catch 220 of the 261
    wrong patches that existing tests miss, which is the ceiling such a check aims at.

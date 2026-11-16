@@ -3,7 +3,7 @@
 
 This is Gacrux stage 4 applied after the answer: a judge reads the issue and a
 cheaper model's patch and says whether the patch resolves the issue. Nothing is
-executed. Three steps, each a subcommand:
+executed. Four steps, each a subcommand:
 
 ``prepare``  Pick the patches that already passed the free checks (static checks and
              the repository's existing tests) and write them as judge cases, with the
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.judge import (  # noqa: E402,F401
     ANTHROPIC_PRICES, CASE_TEMPLATE, INSTRUCTIONS, MAX_ISSUE_CHARS, MAX_PATCH_CHARS, PROMPT_VERSION, STYLES,
-    THINK_INSTRUCTIONS, build_messages, case_text, judge_once, parse_verdict, worst_case_cost,
+    THINK_INSTRUCTIONS, build_messages, case_text, judge_once, parse_verdict, prompt_version, worst_case_cost,
 )
 
 VERDICT_FIELDS = ["case_id", "judge", "verdict", "probability", "reason", "prompt_tokens",
@@ -138,7 +138,7 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
         response.raise_for_status()
         payload = response.json()
         usage = payload.get("usage") or {}
-        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": PROMPT_VERSION,
+        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": prompt_version(case, style),
                "prompt_tokens": usage.get("prompt_tokens", ""), "completion_tokens": usage.get("completion_tokens", ""),
                "tokens_estimated": False, "seconds": round(time.time() - started, 2)}
         try:
@@ -204,7 +204,7 @@ def judge_anthropic(cases_path: Path, output: Path, *, model: str, max_cost_usd:
                 state["reserved"] -= worst
             raise
         cost = verdict.pop("cost_usd")
-        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": PROMPT_VERSION,
+        row = {"case_id": case["case_id"], "judge": judge_name, "prompt_version": prompt_version(case, style),
                "tokens_estimated": False, "seconds": round(time.time() - started, 2), "cost_usd": round(cost, 6),
                **verdict}
         if row["probability"] is None:

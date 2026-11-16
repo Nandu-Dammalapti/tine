@@ -11,8 +11,9 @@ together: the index model decides what to try, the verifier decides whether to k
 ## Where it stands
 
 The retrieval design (20 nearest past requests, `tine/routing.py`) is built. On the
-benchmarks it certifies about 0% savings, with every representation tried: TF-IDF,
-MiniLM, Qwen3-Embedding 0.6B and 8B, full prompt and issue-only
+benchmarks it certifies 0-5% savings on coding at the working limits with the default
+rule, with every representation tried: TF-IDF, MiniLM, Qwen3-Embedding 0.6B and 8B,
+full prompt and issue-only, and the hidden states described below
 (`results/README.md`). Two reasons, and only the first can be tested on a benchmark:
 
 1. **The representation.** Sentence embeddings place prompts by topic. Two prompts
@@ -28,7 +29,8 @@ routing method and replacing the sentence embedding with one internal state of a
 frozen LLM makes kNN routing generalise to unseen tasks. The state is the last
 token's hidden state at layer 21 of Qwen2.5-7B-Instruct (3,584 numbers): the model's
 own state at the point where it is about to answer. The paper's numbers have not
-been checked by us; this experiment is the check, on our data.
+been checked by us; this experiment was the check, on our data. It was run on
+2026-11-11 and its result is at the end of this section.
 
 `scripts/hidden_states.py` produces that representation in the NPZ format of
 `scripts/embed.py`, so nothing else changes:
@@ -54,10 +56,17 @@ Choices made, all recorded in the output's metadata:
 
 On Colab: `notebooks/tine_colab_hidden_states.ipynb`, GPU runtime (L4 or A100).
 
-What would count as success: at the working limit (epsilon 0.04) the kNN router
-certifies clearly more than the 2-4% it gets with sentence embeddings, on both pools,
-and sits above the random-router line. If it does not, the signal is not in a frozen
-model's state either, at least for these tasks.
+What would count as success, written before the run: at the working limit (epsilon
+0.04) the kNN router certifies clearly more than the 2-4% it gets with sentence
+embeddings, on both pools, and sits above the random-router line. If it does not, the
+signal is not in a frozen model's state either, at least for these tasks.
+
+Result (2026-11-11, `results/2026-11-11-hidden-states`): the hidden state predicts
+difficulty clearly better than a topic embedding (kNN AUC 0.81 against 0.70-0.74). By
+the test above it did not succeed as a router: the kNN router certifies 2-8% at
+epsilon 0.04, about the same as before. As a gate in front of a chain it certifies 15%
+where topic-embedding gates certify 8-11%. So the index model's job is to decide where
+a cheaper attempt is worth making, not to pick the model (AGENTS.md section 12).
 
 ## After that
 

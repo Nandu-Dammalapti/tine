@@ -282,3 +282,49 @@ def test_legacy_cache_migration_preserves_rows_and_orders_new_evidence_first(tmp
     assert migrated.cached("a", "openai", body) is None
     assert migrated.report("a")["requests"] == 2
     migrated.close()
+
+
+def test_an_estimated_baseline_is_stored_as_one_and_reported_apart_from_measured_savings():
+    ledger = Ledger()
+    measured = row(ledger, success=True, cost_usd=1.0, routing_cost_usd=0.5, baseline_cost_usd=10.0)
+    estimated = row(ledger, model="cheap", success=True, cost_usd=1.0, routing_cost_usd=1.0, baseline_cost_usd=20.0,
+                    baseline_estimated=True)
+    assert ledger.get("a", measured)["baseline_estimated"] == 0 and ledger.get("a", estimated)["baseline_estimated"] == 1
+    report = ledger.report("a")
+    assert report["comparable_verified_requests"] == 1 and report["verified_baseline_cost_usd"] == 10.0
+    assert report["verified_savings_usd"] == 8.5 and report["savings_fraction"] == 0.85
+    assert report["estimated_baseline_requests"] == 1 and report["estimated_baseline_savings_usd"] == 18.0
+    assert "estimate" in report["estimated_baseline_scope"] and "estimated" in report["savings_scope"]
+    # Leaving the baseline alone keeps it an estimate; a baseline the caller supplies is measured.
+    assert ledger.update_outcome("a", estimated, True, cost_usd=2.0)
+    assert ledger.get("a", estimated)["baseline_estimated"] == 1
+    assert ledger.update_outcome("a", estimated, True, baseline_cost_usd=30.0)
+    report = ledger.report("a")
+    assert ledger.get("a", estimated)["baseline_estimated"] == 0 and report["estimated_baseline_requests"] == 0
+    assert report["comparable_verified_requests"] == 2 and report["estimated_baseline_savings_usd"] is None
+    with pytest.raises(ValueError):
+        row(ledger, baseline_estimated="yes")
+    with pytest.raises(ValueError):
+        row(ledger, baseline_estimated=True)  # an estimate of nothing
+
+
+def test_a_ledger_written_before_estimates_were_marked_still_opens_and_reports(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    ledger = Ledger(path)
+    row(ledger, success=True, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=4.0)
+    ledger._db.execute("ALTER TABLE requests DROP COLUMN baseline_estimated")
+    ledger._db.commit()
+    ledger.close()
+    # Read without upgrading, as the report script does for a read-only file.
+    old = Ledger.__new__(Ledger)
+    old._lock, old._db = __import__("threading").RLock(), sqlite3.connect(str(path))
+    old._db.row_factory = sqlite3.Row
+    assert old.report("a")["verified_savings_usd"] == 3.0 and old.report("a")["estimated_baseline_requests"] == 0
+    old.close()
+    upgraded = Ledger(path)
+    assert upgraded.report("a")["verified_savings_usd"] == 3.0
+    assert row(upgraded, success=True, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=4.0,
+               baseline_estimated=True)
+    assert upgraded.report("a")["estimated_baseline_requests"] == 1
+    upgraded.close()

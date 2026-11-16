@@ -30,8 +30,12 @@ the bound applies under the stated independent-sampling assumptions. Delta appli
 per seed/epsilon/check setting, not simultaneously across the whole sweep. Choosing
 settings after inspecting held-out results requires fresh evaluation data.
 
-Savings currently include recorded model-generation costs and all attempted
-models, but exclude the cost and latency of running the checks. A lower catch rate
+Savings include recorded model-generation costs and all attempted models. `tine
+cascade` adds no check cost of its own. For a result net of routing cost, the check's
+cost must already be in the outcomes it reads: `scripts/agreement_pairs.py` charges
+every member of a group, and `scripts/judge_patches.py checks` adds each judge's
+recorded cost to the answers it read. Test-run compute and check latency are not
+costed anywhere yet. A lower catch rate
 can appear cheaper because more wrong answers are returned without escalation.
 Read degradation alongside savings and overall accuracy. Keep the agreed epsilon
 fixed when comparing policies.
@@ -73,6 +77,10 @@ For tasks whose answers can be compared exactly, `scripts/agreement_pairs.py` tu
 members' calls on every task and whose check passes when their recorded answers are
 identical. Certification and savings then include the second and third opinions.
 See `results/2026-11-11-agreement-check`.
+
+`scripts/agreement_datasets.py` runs this recipe over several datasets with cost-only
+model rules (`--rule cheapest|all-cheaper`, `--max-tasks`, pools). See
+`results/2026-11-16-agreement-more-datasets`.
 
 Build groups for one tenant at a time. The builder rejects conflicting known grades
 for agreeing answers, duplicate recorded answers, and group names that collide with

@@ -128,8 +128,9 @@ current product.
 ## LLMRouter (ulab-uiuc), read 2026-11-14
 
 Source: the repository README at <https://github.com/ulab-uiuc/LLMRouter> (MIT licence, PyPI
-`llmrouter-lib`, paper arXiv:2608.06867). Read only; the library was not installed or run here, so
-everything below is what the README states, not something we measured.
+`llmrouter-lib`, paper arXiv:2608.06867). When this note was written the library had only been read, so the table below is what
+its README states. Five of its routers were run afterwards (see the follow-up at the
+end of this section).
 
 What it is: an open-source collection of about 19 routers behind one command line (`llmrouter
 train / infer / chat / serve`), a data pipeline that runs candidate models on 11 benchmarks, a

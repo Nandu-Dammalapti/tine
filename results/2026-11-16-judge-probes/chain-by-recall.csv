@@ -1,0 +1,15 @@
+judge,tasks,method,epsilon,savings_mean,accuracy_mean,frontier_accuracy,degradation_mean,degradation_max,over_epsilon_runs,frontier_only_runs
+haiku,not recalled,uncertified,0.04,0.456,0.5019,0.4392,0.0236,0.0465,2,0
+haiku,not recalled,certified,0.04,0.0,0.4392,0.4392,0.0,0.0,0,10
+haiku,recalled,uncertified,0.04,0.5831,0.7054,0.6548,0.0124,0.037,0,0
+haiku,recalled,certified,0.04,0.0,0.6548,0.6548,0.0,0.0,0,10
+sonnet,not recalled,uncertified,0.04,0.3624,0.4962,0.4392,0.0223,0.06,3,0
+sonnet,not recalled,certified,0.04,0.0,0.4392,0.4392,0.0,0.0,0,10
+sonnet,recalled,uncertified,0.04,0.5123,0.7043,0.6548,0.0058,0.0323,0,0
+sonnet,recalled,certified,0.04,0.0,0.6548,0.6548,0.0,0.0,0,10
+opus,not recalled,uncertified,0.04,0.2212,0.4914,0.4392,0.0046,0.0244,0,0
+opus,not recalled,certified,0.04,0.0,0.4392,0.4392,0.0,0.0,0,10
+"haiku, then opus",not recalled,uncertified,0.04,0.2365,0.5002,0.4392,0.0046,0.0244,0,0
+"haiku, then opus",not recalled,certified,0.04,0.0,0.4392,0.4392,0.0,0.0,0,10
+"sonnet, then opus",not recalled,uncertified,0.04,0.2227,0.4897,0.4392,0.0089,0.0244,0,0
+"sonnet, then opus",not recalled,certified,0.04,0.0,0.4392,0.4392,0.0,0.0,0,10

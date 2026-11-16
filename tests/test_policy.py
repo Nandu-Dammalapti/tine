@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import numpy as np
@@ -5,7 +6,7 @@ import pandas as pd
 import pytest
 
 from tine.ledger import Ledger
-from tine.policy import dumps, freeze_policy, run_policy, same_answer, validate_policy
+from tine.policy import dumps, freeze_policy, run_policy, run_stages_async, same_answer, validate_policy
 
 
 def recorded(tasks=600, seed=0):
@@ -72,7 +73,10 @@ def test_run_policy_escalates_on_disagreement_and_on_a_failed_cheap_call():
     call, made = caller({"a": "1", "big": "9"}, {"a": 1.0, "big": 10.0}, fail={"b", "c"})
     outcome = run_policy(POLICY, call)
     assert made == ["a", "b", "c", "big"] and outcome["stage"] == "frontier"
-    assert outcome["answer_cost_usd"] == 10.0 and outcome["routing_cost_usd"] == 1.0
+    # Two cheaper calls failed before their cost was known, so the routing cost is not
+    # known either. The part that is known is reported under its own name.
+    assert outcome["answer_cost_usd"] == 10.0 and outcome["routing_cost_usd"] is None
+    assert outcome["known_routing_cost_usd"] == 1.0
     assert outcome["unknown_cost_calls"] == 2 and outcome["calls"][1]["error"] == "TimeoutError"
 
 
@@ -87,9 +91,13 @@ def test_validate_policy_rejects_what_it_cannot_run_faithfully():
     for broken in [{**POLICY, "version": 2}, {**POLICY, "stages": [{"models": ["a", "b"], "check": "judge"}]},
                    {**POLICY, "stages": [{"models": ["a", "a"], "check": "agreement"}]},
                    {**POLICY, "stages": [{"models": ["big", "a"], "check": "agreement"}]},
-                   {**POLICY, "guarantee": {"certified": False}}]:
+                   {**POLICY, "guarantee": {"certified": False}},
+                   {**POLICY, "version": True},
+                   {**POLICY, "stages": [{"models": ["a", "a", "b"], "check": "agreement"}]},
+                   {**POLICY, "guarantee": {"certified": True, "epsilon": 0.04, "bound": 0.9}}]:
         with pytest.raises(ValueError):
             validate_policy(broken)
+    validate_policy({**POLICY, "guarantee": {"certified": True, "epsilon": 0.04, "bound": 0.035}})
 
 
 def test_ledger_reports_savings_net_of_routing_cost():
@@ -138,7 +146,8 @@ def test_a_failing_check_escalates_and_a_missing_check_runs_nothing():
     def broken(result):
         raise RuntimeError("judge down")
     outcome = run_policy(JUDGED, call, checks={"tests+judge": broken})
-    assert outcome["stage"] == "frontier" and outcome["routing_cost_usd"] == 3.0
+    assert outcome["stage"] == "frontier" and outcome["routing_cost_usd"] is None
+    assert outcome["known_routing_cost_usd"] == 3.0
     assert outcome["checks"][0]["error"] == "RuntimeError" and outcome["unknown_cost_calls"] == 2
     call, made = caller({"a": "x"})
     with pytest.raises(ValueError, match="No check supplied"):
@@ -154,3 +163,64 @@ def test_freeze_policy_names_the_measured_check_on_single_model_stages():
     assert policy["stages"] == [{"models": ["cheap"], "check": "tests+judge"}]
     with pytest.raises(ValueError):
         freeze_policy(frame, "frontier", checks, epsilon=0.02, single_check="agreement")
+
+
+def test_an_unknown_cost_makes_the_routing_cost_unknown_not_zero():
+    """A cheaper call with no known cost and a check that reports none: the request must
+    not reach the ledger as if routing had been free."""
+    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+              "stages": [{"models": ["a"], "check": "judge"}]}
+
+    def call(model):
+        return {"answer": "x", "cost_usd": 10.0 if model == "big" else None}
+    outcome = run_policy(policy, call, checks={"judge": lambda result: {"passed": False}})
+    assert outcome["answer_cost_usd"] == 10.0 and outcome["unknown_cost_calls"] == 2
+    assert outcome["routing_cost_usd"] is None and outcome["known_routing_cost_usd"] == 0.0
+    ledger = Ledger()
+    ledger.record(tenant="acme", provider="openai", model="big", request_body={"q": 1}, success=True,
+                  cost_usd=outcome["answer_cost_usd"], baseline_cost_usd=10.0,
+                  routing_cost_usd=outcome["routing_cost_usd"])
+    report = ledger.report("acme")
+    assert report["unknown_routing_cost_requests"] == 1 and report["comparable_verified_requests"] == 0
+
+
+@pytest.mark.parametrize("cost", [float("nan"), float("inf"), -1.0, 10**400, 1e300, True, "0.5"])
+def test_a_check_cost_that_is_not_a_usable_amount_is_unknown(cost):
+    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+              "stages": [{"models": ["a"], "check": "judge"}]}
+    call, _ = caller({"a": "x", "big": "y"})
+    outcome = run_policy(policy, call, checks={"judge": lambda result: {"passed": True, "cost_usd": cost}})
+    assert outcome["served_by"] == "a" and outcome["checks"][0]["cost_usd"] is None
+    assert outcome["routing_cost_usd"] is None and outcome["known_routing_cost_usd"] == 0.0
+
+
+def test_missing_answer_words_never_agree():
+    for word in ("None", "null", "[None]", " None "):
+        assert not same_answer([word, word])
+    assert same_answer(["none of the above", "none of the  above"])
+
+
+def test_stages_stop_at_the_deadline_and_keep_what_was_already_spent():
+    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+              "stages": [{"models": ["a"], "check": "judge"}, {"models": ["b", "c"], "check": "agreement"},
+                         {"models": ["d"], "check": "none"}]}
+    made = []
+
+    async def call(model):
+        made.append(model)
+        if model == "c":
+            await asyncio.sleep(30)
+        return {"answer": "x", "cost_usd": 1.0}
+    outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": lambda result: {"passed": False, "cost_usd": 0.5}},
+                                           deadline_seconds=0.1))
+    assert made == ["a", "b", "c"] and not outcome["accepted"]  # the last stage is never started
+    assert outcome["calls"] == [{"model": "a", "cost_usd": 1.0, "error": None},
+                                {"model": "b", "cost_usd": 1.0, "error": None},
+                                {"model": "c", "cost_usd": None, "error": "DeadlineExceeded"}]
+    assert outcome["checks"][0]["cost_usd"] == 0.5
+
+    async def slow_check(result):
+        await asyncio.sleep(30)
+    outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": slow_check}, deadline_seconds=0.1))
+    assert outcome["checks"] == [{"check": "judge", "model": "a", "passed": False, "cost_usd": None,
+                                  "error": "DeadlineExceeded"}]

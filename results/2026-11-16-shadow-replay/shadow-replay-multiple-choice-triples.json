@@ -1,0 +1,35 @@
+{
+  "requests": 1414,
+  "shadow_report": {
+    "tenant": "benchmark",
+    "shadowed_requests": 1414,
+    "policy_would_accept": 1099,
+    "policy_would_accept_share": 0.7772277227722773,
+    "accepted_matching_frontier": 1041,
+    "accepted_matching_frontier_share": 0.9472247497725205,
+    "cost_known_requests": 1414,
+    "unknown_cost_requests": 0,
+    "frontier_cost_usd": 0.69812,
+    "projected_policy_cost_usd": 0.3248824,
+    "projected_savings_usd": 0.37323759999999995,
+    "projected_savings_fraction": 0.5346324414140835,
+    "shadow_spend_usd": 0.12686865,
+    "shadow_calls": 5522,
+    "failed_shadow_calls": 0,
+    "scope": "sampled requests answered by the frontier model; the policy's cheaper stages were run in the background and never returned to the caller. Equal answers are not proof of correctness. Projected figures cover only requests whose costs are all known and are not a billing amount."
+  },
+  "graded": {
+    "policy_accuracy": 0.888967468175389,
+    "frontier_accuracy": 0.8698727015558698,
+    "degradation_rate": 0.009900990099009901
+  },
+  "policy_estimate": {
+    "scope": "held-out test tasks, recorded outcomes and costs; includes the cost of every call",
+    "test_tasks": 1414,
+    "savings": 0.5251849252277546,
+    "accuracy": 0.888967468175389,
+    "frontier_accuracy": 0.8698727015558698,
+    "degradation_rate": 0.009900990099009901,
+    "frontier_call_rate": 0.22277227722772278
+  }
+}
