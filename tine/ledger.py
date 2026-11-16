@@ -551,6 +551,9 @@ class Ledger:
                 "net of routing costs on successful requests with known answer, routing, and baseline costs only, "
                 "where the proxy measured the baseline by calling the frontier model; failed, pending, and "
                 "incompletely costed requests, and requests whose baseline is estimated or caller-supplied, "
-                "are excluded from this subtotal, so it is not a billing amount"
+                "are excluded from this subtotal, so it is not a billing amount. Under live routing the proxy "
+                "calls the frontier only for requests that escalated, which also paid for the cheaper attempts, "
+                "so this subtotal is not the policy's saving; measuring that needs a random share of requests "
+                "always sent to the frontier, which is not built"
             ),
         }

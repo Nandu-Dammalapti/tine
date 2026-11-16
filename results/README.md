@@ -13,7 +13,8 @@ added.
 All results are offline, on recorded benchmark answers (LLMRouterBench, and
 xRouteBench from 2026-11-14). No model generated an answer that was routed. Models
 were called only to judge or to read: a Claude Code session and open models as judges
-(judge-pilot), pinned Claude models through the paid API (api-judge, $12.69 in total),
+(judge-pilot), pinned Claude models through the paid API ($47.73 in total: api-judge
+$12.69, judge-probes $31.02, judge-prompt $4.02),
 and frozen encoders for embeddings and hidden states. Only small summary tables are in
 Git; the benchmark archives, per-task outputs, prompts and embeddings are not (see
 "Where the data is").
@@ -59,7 +60,7 @@ Git; the benchmark archives, per-task outputs, prompts and embeddings are not (s
 | 2026-11-14 | [xroutebench](2026-11-14-xroutebench/README.md) | Does the agreement check hold on a second benchmark, and how do the LLMRouter library's routers do under a quality limit? | Agreement repeats on xRouteBench (18 open models): on 4,762 multiple-choice questions two cheap models that agree save 45% at the 2% limit and 74% at 4% (over the limit in 2 of 10 runs at 4%); three save 53% at 2%. Math: 16-20%. Switching to one cheaper model certifies 0%. The library's kNN, SVM, MLP, matrix-factorisation and Elo routers, run unmodified on LiveCodeBench, either send everything to gpt-5 or drop accuracy from 86% to 39-46%; certified savings 0%. |
 | 2026-11-14 | [api-judge](2026-11-14-api-judge/README.md) | Does a pinned strong model verify patches, what does a check cost, and does a chain with it save money net of the judge? (Paid runs: $12.69 in total, of which $8.85 for the Sonnet run on all 1,110 cases.) | `claude-sonnet-5-5` on 1,110 accepted patches: rejects 79% of wrong ones and 9% of right ones (AUC 0.92; 89% and 6% on the 150 pilot cases, which were optimistic) at $0.008 per check, 2.4% of a frontier answer. Chains with free checks plus the judge on 274 tasks: about a third cheaper than `claude-opus-4.1` net of the judge, 55% accurate against 49-50%, within the limit in 29 of 30 held-out runs. Certified: 0% with the default split (too few tasks), 22% at a 4% limit and 30% at 5% when half the tasks certify. Nothing at 2% yet. |
 | 2026-11-16 | [shadow-replay](2026-11-16-shadow-replay/README.md) | Do the proxy's shadow mode and live routing do what a frozen policy says? | Yes, both: replaying 1,414 recorded multiple-choice requests through the real proxy reproduces the policy's stored estimate (77.7% answered by cheaper models, 88.9% accuracy against 87.0%, 0.99% degradation; savings 53.5% against 52.5%, the difference being a model shared by two stages). The savings report page shows the same replay as 53.4%: the figure is 53.46% and the page rounds savings down. The replay caught an accounting bug before the result. No model called. |
-| 2026-11-16 | [simulated-pilots](2026-11-16-simulated-pilots/README.md) | What would five realistic customer teams hit if they tried Tine from the docs? (Simulated teams, stand-in providers, no model called.) | The core holds: shadow mode never changed an answer, tenant isolation held, every page number recomputes. Not pilot-ready: a webhook check can send the provider key to any URL; policies carry no answer reader; the shadow report hides what it skipped; edited policies still show as certified; live-routing savings cannot be measured. 39 findings survived independent checking (23 distinct problems after merging duplicates); 8 claims did not hold; top 5 fixes listed. |
+| 2026-11-16 | [simulated-pilots](2026-11-16-simulated-pilots/README.md) | What would five realistic customer teams hit if they tried Tine from the docs? (Simulated teams, stand-in providers, no model called.) | The core holds: shadow mode never changed an answer, tenant isolation held, every page number recomputes. Not pilot-ready: a webhook check can send the provider key to any URL; policies carry no answer reader; the shadow report hides what it skipped; edited policies still show as certified; live-routing savings cannot be measured. 39 findings survived independent checking (23 distinct problems after merging duplicates); 8 claims did not hold; top 5 fixes listed. A follow-up fixed or documented #1-10, #12-14, #16, #21 and #22, several in part; its README has a status table. |
 | 2026-11-16 | [agreement-more-datasets](2026-11-16-agreement-more-datasets/README.md) | Does the agreement check hold on the other exact-answer datasets in the LLMRouterBench archive? | No. On 16 more datasets and a second split of MMLU-Pro it certifies almost nothing at 2%, and at 4% only arcc (38.9%, triples, 7 of 10 runs) and math500 (12.1%, pairs) pass 10%. One cheaper model alone certifies 0% everywhere. Main cause at 4%: the cheap 8B models are too weak next to the frontier. Size explains the four small sets and the 2% column (MMLU-Pro cut to 1,000 tasks keeps about 40% at 4% and a third of its 2% result, over six random cuts). Free-form answers rarely match as strings. |
 | 2026-11-16 | [swe-agreement-and-judge](2026-11-16-swe-agreement-and-judge/README.md) | On SWE-bench code chains, can agreement between cheap models' patches cut what the judge costs or certify more? | No reliable gain. Identical patches are too rare (a pair agrees on 0.5% of tasks). Similar patches (overlap >= 0.8) agree on 11% of tasks and are right 84% of the time. Certified savings show no reliable gain. Uncertified, as `tine cascade` charges it, pairs save the same or less than the plain chain (Haiku 39.3% vs 39.3% and 35.2% vs 37.9%); that charge pays a model twice when it sits in two groups, and with it paid once pairs are within 1.4 points either way (40.2% vs 39.3% and 38.7% vs 37.9% with Haiku; 33.6% vs 33.6% and 32.9% vs 34.3% with Sonnet). Agreement alone saves 3-7%. Post hoc: requiring agreement and the judge certifies in every run at 4% with Sonnet but saves only 3-6%. |
 | 2026-11-16 | [judge-probes](2026-11-16-judge-probes/README.md) | Does the code judge rely on memory of these public fixes, can a patch talk it into accepting, and does context or a stronger judge help? (Paid: $31.02.) | The judges remember: Sonnet writes the merged fix from the issue alone for 41% of tasks. On the other tasks Sonnet still rejects 78% of wrong patches, but the code chain loses about 2.3% of the frontier's solved tasks, not 0.7%, so plan Haiku- or Sonnet-judged chains at a 4-5% limit. `claude-opus-5-5` on those tasks rejects 89% of wrong patches and 9% of right ones; with Haiku screening in front of it the chain saves 23.7%, is 6 points more accurate than the frontier and loses 0.46% (uncertified, 150 tasks). Injected approvals and removing the project's name did not move the judges; code context did not help. |
@@ -99,7 +100,8 @@ Git; the benchmark archives, per-task outputs, prompts and embeddings are not (s
    0.02 in this repository (MMLU-Pro), repeated on xRouteBench multiple choice. It
    did not repeat on 16 other LLMRouterBench datasets. It needs cheap models close to
    the frontier in accuracy, about 300 certify tasks for the 4% limit and about 900
-   for 2%, and answers that compare as strings. Every member's call is paid for.
+   for 2% (about 1,000 and 3,000 graded tasks in all at the default 40/30/30 split),
+   and answers that compare as strings. Every member's call is paid for.
    On code, agreement between cheap models' patches gives no reliable gain.
 9. At epsilon 0.02 the number of certification tasks limits the result as much as
    the check does: with about 420 tasks a policy may show at most 3 degradations.
@@ -158,13 +160,16 @@ Whether either becomes the default is still a team decision.
 - The savings report page (`docs/REPORT.md`) has been checked in a desktop browser
   only (2026-11-16, the two example pages), not in a mail client or on a phone.
 - The proxy does not read answers the way a policy's agreement check was certified.
-  It uses one regular expression and compares the raw match, with no case, comma or
-  trailing-zero handling. A narrower pattern can accept answers the certified check
-  would reject. Stated in [docs/PROXY.md](../docs/PROXY.md), not fixed.
-- Nothing ties a policy file's stages to its certification: a file edited after
-  freezing still loads, and `task_type` is not read. Stated in
-  [docs/PROXY.md](../docs/PROXY.md) and [docs/POLICY.md](../docs/POLICY.md), not
-  fixed.
+  A policy can now carry its pattern (`freeze-policy --answer-pattern`), and a route
+  policy with no reader is refused, but the proxy still compares the raw match with
+  no case, comma or trailing-zero handling. A narrower pattern can accept answers the
+  certified check would reject. Stated in [docs/PROXY.md](../docs/PROXY.md).
+- Policy files carry a freeze digest, so an edit after freezing is flagged, but they
+  are not signed: whoever edits a file can write a new digest. `task_type` is logged
+  at startup and not read per request; the docs ask for one tenant token per task
+  type. Stated in [docs/PROXY.md](../docs/PROXY.md) and [docs/POLICY.md](../docs/POLICY.md).
+- Under live routing the saving cannot be measured without a random frontier holdout,
+  which is not built ([docs/PROXY.md](../docs/PROXY.md)).
 - The certification planning figures in [docs/PLANNING.md](../docs/PLANNING.md) are
   for one chain tested alone. Nothing yet models the many-chain sequence that
   `tine cascade` and `tine freeze-policy` run today.

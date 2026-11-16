@@ -130,6 +130,32 @@ Four of five teams would continue to a shadow-only pilot. None would pay for rou
 
 Teams are named H (Helpwise), P (Patchwork), N (Northbridge), Q (Quill) and B (Buyer). Severity is after verification. Where several teams hit the same issue, the findings are merged.
 
+**Status after the follow-up fixes (added 2026-11-16).** The tables below are the report as written. Fixes were made on branch `claude/judge-followup` and tested with stand-in providers only. The harness has not been rerun against the fixed build.
+
+| # | Status |
+|---|---|
+| 1 | Fixed in the proxy: `bearer_env` may not name `TINE_*` or a provider key, needs https, and one variable serves one tenant. Docs say check files are operator-only. Other secrets in the proxy's environment can still be named. |
+| 2 | Fixed: `freeze-policy --answer-pattern`; a route policy with agreement stages and no reader is refused; shadow mode warns; `/v1/shadow` shows the reader. |
+| 3 | Partly fixed: `task_type` is logged at startup, requests with tools skip agreement policies, and the docs say "one tenant token per task type" and to check acceptance per token in shadow mode. `task_type` is still not read per request. |
+| 4 | Partly fixed: PROXY, DEPLOY and POLICY state the one base URL and recommend a self-hosted gateway; failed calls record their HTTP status; the stop reason names the failures. `/health` still says "policy" when stage models are not served. |
+| 5 | Fixed: coverage counters, `shadow_coverage`, streamed count and a per-tenant concurrency limit, shown on the page. Other ineligible traffic is not counted. |
+| 6 | Fixed: the stop needs both a count and a share; resuming is documented. There is no reset endpoint. |
+| 7 | Partly fixed: a drift warning against epsilon, in `/v1/shadow` and the page headline. It also fires on the healthy replay (5.28% differing against 2%). Comparing with the certification-time rate is not built. |
+| 8 | Fixed: freeze digest, `--tenant`, stricter guarantee validation, "Tenant named in the policy file", "not confirmed" for an edited file. A digest is not a signature. |
+| 9 | Documented: POLICY.md "Certify on your own graded tasks"; AGENTS.md counts now say certify tasks and give totals. |
+| 10 | Documented only: PROXY.md and the `savings_scope` text say the saving cannot be measured under live routing. The holdout is not built. |
+| 11 | Not started. |
+| 12 | Fixed: `baseline_source`; only proxy-measured baselines count as verified; caller-supplied ones are reported apart and cannot overwrite a measured one. |
+| 13 | Fixed: `/health` checks the stages, load errors name the variable and path, and DEPLOY.md has "Turn routing off". Policies are still read only at startup. |
+| 14 | Fixed for `TINE_LEDGER_REQUIRED`, `policy_sha256`, `route_stage` and `outcome_events`. No HTTP endpoint for the history. |
+| 15 | Not started. |
+| 16 | Fixed: the judged stage is skipped before the cheap call, with reason `request_too_long` in shadow runs; the request shape is documented. The reason is not stored under live routing. |
+| 17 | Not started (tool requests skip agreement policies only). |
+| 18 to 20 | Not started. |
+| 21 | Documented: JUDGE.md says the recommended check is not certified; PROXY.md and JUDGE.md state the webhook contract. |
+| 22 | Fixed in EVIDENCE.md, README.md and results/README.md. |
+| 23 | Open. The demo pages are local files that git ignores and were not regenerated; the checked-in replay JSON still predates the recount. |
+
 ### 3.1 Fix before a shadow pilot
 
 | # | Problem | Hit by | Sev. | Fix |

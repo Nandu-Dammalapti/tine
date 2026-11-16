@@ -135,6 +135,13 @@ def test_known_cost_per_success_includes_failed_request_spend():
     assert "not a billing amount" in report["savings_scope"]
 
 
+def test_savings_scope_says_live_routing_saving_needs_a_frontier_holdout():
+    report = Ledger().report("a")
+    assert "Under live routing" in report["savings_scope"]
+    assert "not the policy's saving" in report["savings_scope"]
+    assert "always sent to the frontier, which is not built" in report["savings_scope"]
+
+
 def test_routing_costs_can_exceed_apparent_answer_savings():
     ledger = Ledger()
     row(ledger, success=True, cost_usd=0.25, routing_cost_usd=0.9, baseline_cost_usd=1.0)

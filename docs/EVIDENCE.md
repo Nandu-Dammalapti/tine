@@ -61,8 +61,9 @@ and savings are 0%.
 It does not mean:
 
 - every answer is right, or that no single task gets worse;
-- the limit holds on traffic unlike the certify tasks. The proxy does not check this
-  (`../docs/PROXY.md`);
+- the limit holds on traffic unlike the certify tasks. The proxy does not check this.
+  Shadow mode warns when cheaper answers differ from the frontier's more often than the
+  limit, which is a reason to grade, not a measured loss (`../docs/PROXY.md`);
 - certainty. One certification in 20 can be wrong by design.
 
 Small samples certify little. With about 80 certify tasks, zero losses still gives a
@@ -88,8 +89,11 @@ says. It is not new evidence of quality.
 
 None of this has run on real traffic. The code path was tested with stand-ins only, not
 with recorded SWE-bench data. Not built: nightly retraining per customer, distillation, a
-production datastore, streaming under a policy. Paid model calls so far total $12.69, all
-for judge measurements (`2026-11-14-api-judge/README.md`).
+production datastore, streaming under a policy, and a way to measure the saving under live
+routing (that needs a random share of requests always sent to the frontier). Paid model
+calls so far total $47.73, all for judge measurements: $12.69 in
+`2026-11-14-api-judge/README.md`, $31.02 in `2026-11-16-judge-probes/README.md` and $4.02
+in `2026-11-17-judge-prompt/README.md`.
 
 ## 5. What we do not know yet
 
@@ -100,9 +104,15 @@ for judge measurements (`2026-11-14-api-judge/README.md`).
   tasks: 2% needs about 150 certify tasks with no losses. On LiveCodeBench a
   response-size check certifies 3.6% at 2%, and was over the limit in 1 of 10 splits
   (`2026-11-10-response-check/response-lcb-summary.csv`).
-- **The judge may have seen the answers.** Its cases are public django and sympy issues.
-  It scored lower on sympy (74.5% of wrong patches rejected) than django (81.5%)
-  (`2026-11-14-api-judge/README.md`, Result 1). We have no measurement on private code.
+- **The judge partly remembers the answers.** Its cases are public django and sympy
+  issues. Asked to write the merged fix from the issue alone, `claude-sonnet-5-5`
+  reproduces it for 41% of tasks. On the tasks it cannot recall, a chain judged by Haiku
+  or Sonnet loses about 2.3% of the tasks the frontier solves, against 0.6-1.2% on
+  recalled tasks. With `claude-opus-5-5` as the judge, Haiku screening in front of it,
+  the loss on those tasks is 0.46% at about 24% savings, uncertified, on 150 tasks
+  (`2026-11-16-judge-probes/README.md`). Opus's own recall was not measured. Tasks the
+  judge cannot recall stand in for private code; we have no measurement on private code
+  itself.
 - **All results are on public benchmarks.** Single-shot patches, multiple-choice
   questions, benchmark prices.
 - **Dollar amounts on the open-model benchmark are tiny.** The frontier's bill for the
@@ -117,8 +127,9 @@ for judge measurements (`2026-11-14-api-judge/README.md`).
 1. **Grade more code tasks** (the 29 django and sympy tasks left, then other SWE-bench
    repositories, about 500 in all). Proves or disproves that the judged chain certifies
    at 2% with the default split.
-2. **Run the judge on code it cannot have seen.** Shows how much of its 79% catch rate is
-   memory. If it drops far, the code result does not carry to customers.
+2. **Run the judge on code it cannot have seen.** The probes above split public tasks by
+   what the judge recalls; code that was never public is the real test of whether the
+   code result carries to customers.
 3. **One customer's traffic in shadow mode.** Gives the first real costs, the first
    savings estimate in real dollars, and whether a policy certified on that customer's
    own graded work holds its limit.
