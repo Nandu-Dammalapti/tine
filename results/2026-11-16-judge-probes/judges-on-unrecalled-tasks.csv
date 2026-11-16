@@ -1,0 +1,4 @@
+judge,cases,right,wrong,catch_rate,false_reject_rate,accuracy_when_accepted,auc,mean_cost_usd,unparsed
+claude-haiku-5-5,607,288,319,0.7147,0.1354,0.7324,0.8701,0.00061,9
+claude-sonnet-5-5,607,288,319,0.7837,0.1146,0.787,0.9063,0.00868,10
+claude-opus-5-5,607,288,319,0.8903,0.0903,0.8822,0.9503,0.01755,11

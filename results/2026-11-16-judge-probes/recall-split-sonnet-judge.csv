@@ -1,0 +1,9 @@
+difficulty,group,cases,tasks,right_share,catch_rate,false_reject_rate,accuracy_when_accepted,auc
+all,recalled,503,106,0.7078,0.8163,0.0702,0.9246,0.9309
+all,not recalled,607,150,0.4745,0.7837,0.1146,0.787,0.9063
+1-4 hours,recalled,13,4,0.0769,1.0,0.0,1.0,1.0
+1-4 hours,not recalled,53,17,0.0943,0.7083,0.0,0.2632,0.9354
+15 min - 1 hour,recalled,199,46,0.6734,0.8615,0.0597,0.9333,0.9535
+15 min - 1 hour,not recalled,338,86,0.4112,0.8191,0.1295,0.7707,0.9069
+<15 min fix,recalled,291,56,0.7595,0.7429,0.0769,0.9189,0.9077
+<15 min fix,not recalled,216,47,0.6667,0.7361,0.1042,0.8716,0.8838
