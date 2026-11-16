@@ -30,7 +30,7 @@ from starlette.background import BackgroundTask
 
 from .ledger import MAX_TOKEN_COUNT, Ledger
 from .policy import run_stages_async
-from .runtime_checks import build_checks, validate_checks
+from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
     NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries, shadow_stages,
     validate_shadow_policy,
@@ -233,6 +233,21 @@ class ProxyConfig:
                     f"checks: {check!r} has a webhook and is named by policies of several tenants "
                     f"({', '.join(sorted(users))}). A webhook receives a tenant's request: give each of them "
                     "its own entry under tenant_checks")
+        # A webhook token belongs to one tenant. One variable sent by the checks of two
+        # tenants would hand one tenant's CI credential to the other's webhook.
+        token_users: dict[str, set[str]] = {}
+        for name, own in self.tenant_checks.items():
+            for steps in own.values():
+                for variable in token_variables(steps):
+                    token_users.setdefault(variable, set()).add(name)
+        for check, users in shared_users.items():
+            for variable in token_variables(self.checks[check]):
+                token_users.setdefault(variable, set()).update(users)
+        for variable, users in sorted(token_users.items()):
+            if len(users) > 1:
+                raise ValueError(
+                    f"checks: bearer_env {variable!r} is sent by the webhook checks of several tenants "
+                    f"({', '.join(sorted(users))}). Give each tenant's webhook a token variable of its own")
         for name, by_provider in self.route_policies.items():
             if set(by_provider) & set(self.shadow_policies.get(name, {})):
                 raise ValueError("A tenant's provider can have a shadow policy or a route policy, not both")

@@ -270,12 +270,16 @@ def _failed_call(model: str, error: Exception) -> dict:
 def _check_run(name: str, model: str, verdict: dict) -> dict:
     """The record of one check. A check of several steps may know only part of its
     cost; it then reports that part as ``known_cost_usd`` and it is kept beside the
-    unknown total, so spending that is known is not lost with the rest."""
+    unknown total, so spending that is known is not lost with the rest. A check that
+    says why it did not pass (a short ``reason`` such as ``request_too_long``) keeps
+    that reason."""
     run = {"check": name, "model": model, "passed": verdict.get("passed") is True,
            "cost_usd": known_cost(verdict.get("cost_usd")), "error": None}
     partial = known_cost(verdict.get("known_cost_usd"))
     if run["cost_usd"] is None and partial is not None:
         run["known_cost_usd"] = partial
+    if not run["passed"] and isinstance(verdict.get("reason"), str) and verdict["reason"]:
+        run["reason"] = verdict["reason"]
     return run
 
 
@@ -296,6 +300,11 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
     nothing is accepted, so a stalled model or check delays the caller by the deadline
     and not by every stage's own timeout in turn. A call or check that was cut off is
     listed with an unknown cost: the provider may still charge for it.
+
+    A named check may carry a ``skip_reason``: why, from the request alone, it cannot
+    pass whatever a model answers (``tine.runtime_checks``). Its stage is then skipped
+    before any of its models is called, and the check is listed as not passed, at no
+    cost, with that reason.
     """
     import asyncio
     import inspect
@@ -341,6 +350,11 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
 
     async def stages():
         for index, stage in enumerate(policy["stages"]):
+            skip = getattr(checks.get(stage["check"]), "skip_reason", None)
+            if skip:
+                check_runs.append(_check_run(stage["check"], stage["models"][0],
+                                             {"passed": False, "cost_usd": 0.0, "reason": skip}))
+                continue
             results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
             if any(result is None for result in results):
                 continue

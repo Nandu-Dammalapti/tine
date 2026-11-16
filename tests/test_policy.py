@@ -226,6 +226,29 @@ def test_stages_stop_at_the_deadline_and_keep_what_was_already_spent():
                                   "error": "DeadlineExceeded"}]
 
 
+def test_a_check_that_cannot_pass_skips_its_stage_before_any_model_is_paid():
+    policy = {"version": 1, "frontier": "big", "guarantee": {"certified": True},
+              "stages": [{"models": ["a"], "check": "judge"}, {"models": ["a"], "check": "none"}]}
+    made = []
+
+    async def call(model):
+        made.append(model)
+        return {"answer": "x", "cost_usd": 1.0}
+
+    def judge(result):
+        return {"passed": True, "cost_usd": 0.5}
+    judge.skip_reason = "request_too_long"
+    outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": judge}))
+    # The skipped stage called nothing, so the later stage still asks its model once.
+    assert made == ["a"] and outcome["accepted"] and outcome["stage"] == 1
+    assert outcome["checks"] == [{"check": "judge", "model": "a", "passed": False, "cost_usd": 0.0, "error": None,
+                                  "reason": "request_too_long"}]
+    judge.skip_reason = None
+    made.clear()
+    outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": judge}))
+    assert made == ["a"] and outcome["stage"] == 0 and "reason" not in outcome["checks"][0]
+
+
 def test_freeze_policy_measured_shortlist_skips_a_cheap_pair_that_agrees_on_wrong_answers():
     """Two candidates: ``c+d`` is cheaper and its check passes everything, ``a+b``
     agrees less often but is always right when it does. With one candidate slot the

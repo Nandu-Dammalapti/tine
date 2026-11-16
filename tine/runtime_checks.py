@@ -25,9 +25,18 @@ cheaper model wrote it. Two things are done about that here. The tags that frame
 case are made inert wherever they occur inside it, so text cannot step outside its
 frame. And a case too long for the judge to read whole is rejected without asking
 it, because the judge's prompt keeps only the start of each text and would otherwise
-rule on a request it never saw the end of. The instructions themselves are the
-measured ones and do not tell the judge to distrust the case; how a real judge
-reacts to text that argues with it has not been measured.
+rule on a request it never saw the end of. The rejection carries a reason
+(``request_too_long``, ``response_too_long``). A request too long is known before
+any model answers it, so a check with a judge step says so up front
+(``skip_reason``) and the stage is skipped without calling its models. The
+instructions themselves are the measured ones and do not tell the judge to distrust
+the case; how a real judge reacts to text that argues with it has not been measured.
+
+A webhook token is read from the environment variable a step names in
+``bearer_env``. The proxy's own settings and the provider keys live in the same
+environment, so a step may not name a ``TINE_`` variable or a provider key
+variable, and a token is sent only over https. Check files are operator
+configuration: whoever can edit them chooses where requests and tokens go.
 
 Every step fails closed: an error, a timeout, a malformed reply or a refusal is a
 rejection, so the request moves on to the next model. What a step costs is returned
@@ -51,6 +60,10 @@ EFFORTS = ("low", "medium", "high")
 # A check holds a caller's request open (live routing) or a shadow slot. Ten minutes
 # is already long for either; a longer wait is refused at startup.
 MAX_WEBHOOK_TIMEOUT_SECONDS = 600
+# Variables a webhook step may not send as its token: the proxy's own settings (tenant
+# tokens, provider keys) and the providers' usual key variables.
+RESERVED_TOKEN_PREFIX = "TINE_"
+RESERVED_TOKEN_VARIABLES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 _FRAME_TAG = re.compile(r"<\s*(/?)\s*(issue|patch)\s*>", flags=re.IGNORECASE)
 
 
@@ -80,8 +93,20 @@ def validate_checks(checks) -> dict:
                         or not 0 < timeout <= MAX_WEBHOOK_TIMEOUT_SECONDS):
                     raise ValueError(f"Check {name!r}: timeout_seconds must be positive and at most "
                                      f"{MAX_WEBHOOK_TIMEOUT_SECONDS}")
-                if "bearer_env" in step and (not isinstance(step["bearer_env"], str) or not step["bearer_env"]):
-                    raise ValueError(f"Check {name!r}: bearer_env must name an environment variable")
+                if "bearer_env" in step:
+                    variable = step["bearer_env"]
+                    if not isinstance(variable, str) or not variable:
+                        raise ValueError(f"Check {name!r}: bearer_env must name an environment variable")
+                    # Compared in capitals: on some systems variable names ignore case.
+                    if (variable.upper().startswith(RESERVED_TOKEN_PREFIX)
+                            or variable.upper() in RESERVED_TOKEN_VARIABLES):
+                        raise ValueError(
+                            f"Check {name!r}: bearer_env {variable!r} names a setting of the proxy or a provider "
+                            f"key. A webhook token needs a variable of its own, not starting with "
+                            f"{RESERVED_TOKEN_PREFIX!r} and not one of {', '.join(RESERVED_TOKEN_VARIABLES)}")
+                    if parsed.scheme != "https":
+                        raise ValueError(f"Check {name!r}: a webhook that is sent a token (bearer_env) needs an "
+                                         "https url")
             else:
                 if not isinstance(step.get("model"), str) or not step["model"]:
                     raise ValueError(f"Check {name!r}: a judge needs a model")
@@ -92,6 +117,11 @@ def validate_checks(checks) -> dict:
                                               or not 0 <= threshold <= 1):
                     raise ValueError(f"Check {name!r}: threshold must be between 0 and 1")
     return checks
+
+
+def token_variables(steps: list) -> set[str]:
+    """The environment variables the webhook steps of one check send as tokens."""
+    return {step["bearer_env"] for step in steps if step.get("type") == "webhook" and step.get("bearer_env")}
 
 
 def request_text(body: dict) -> str:
@@ -138,15 +168,20 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
         # The tenant's CI can report anything, NaN and a 400-digit integer included.
         return {"passed": reply["passed"], "cost_usd": known_cost(reply.get("cost_usd", 0.0))}
 
+    issue = inert(request_text(body))
+    # The judge's prompt keeps the start of each text. It would not see the newest
+    # turn of a long conversation or the end of a long answer, so it is not asked.
+    request_too_long = len(issue) > MAX_ISSUE_CHARS
+
     async def judge(step: dict, result: dict, tested: bool) -> dict:
         patch = response_text(provider, result.get("payload"))
         if not patch:
             return {"passed": False, "cost_usd": 0.0}
-        issue, patch = inert(request_text(body)), inert(patch)
-        if len(issue) > MAX_ISSUE_CHARS or len(patch) > MAX_PATCH_CHARS:
-            # The judge's prompt keeps the start of each text. It would not see the
-            # newest turn of a long conversation or the end of a long answer.
-            return {"passed": False, "cost_usd": 0.0}
+        patch = inert(patch)
+        if request_too_long:
+            return {"passed": False, "cost_usd": 0.0, "reason": "request_too_long"}
+        if len(patch) > MAX_PATCH_CHARS:
+            return {"passed": False, "cost_usd": 0.0, "reason": "response_too_long"}
         messages = build_messages({"repository": step.get("repository", "the customer's"),
                                    "issue": issue, "patch": patch}, tests_passed=tested)
         response = await upstream.post(
@@ -171,7 +206,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
 
     def make(steps: list[dict]):
         async def check(result: dict) -> dict:
-            costs, passed, tested = [], True, False
+            costs, passed, tested, reason = [], True, False, None
             for step in steps:
                 try:
                     if step["type"] == "webhook":
@@ -183,14 +218,18 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
                     verdict = {"passed": False, "cost_usd": None}
                 costs.append(verdict["cost_usd"])
                 if not verdict["passed"]:
-                    passed = False
+                    passed, reason = False, verdict.get("reason")
                     break
                 tested = tested or step["type"] == "webhook"
             # One step of unknown cost makes the check's cost unknown; what the other
             # steps cost is still reported, so known spending is not lost with it.
             known = math.fsum(cost for cost in costs if cost is not None)
             return {"passed": passed, "cost_usd": None if any(cost is None for cost in costs) else known,
-                    "known_cost_usd": known}
+                    "known_cost_usd": known, **({"reason": reason} if reason else {})}
+        # Every step must pass, so a judge that cannot read the whole request rejects
+        # whatever a model answers: the stage need not call one (tine.policy).
+        check.skip_reason = ("request_too_long" if request_too_long
+                             and any(step["type"] == "judge" for step in steps) else None)
         return check
 
     return {name: make(steps) for name, steps in checks.items()}
