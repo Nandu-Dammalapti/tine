@@ -165,6 +165,21 @@ def test_freeze_policy_names_the_measured_check_on_single_model_stages():
         freeze_policy(frame, "frontier", checks, epsilon=0.02, single_check="agreement")
 
 
+def test_a_chain_certified_with_a_check_cannot_be_frozen_as_unchecked():
+    """The recorded check rejected some of the cheap model's answers, so the chain was
+    certified with it. Left at the default, the policy would serve them all unchecked."""
+    frame, checks = recorded()
+    frame["model"] = frame.model.replace({"a+b": "cheap"})
+    checks["model"] = "cheap"
+    with pytest.raises(ValueError, match="single_check is 'none'"):
+        freeze_policy(frame, "frontier", checks, epsilon=0.02)
+    # A model whose recorded check passed every answer really is served as it is.
+    frame.loc[frame.model == "cheap", "success"] = True
+    checks["passed"] = True
+    policy = freeze_policy(frame, "frontier", checks, epsilon=0.02)
+    assert policy["stages"] == [{"models": ["cheap"], "check": "none"}]
+
+
 def test_an_unknown_cost_makes_the_routing_cost_unknown_not_zero():
     """A cheaper call with no known cost and a check that reports none: the request must
     not reach the ledger as if routing had been free."""

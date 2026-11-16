@@ -252,6 +252,9 @@ The judge step and what it reads:
   longer text is not cut: the judge is not asked, the answer is rejected and the request moves on. Long
   conversations therefore never pass a judge step. System, assistant and tool messages are not shown to
   the judge.
+- The judge is not asked about a reply that calls a tool or was cut off by the token limit. It reads
+  only the reply's text, so it would rule on the words while the proxy served a tool call it never saw.
+  Such a reply is rejected without a judge call and the request moves on.
 - The text the judge reads is not trusted. The tags that frame it (`<issue>`, `<patch>` and their
   closing forms) are made inert wherever they occur inside it, so text cannot close its frame and
   continue as if it were instructions.
