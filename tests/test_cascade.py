@@ -284,3 +284,92 @@ def test_gate_can_use_supplied_embeddings(tmp_path):
     assert result["gate"]["features"] == "supplied_embeddings" and result["gate"]["embedding_sha256"]
     with pytest.raises(ValueError, match="requires a gate method"):
         run_cascade_experiment(frame, "frontier", tmp_path / "out", gate_embeddings=vectors)
+
+
+# Shortlist rules. Columns: 0 cheap and unreliable (its check passes everything),
+# 1 dearer and reliable (its check passes only right answers), 2 frontier.
+SHORT_OUTCOMES = np.column_stack([np.arange(10) != 0, np.arange(10) >= 2, np.ones(10, dtype=bool)])
+SHORT_COSTS = np.tile([1.0, 3.0, 10.0], (10, 1))
+SHORT_PASSES = np.column_stack([np.ones(10, dtype=bool), np.arange(10) >= 2, np.ones(10, dtype=bool)])
+
+
+def test_savings_shortlist_keeps_the_cheap_unreliable_candidate():
+    # With a perfect check the cheap model saves 1 - (1 + 0.1 * 10) / 10 = 80%; the reliable
+    # one 1 - (3 + 0.2 * 10) / 10 = 50%. The default rule never looks at the check.
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, max_length=1, top_k=1) == [[0]]
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, max_length=1, top_k=1, shortlist="savings",
+                            passes=~SHORT_PASSES, epsilon=0.0) == [[0]]
+    assert candidate_chains(OUTCOMES, COSTS, 2) == candidate_chains(OUTCOMES, COSTS, 2, shortlist="savings")
+
+
+def test_measured_shortlist_prefers_the_reliable_candidate():
+    # Measured: the cheap model ships its wrong answer on task 0 (degradation 10% > 2%);
+    # the reliable one escalates its wrong answers (degradation 0, savings 50%).
+    measured = dict(max_length=1, top_k=1, shortlist="measured", passes=SHORT_PASSES)
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, epsilon=0.02, **measured) == [[1]]
+    # A limit loose enough for the cheap model ranks it first again, by savings.
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, epsilon=0.1, **measured) == [[0]]
+    # Both kept when there is room; the reliable one is ranked first.
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, max_length=1, top_k=2, shortlist="measured",
+                            passes=SHORT_PASSES, epsilon=0.02) == [[1], [0]]
+    # A candidate that saves nothing alone goes last, even with no degradation.
+    never = SHORT_PASSES.copy()
+    never[:, 1] = False
+    assert candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, max_length=1, top_k=2, shortlist="measured",
+                            passes=never, epsilon=0.02) == [[0], [1]]
+    with pytest.raises(ValueError, match="measured passes"):
+        candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, shortlist="measured", epsilon=0.02)
+    with pytest.raises(ValueError, match="measured passes"):
+        candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, shortlist="measured", passes=SHORT_PASSES)
+    with pytest.raises(ValueError, match="Unknown shortlist"):
+        candidate_chains(SHORT_OUTCOMES, SHORT_COSTS, 2, shortlist="best")
+
+
+def test_measured_shortlist_reads_only_the_choose_part(tmp_path, monkeypatch):
+    import tine.cascade as cascade
+    from tine.pipeline import complete_tasks
+
+    frame = synthetic_fixture(n_tasks=300, seed=11)
+    _, tasks, _ = complete_tasks(frame, "frontier")
+    choose = np.random.default_rng(0).choice(3, size=len(tasks), p=[0.4, 0.3, 0.3]) == 0
+    noise = np.random.default_rng(1).random(len(frame)) < 0.3
+    checks = frame[["task_id", "model"]].assign(passed=frame.success.astype(bool) | noise)
+    held_out = checks.task_id.isin(set(tasks.task_id[~choose]))
+    flipped = checks.assign(passed=checks.passed.where(~held_out, ~checks.passed))
+    original = cascade.candidate_chains
+
+    def run(check_rows, name):
+        calls = []
+
+        def spy(outcomes, costs, frontier_index, max_length=3, top_k=8, **options):
+            chains = original(outcomes, costs, frontier_index, max_length, top_k, **options)
+            calls.append((len(outcomes), options.get("epsilon"), chains))
+            return chains
+        monkeypatch.setattr(cascade, "candidate_chains", spy)
+        result = run_cascade_experiment(frame, "frontier", tmp_path / name, checks=check_rows, seeds=[0],
+                                        epsilons=(0.02, 0.1), shortlist="measured")
+        return calls, result
+
+    calls, result = run(checks, "a")
+    flipped_calls, flipped_result = run(flipped, "b")
+    assert [(n, epsilon) for n, epsilon, _ in calls] == [(int(choose.sum()), 0.02), (int(choose.sum()), 0.1)]
+    assert calls == flipped_calls  # certify and test check results never reach the shortlist
+    assert result["shortlist"] == "measured"
+    assert result["summary"] != flipped_result["summary"]  # they do reach certification and scoring
+    with pytest.raises(ValueError, match="Unknown shortlist"):
+        run_cascade_experiment(frame, "frontier", tmp_path / "c", checks=checks, shortlist="best")
+
+
+def test_cli_shortlist_option(tmp_path, capsys):
+    from tine.data import write_outcomes
+    frame = synthetic_fixture(n_tasks=120, seed=6)
+    write_outcomes(frame, tmp_path / "o.jsonl")
+    frame[["task_id", "model"]].assign(passed=frame.success.astype(bool)).to_csv(tmp_path / "c.csv", index=False)
+    main(["cascade", "--input", str(tmp_path / "o.jsonl"), "--frontier", "frontier", "--checks",
+          str(tmp_path / "c.csv"), "--output", str(tmp_path / "out"), "--seeds", "2", "--epsilon", "0.02",
+          "--shortlist", "measured"])
+    assert "Report:" in capsys.readouterr().out
+    assert "Shortlist rule `measured`" in (tmp_path / "out" / "report.md").read_text()
+    with pytest.raises(SystemExit):
+        main(["cascade", "--input", str(tmp_path / "o.jsonl"), "--frontier", "frontier",
+              "--output", str(tmp_path / "out2"), "--shortlist", "best"])

@@ -64,7 +64,7 @@ def _stage(name: str, single_check: str) -> dict:
 
 def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float = 0.05, seed: int = 42,
                   fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8,
-                  single_check: str = "none") -> dict:
+                  single_check: str = "none", shortlist: str = "savings") -> dict:
     """Choose and certify one chain, and describe it as data.
 
     Tasks are split by ``seed`` into choose / certify / test parts. The chain is
@@ -79,6 +79,9 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     measured for a single model, for example ``tests+judge``; whoever runs the policy
     must supply a check of that name that does the same thing, or the guarantee does
     not describe what runs.
+
+    ``shortlist`` is the candidate rule of ``candidate_chains``; ``measured`` ranks
+    candidates by their check results on the choose part at this ``epsilon``.
     """
     if not isinstance(single_check, str) or not single_check or single_check == "agreement":
         raise ValueError("single_check must be a check name other than 'agreement'")
@@ -100,7 +103,8 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     def rows(mask):
         return outcomes[mask], costs[mask], passes[mask]
 
-    chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k)
+    chains = candidate_chains(outcomes[choose], costs[choose], frontier_index, max_length, top_k,
+                              shortlist=shortlist, passes=passes[choose], epsilon=epsilon)
     chain, bound = certify_chain(chains, rows(choose), rows(certify), frontier_index, epsilon=epsilon, delta=delta)
     on_certify = chain_metrics(chain, *rows(certify)[:2], frontier_index, passes=passes[certify])
     on_test = chain_metrics(chain, *rows(test)[:2], frontier_index, passes=passes[test])

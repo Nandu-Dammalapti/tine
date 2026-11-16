@@ -47,6 +47,9 @@ def main(argv=None):
                          help="Task shares when no gate or response check is fitted (default 0.4 0.3 0.3)")
     cascade.add_argument("--delta", type=float, default=0.05)
     cascade.add_argument("--max-length", type=int, default=3)
+    cascade.add_argument("--shortlist", choices=("savings", "measured"), default="savings",
+                         help="How to pick the eight candidates chains are built from: savings with a perfect "
+                              "check (default) or measured check results on the choose part, per epsilon")
     cascade.add_argument("--catch-rates", type=Path,
                          help="CSV (model, catch_rate): also simulate each model's own catch rate")
     cascade.add_argument("--gate", choices=("logistic", "knn", "cluster"),
@@ -70,6 +73,8 @@ def main(argv=None):
     freeze.add_argument("--delta", type=float, default=0.05)
     freeze.add_argument("--seed", type=int, default=42)
     freeze.add_argument("--max-length", type=int, default=3)
+    freeze.add_argument("--shortlist", choices=("savings", "measured"), default="savings",
+                        help="How to pick the eight candidates chains are built from (see tine cascade)")
     freeze.add_argument("--fractions", type=float, nargs=3, metavar=("CHOOSE", "CERTIFY", "TEST"),
                         default=[0.4, 0.3, 0.3])
     freeze.add_argument("--single-check", default="none",
@@ -141,6 +146,7 @@ def main(argv=None):
                                         epsilons=args.epsilon, catches=args.catch, checks=checks,
                                         delta=args.delta, seeds=range(args.seeds),
                                         max_length=args.max_length, gate_method=args.gate,
+                                        shortlist=args.shortlist,
                                         catch_rates=catch_rates, gate_embeddings=args.gate_embeddings,
                                         response_check=args.response_check,
                                         fit_fractions=args.fit_fractions,
@@ -160,6 +166,7 @@ def main(argv=None):
         policy = freeze_policy(read_outcomes(args.input), args.frontier, read_checks(args.checks),
                                epsilon=args.epsilon, delta=args.delta, seed=args.seed,
                                max_length=args.max_length, fractions=tuple(args.fractions),
+                               shortlist=args.shortlist,
                                single_check=args.single_check)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
