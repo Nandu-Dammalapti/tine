@@ -210,8 +210,9 @@ have done. Shadow calls are real calls on your provider account and cost real mo
    token. `GET /health` shows `"shadow": "sampling"` when it is on. Read each token's acceptance share
    against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed`, `drift_check` and
    `drift_warning` before routing anything. A `drift_check` that starts with `rough check` means the
-   policy file records no drift baseline, so only a large change would show
-   ([PROXY.md](PROXY.md), The drift check).
+   policy file records no drift baseline, so only a large change would show. A `drift_check` of
+   `notice` means accepted answers differ from the frontier's more often than on the graded tasks,
+   within what the certification allows for: grade a sample ([PROXY.md](PROXY.md), The drift check).
 
 What the cap does and does not do:
 
@@ -335,7 +336,7 @@ one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
 `policy_sha256`, `route_stage`, `route_skip_reason`, `checks_json` and `holdout` columns to `requests`,
-`skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
+`skip_reason` and `policy_chain_sha256` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
 - an estimated baseline becomes `estimated`;
@@ -346,6 +347,9 @@ by this rule:
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
 have no `policy_sha256`, `route_stage`, `checks_json` or `holdout`, older shadow runs have no check steps,
 earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
+Older shadow runs have no `policy_chain_sha256`; a proxy that starts with the policy file they were run
+with fills it in, so that the drift check of that policy frozen again still counts them
+([POLICY.md](POLICY.md), The drift baseline).
 
 ## Checked without Docker
 

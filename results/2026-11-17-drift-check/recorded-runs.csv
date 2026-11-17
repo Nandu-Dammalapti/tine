@@ -1,0 +1,23 @@
+run,epsilon,drift_requests,accepted_compared,differing,differing_share_of_requests,differing_share_of_accepted,lost,graded,graded_loss,old_rule,new_with_baseline,allowance_of_requests,allowance_of_accepted,graded_tasks_own_share_upper,evidence_for_a_warning,evidence_for_a_notice,evidence_needed,new_with_default,default_allowance_of_requests,default_evidence_for_a_warning
+MMLU-Pro first pilot,0.04,317,268,9,0.0284,0.0336,6,297,0.0202,quiet,quiet,0.0589,0.0666,0.0349,0.0962,0.213,20,quiet,0.14,0.0402
+MMLU-Pro long-1,0.04,300,273,9,0.03,0.033,8,300,0.0267,quiet,quiet,0.0589,0.0666,0.0349,0.102,0.192,20,quiet,0.14,0.048
+MMLU-Pro long-2,0.04,300,283,17,0.0567,0.0601,10,300,0.0333,WARNS,quiet,0.0589,0.0666,0.0349,0.104,0.612,20,quiet,0.14,0.0447
+MMLU-Pro long-3,0.04,300,277,11,0.0367,0.0397,6,300,0.02,quiet,quiet,0.0589,0.0666,0.0349,0.0537,0.0871,20,quiet,0.14,0.038
+MMLU-Pro long-4,0.04,300,281,14,0.0467,0.0498,9,300,0.03,WARNS,quiet,0.0589,0.0666,0.0349,0.0717,0.188,20,quiet,0.14,0.041
+MMLU-Pro long-5,0.04,300,276,7,0.0233,0.0254,4,300,0.0133,quiet,quiet,0.0589,0.0666,0.0349,0.055,0.0705,20,quiet,0.14,0.039
+MedQA,0.04,200,191,1,0.005,0.0052,1,200,0.005,quiet,quiet,0.0635,0.069,0.0369,0.0167,0.0181,20,quiet,0.14,0.0137
+ARC-Challenge,0.04,200,200,7,0.035,0.035,5,200,0.025,quiet,quiet,0.0513,0.0513,0.0412,0.0382,0.0505,20,quiet,0.14,0.0161
+FinQA exact,0.04,200,102,25,0.125,0.2451,2,200,0.01,WARNS,quiet,0.192,0.3579,0.1655,0.0363,0.0499,20,quiet,0.14,0.073
+FinQA by value,0.04,200,118,29,0.145,0.2458,4,200,0.02,WARNS,quiet,0.217,0.3343,0.2,0.0404,0.049,20,quiet,0.14,0.0989
+MATH-500 exact,0.04,100,85,5,0.05,0.0588,1,100,0.01,WARNS,quiet,0.1136,0.1307,0.0789,0.0499,0.0668,20,quiet,0.14,0.0379
+MATH-500 by value,0.04,100,97,2,0.02,0.0206,1,100,0.01,quiet,quiet,0.0531,0.0541,0.0275,0.0464,0.0656,20,quiet,0.14,0.0294
+IT tickets,0.04,300,300,32,0.1067,0.1067,12,300,0.04,WARNS,quiet,0.08,0.08,0.0714,1.1,2.6,20,quiet,0.14,0.109
+MMLU-Pro long-1..5 as one history,0.04,1500,1390,58,0.0387,0.0417,37,1500,0.0247,quiet,quiet,0.0589,0.0666,0.0349,0.0126,0.0872,20,quiet,0.14,0.0054
+MMLU-Pro all six as one history,0.04,1817,1658,67,0.0369,0.0404,43,1797,0.0239,quiet,quiet,0.0589,0.0666,0.0349,0.0112,0.0719,20,quiet,0.14,0.00512
+MMLU-Pro first pilot,0.02,317,268,9,0.0284,0.0336,6,297,0.0202,WARNS,quiet,0.0389,0.044,0.0349,0.235,0.275,20,quiet,0.12,0.0753
+MMLU-Pro long-1..5 as one history,0.02,1500,1390,58,0.0387,0.0417,37,1500,0.0247,WARNS,quiet,0.0389,0.044,0.0349,0.0811,0.167,20,quiet,0.12,0.0108
+MMLU-Pro all six as one history,0.02,1817,1658,67,0.0369,0.0404,43,1797,0.0239,WARNS,quiet,0.0389,0.044,0.0349,0.0676,0.138,20,quiet,0.12,0.0101
+"xRouteBench replay, test part",0.02,1414,1099,58,0.041,0.0528,14,1414,0.0099,WARNS,quiet,0.0523,0.0678,0.0433,0.0437,0.0844,20,quiet,0.12,0.0138
+"xRouteBench replay, test part",0.04,1414,1099,58,0.041,0.0528,14,1414,0.0099,WARNS,quiet,0.0723,0.0937,0.0433,0.0127,0.0442,20,quiet,0.14,0.0069
+"xRouteBench replay, choose part",0.02,1922,1499,74,0.0385,0.0494,26,1922,0.0135,WARNS,quiet,0.0523,0.0678,0.0433,0.0291,0.0555,20,quiet,0.12,0.00977
+"xRouteBench replay, choose part",0.04,1922,1499,74,0.0385,0.0494,26,1922,0.0135,quiet,quiet,0.0723,0.0937,0.0433,0.00873,0.0291,20,quiet,0.14,0.00489

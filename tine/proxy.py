@@ -627,6 +627,12 @@ def create_app(
     app.state.ledger = store
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
+    if shadow_store is not None:
+        # Rows these very files ran before rows kept how their policy runs: mark them, so
+        # that a policy frozen again later still counts them in its drift check.
+        for identity, by_provider in config.shadow_policies.items():
+            for policy in by_provider.values():
+                shadow_store.adopt(identity, policy)
     # When shadow mode holds back for the provider's rate limit. ``clock`` (seconds since
     # the epoch) is for tests.
     shadow_limits = (ShadowLimits(config.shadow_max_calls_per_minute, clock or time.time)

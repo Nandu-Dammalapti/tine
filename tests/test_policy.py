@@ -559,7 +559,7 @@ def test_checks_that_do_not_say_whether_answers_match_freeze_the_policy_as_befor
     assert "drift_baseline" not in freeze_policy(frame, "frontier", checks, epsilon=0.04)
 
 
-def test_the_drift_baseline_walks_the_chain_and_leaves_out_answers_a_named_check_accepted():
+def test_the_drift_baseline_walks_the_chain_and_does_not_compare_answers_a_named_check_accepted():
     from tine.policy import _drift_baseline
 
     # Columns: the pair a+b, the single model c, the frontier. Eight tasks.
@@ -580,11 +580,12 @@ def test_the_drift_baseline_walks_the_chain_and_leaves_out_answers_a_named_check
                     "certify": {"tasks": 4, "compared": 4, "differing": 3, "differing_not_lost": 3},
                     "test": {"tasks": 2, "compared": 2, "differing": 2, "differing_not_lost": 1}}}
     # With a named check on the single model its accepted answers are not compared, live or here.
+    # Their tasks still count: the quality limit is a share of all tasks.
     judged = [stages[0], {"models": ["c"], "check": "tests+judge"}]
     block = _drift_baseline([0, 1], judged, outcomes, passes, matches, 2, parts, "math")
-    assert (block["tasks"], block["accepted"], block["compared"], block["differing"]) == (3, 6, 3, 3)
+    assert (block["tasks"], block["accepted"], block["compared"], block["differing"]) == (6, 6, 3, 3)
     assert block["differing_not_lost"] == 3 and block["by_part"]["test"] == {
-        "tasks": 1, "compared": 1, "differing": 1, "differing_not_lost": 1}
+        "tasks": 2, "compared": 1, "differing": 1, "differing_not_lost": 1}
     # No block: no stage, no column, no compared stage, or a compared accepted answer of unknown match.
     assert _drift_baseline([], [], outcomes, passes, matches, 2, parts, "exact") is None
     assert _drift_baseline([0, 1], stages, outcomes, passes, None, 2, parts, "exact") is None
@@ -596,10 +597,19 @@ def test_the_drift_baseline_walks_the_chain_and_leaves_out_answers_a_named_check
 
 @pytest.mark.parametrize("block", [
     None, [], "7 of 692", {}, {"tasks": 692}, {"tasks": 692, "differing": 16},
-    {"tasks": 0, "differing": 0, "differing_not_lost": 0}, {"tasks": 692, "differing": 16, "differing_not_lost": 17},
-    {"tasks": 10, "differing": 11, "differing_not_lost": 7}, {"tasks": 692, "differing": 16, "differing_not_lost": -1},
-    {"tasks": 692.0, "differing": 16, "differing_not_lost": 7}, {"tasks": True, "differing": 1, "differing_not_lost": 1},
-    {"tasks": "692", "differing": "16", "differing_not_lost": "7"}])
+    {"tasks": 692, "differing": 16, "differing_not_lost": 7},  # no count of compared answers
+    {"tasks": 0, "compared": 0, "differing": 0, "differing_not_lost": 0},
+    {"tasks": 692, "compared": 612, "differing": 16, "differing_not_lost": 17},
+    {"tasks": 10, "compared": 10, "differing": 11, "differing_not_lost": 7},
+    {"tasks": 692, "compared": 15, "differing": 16, "differing_not_lost": 7},
+    {"tasks": 692, "compared": 693, "differing": 16, "differing_not_lost": 7},
+    {"tasks": 692, "compared": 612, "differing": 16, "differing_not_lost": -1},
+    {"tasks": 692.0, "compared": 612, "differing": 16, "differing_not_lost": 7},
+    {"tasks": True, "compared": 1, "differing": 1, "differing_not_lost": 1},
+    {"tasks": "692", "compared": "612", "differing": "16", "differing_not_lost": "7"},
+    # More tasks than any history holds: the bound worked out from such a count would fail.
+    {"tasks": 10**30, "compared": 0, "differing": 0, "differing_not_lost": 0},
+    {"tasks": 10**9 + 1, "compared": 5, "differing": 5, "differing_not_lost": 5}])
 def test_a_malformed_drift_baseline_is_refused(block):
     with pytest.raises(ValueError, match="drift_baseline"):
         validate_policy({**POLICY, "drift_baseline": block})
@@ -607,9 +617,14 @@ def test_a_malformed_drift_baseline_is_refused(block):
 
 def test_a_policy_loads_with_a_drift_baseline_and_without_one():
     assert validate_policy(POLICY) is POLICY and "drift_baseline" not in POLICY
-    for block in ({"tasks": 692, "differing": 16, "differing_not_lost": 7},
-                  {"tasks": 1, "differing": 0, "differing_not_lost": 0}, {"tasks": 3, "differing": 3, "differing_not_lost": 3}):
+    from tine.shadow import drift_allowance
+
+    for block in ({"tasks": 692, "compared": 612, "differing": 16, "differing_not_lost": 7},
+                  {"tasks": 1, "compared": 0, "differing": 0, "differing_not_lost": 0},
+                  {"tasks": 3, "compared": 3, "differing": 3, "differing_not_lost": 3},
+                  {"tasks": 10**9, "compared": 10**9, "differing": 10**9, "differing_not_lost": 0}):
         validate_policy({**POLICY, "drift_baseline": block})
+        assert 0.04 < drift_allowance(0.04, block)["drift_allowance"] <= 1  # every count that loads gives a level
 
 
 def test_freeze_policy_command_reads_the_match_column_and_blank_values(tmp_path):

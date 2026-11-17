@@ -102,10 +102,15 @@ as it would run, and writes:
   part is where the chain was picked, so it is only listed in `by_part`.
 - `differing` is accepted answers that differ from the frontier's. `differing_lost`
   is those where the frontier was right and the accepted answer wrong;
-  `differing_not_lost` is the rest. The drift check uses `differing_not_lost` of
-  `tasks`.
+  `differing_not_lost` is the rest.
+- The drift check uses four of the counts. `differing_not_lost` of `tasks` and of
+  `compared` give what it allows for on top of epsilon, as a share of requests and
+  as a share of accepted answers. `differing` of `tasks` and of `compared` are what
+  the graded tasks themselves showed, losses included; a share above that and
+  within the allowance gets a notice, not a warning.
 - An answer accepted by a named check (`tests+judge`) is not compared, as in shadow
-  mode, and its task is left out of `tasks`.
+  mode. Its task stays in `tasks`, because epsilon is a share of all tasks; it is
+  in `accepted` and not in `compared`.
 - No block is written when nothing certified, when the checks have no
   `matches_frontier` column, when no stage is compared, or when the match of an
   accepted answer is unknown. Nothing else in the file changes: `stages`,
@@ -117,12 +122,23 @@ from its recorded answers. Re-freezing the eight pilot policies this way reprodu
 the `stages`, `guarantee` and `estimate` of each stored file.
 
 **Policies frozen before this have no baseline.** They still load. The drift check
-then allows epsilon plus a default 10 points and says so (`rough check, no
-warning`); only a large change shows at that level. To record a baseline, run
-`scripts/agreement_pairs.py` and `tine freeze-policy` again on the same recorded
-outcomes and answers, with the same seed and flags. No model is called. The new
-file has a new `created` time and so a new digest; shadow rows are kept per policy
-file, so the drift check for the new file starts with the requests run with it.
+then allows epsilon plus a default 10 points of requests, or a third of the accepted
+answers, and says so (`rough check, no warning`); only a large change shows at that
+level. To record a baseline, run `scripts/agreement_pairs.py` and `tine
+freeze-policy` again on the same recorded outcomes and answers, with the same seed
+and flags. No model is called.
+
+**Freezing again does not restart the drift check.** The new file has a new
+`created` time and a new digest. Each shadow row keeps two digests: one of the
+policy file it was run with, and one of how that policy runs (frontier, stages,
+answer pattern and `answer_compare`). A file that runs the same way counts the
+rows of the file before it, so a warning that stood before the new file still
+stands. Rows stored by a proxy from before the second digest have none. Start the
+new proxy once with the file those rows were run with: it marks them. Without that
+they count for that very file only, and the report says how many requests the
+check left out (`drift_other_policy_requests`). A file with other stages, another
+frontier, pattern or comparison is another policy and starts its check from
+nothing.
 
 The baseline describes the graded tasks. It is the right allowance for live traffic
 only if those tasks are a sample of that traffic and the recorded answers were read
@@ -277,9 +293,10 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
 - whose `answer_pattern`, when present, is empty or not a valid regular expression;
 - whose `answer_compare`, when present, is not `exact` or `math`;
 - whose `drift_baseline`, when present, is not an object with whole numbers `tasks`
-  (at least 1), `differing` and `differing_not_lost`, with
-  0 <= `differing_not_lost` <= `differing` <= `tasks`. A file without the block
-  loads as before.
+  (at least 1 and at most 1,000,000,000), `compared`, `differing` and
+  `differing_not_lost`, with
+  0 <= `differing_not_lost` <= `differing` <= `compared` <= `tasks`. A file without
+  the block loads as before.
 
 The proxy also requires `tenant` to be the tenant the policy is configured for. A
 file edited after freezing still loads, flagged by the freeze digest; a file with no

@@ -207,9 +207,9 @@ def _drift_baseline(chain, stages, outcomes, passes, matches, frontier_index: in
     written in two ways. ``matches`` says, per task and candidate, whether the
     candidate's answer equals the frontier's (``tine.checks.check_matches``). The
     chain is walked per task as it runs: the first stage whose check passed accepts.
-    An answer accepted by a named check is not compared, as in shadow mode, and its
-    task is left out of ``tasks``. A differing answer is a loss when the frontier is
-    right and the accepted candidate is wrong.
+    An answer accepted by a named check is not compared, as in shadow mode; its task
+    stays in ``tasks``, because the quality limit is a share of all tasks. A differing
+    answer is a loss when the frontier is right and the accepted candidate is wrong.
 
     The counts the drift check uses are those of the certify and test parts together.
     The choose part is where the chain was picked, so it is kept apart in
@@ -238,7 +238,7 @@ def _drift_baseline(chain, stages, outcomes, passes, matches, frontier_index: in
         lost |= differs & outcomes[:, frontier_index] & ~outcomes[:, index]
 
     def counts(mask) -> dict:
-        return {"tasks": int((mask & ~(accepted & ~compared)).sum()), "compared": int((mask & compared).sum()),
+        return {"tasks": int(mask.sum()), "compared": int((mask & compared).sum()),
                 "differing": int((mask & differing).sum()),
                 "differing_not_lost": int((mask & differing & ~lost).sum())}
 
@@ -251,6 +251,11 @@ def _drift_baseline(chain, stages, outcomes, passes, matches, frontier_index: in
             "differing": whole["differing"], "differing_lost": int((graded & differing & lost).sum()),
             "differing_not_lost": whole["differing_not_lost"],
             "by_part": {name: counts(mask) for name, mask in parts.items()}}
+
+
+# More graded tasks than any policy was frozen from: a count above this in a policy
+# file's drift baseline is a mistake, and the bound worked out from it would fail.
+DRIFT_BASELINE_MAX_TASKS = 10**9
 
 
 def check_answer_pattern(pattern) -> None:
@@ -340,11 +345,13 @@ def validate_policy(policy: dict) -> dict:
         # The drift check turns these counts into the share of differing answers it
         # allows for; counts that cannot be ones would give a level that means nothing.
         baseline = policy["drift_baseline"] if isinstance(policy["drift_baseline"], dict) else {}
-        harmless, differing, tasks = (baseline.get(name) for name in ("differing_not_lost", "differing", "tasks"))
-        if (not all(type(value) is int for value in (harmless, differing, tasks))
-                or not 0 <= harmless <= differing <= tasks or tasks < 1):
-            raise ValueError("A policy's drift_baseline must hold whole numbers, with tasks at least 1 and "
-                             "0 <= differing_not_lost <= differing <= tasks")
+        harmless, differing, compared, tasks = (baseline.get(name) for name in (
+            "differing_not_lost", "differing", "compared", "tasks"))
+        if (not all(type(value) is int for value in (harmless, differing, compared, tasks))
+                or not 0 <= harmless <= differing <= compared <= tasks or not 1 <= tasks <= DRIFT_BASELINE_MAX_TASKS):
+            raise ValueError("A policy's drift_baseline must hold whole numbers, with tasks at least 1 and at most "
+                             f"{DRIFT_BASELINE_MAX_TASKS:,}, and 0 <= differing_not_lost <= differing <= compared "
+                             "<= tasks")
     return policy
 
 

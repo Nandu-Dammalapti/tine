@@ -1,0 +1,169 @@
+run,epsilon,change_to,healthy_requests_before,rule,runs,read_every,already_warning_before_the_change,within_500,within_1000,within_3000,median_requests_to_first
+MMLU-Pro long-1..5,0.04,3x eps,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,0,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,200.0
+MMLU-Pro long-1..5,0.04,3x eps,0,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,0,"new, default: warning",200,100,0.0,0.0,0.005,0.005,
+MMLU-Pro long-1..5,0.04,3x eps,1000,old rule,200,100,0.415,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,1000,"new, baseline: warning",200,100,0.0,0.97,1.0,1.0,300.0
+MMLU-Pro long-1..5,0.04,3x eps,1000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,1000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,3x eps,1500,old rule,200,100,0.4,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,1500,"new, baseline: warning",200,100,0.0,0.965,1.0,1.0,300.0
+MMLU-Pro long-1..5,0.04,3x eps,1500,"new, baseline: warning or notice",200,100,0.005,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,1500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,3x eps,5000,old rule,200,100,0.29,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,5000,"new, baseline: warning",200,100,0.0,0.92,1.0,1.0,300.0
+MMLU-Pro long-1..5,0.04,3x eps,5000,"new, baseline: warning or notice",200,100,0.02,1.0,1.0,1.0,200.0
+MMLU-Pro long-1..5,0.04,3x eps,5000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,3x eps,5500,old rule,200,100,0.32,0.995,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,3x eps,5500,"new, baseline: warning",200,100,0.0,0.89,1.0,1.0,350.0
+MMLU-Pro long-1..5,0.04,3x eps,5500,"new, baseline: warning or notice",200,100,0.015,1.0,1.0,1.0,200.0
+MMLU-Pro long-1..5,0.04,3x eps,5500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,3x eps,20000,old rule,200,100,0.11,0.77,0.98,1.0,300.0
+MMLU-Pro long-1..5,0.04,3x eps,20000,"new, baseline: warning",200,100,0.0,0.805,1.0,1.0,400.0
+MMLU-Pro long-1..5,0.04,3x eps,20000,"new, baseline: warning or notice",200,100,0.11,1.0,1.0,1.0,200.0
+MMLU-Pro long-1..5,0.04,3x eps,20000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,3x eps,20500,old rule,200,100,0.135,0.755,0.985,1.0,300.0
+MMLU-Pro long-1..5,0.04,3x eps,20500,"new, baseline: warning",200,100,0.0,0.855,1.0,1.0,400.0
+MMLU-Pro long-1..5,0.04,3x eps,20500,"new, baseline: warning or notice",200,100,0.15,1.0,1.0,1.0,200.0
+MMLU-Pro long-1..5,0.04,3x eps,20500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+MMLU-Pro long-1..5,0.04,40% agree wrong,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,0,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,0,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,0,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1000,old rule,200,100,0.37,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1500,old rule,200,100,0.36,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1500,"new, baseline: warning or notice",200,100,0.015,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,1500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5000,old rule,200,100,0.255,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5000,"new, baseline: warning or notice",200,100,0.01,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5500,old rule,200,100,0.29,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5500,"new, baseline: warning or notice",200,100,0.025,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,5500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20000,old rule,200,100,0.14,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20000,"new, baseline: warning or notice",200,100,0.15,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20500,old rule,200,100,0.155,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20500,"new, baseline: warning or notice",200,100,0.155,1.0,1.0,1.0,100.0
+MMLU-Pro long-1..5,0.04,40% agree wrong,20500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,0,"new, baseline: warning",200,100,0.0,0.985,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,0,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,0,"new, default: warning",200,100,0.0,0.0,0.0,0.015,
+xRouteBench choose part,0.04,3x eps,1000,old rule,200,100,0.37,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,1000,"new, baseline: warning",200,100,0.0,0.905,1.0,1.0,300.0
+xRouteBench choose part,0.04,3x eps,1000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,1000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,3x eps,1500,old rule,200,100,0.38,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,1500,"new, baseline: warning",200,100,0.0,0.91,1.0,1.0,300.0
+xRouteBench choose part,0.04,3x eps,1500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,1500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,3x eps,5000,old rule,200,100,0.255,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,5000,"new, baseline: warning",200,100,0.0,0.835,1.0,1.0,400.0
+xRouteBench choose part,0.04,3x eps,5000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,5000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,3x eps,5500,old rule,200,100,0.24,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,3x eps,5500,"new, baseline: warning",200,100,0.0,0.815,1.0,1.0,400.0
+xRouteBench choose part,0.04,3x eps,5500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,5500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,3x eps,20000,old rule,200,100,0.175,0.79,0.995,1.0,300.0
+xRouteBench choose part,0.04,3x eps,20000,"new, baseline: warning",200,100,0.0,0.65,0.995,1.0,500.0
+xRouteBench choose part,0.04,3x eps,20000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,20000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,3x eps,20500,old rule,200,100,0.13,0.75,1.0,1.0,400.0
+xRouteBench choose part,0.04,3x eps,20500,"new, baseline: warning",200,100,0.0,0.68,1.0,1.0,500.0
+xRouteBench choose part,0.04,3x eps,20500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,200.0
+xRouteBench choose part,0.04,3x eps,20500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.04,40% agree wrong,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,0,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,0,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,0,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1000,old rule,200,100,0.365,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1500,old rule,200,100,0.365,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,1500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5000,old rule,200,100,0.325,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5500,old rule,200,100,0.245,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,5500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20000,old rule,200,100,0.12,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20500,old rule,200,100,0.12,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.04,40% agree wrong,20500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,0,"new, baseline: warning",200,100,0.0,0.52,0.91,1.0,500.0
+xRouteBench choose part,0.02,3x eps,0,"new, baseline: warning or notice",200,100,0.0,0.855,0.995,1.0,300.0
+xRouteBench choose part,0.02,3x eps,0,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,1000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,1000,"new, baseline: warning",200,100,0.0,0.17,0.71,1.0,900.0
+xRouteBench choose part,0.02,3x eps,1000,"new, baseline: warning or notice",200,100,0.0,0.585,0.98,1.0,500.0
+xRouteBench choose part,0.02,3x eps,1000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,1500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,1500,"new, baseline: warning",200,100,0.0,0.12,0.625,1.0,900.0
+xRouteBench choose part,0.02,3x eps,1500,"new, baseline: warning or notice",200,100,0.0,0.53,0.95,1.0,500.0
+xRouteBench choose part,0.02,3x eps,1500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,5000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,5000,"new, baseline: warning",200,100,0.0,0.045,0.35,0.995,1100.0
+xRouteBench choose part,0.02,3x eps,5000,"new, baseline: warning or notice",200,100,0.0,0.22,0.88,1.0,750.0
+xRouteBench choose part,0.02,3x eps,5000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,5500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,5500,"new, baseline: warning",200,100,0.0,0.025,0.305,1.0,1300.0
+xRouteBench choose part,0.02,3x eps,5500,"new, baseline: warning or notice",200,100,0.0,0.225,0.845,1.0,750.0
+xRouteBench choose part,0.02,3x eps,5500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,20000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,20000,"new, baseline: warning",200,100,0.0,0.01,0.15,0.985,1500.0
+xRouteBench choose part,0.02,3x eps,20000,"new, baseline: warning or notice",200,100,0.0,0.065,0.68,1.0,900.0
+xRouteBench choose part,0.02,3x eps,20000,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,3x eps,20500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,3x eps,20500,"new, baseline: warning",200,100,0.0,0.015,0.165,0.99,1450.0
+xRouteBench choose part,0.02,3x eps,20500,"new, baseline: warning or notice",200,100,0.0,0.075,0.695,1.0,900.0
+xRouteBench choose part,0.02,3x eps,20500,"new, default: warning",200,100,0.0,0.0,0.0,0.0,
+xRouteBench choose part,0.02,40% agree wrong,0,old rule,200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,0,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,0,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,0,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1000,"new, baseline: warning or notice",200,100,0.005,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,1500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,5500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20000,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20000,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20000,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20000,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20500,old rule,200,100,1.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20500,"new, baseline: warning",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20500,"new, baseline: warning or notice",200,100,0.0,1.0,1.0,1.0,100.0
+xRouteBench choose part,0.02,40% agree wrong,20500,"new, default: warning",200,100,0.0,1.0,1.0,1.0,100.0

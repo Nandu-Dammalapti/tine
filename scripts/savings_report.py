@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tine.ledger import Ledger  # noqa: E402
 from tine.policy import FREEZE_EDITED, freeze_state, validate_policy  # noqa: E402
 from tine.report_page import render  # noqa: E402
-from tine.shadow import ShadowStore, policy_row_digest  # noqa: E402
+from tine.shadow import ShadowStore, chain_column, run_with  # noqa: E402
 
 
 def open_read_only(path: Path) -> Ledger:
@@ -80,28 +80,31 @@ def reports_from_ledger(path: Path, tenant: str, policy: dict | None = None) -> 
 def policy_mismatch_note(path: Path, tenant: str, policy: dict) -> str | None:
     """A sentence for the page when shadowed requests were run with another policy.
 
-    Each shadow row stores a digest of the policy it was run with
-    (``tine.shadow.policy_row_digest``). The shadow report adds all of a tenant's rows
-    together, whatever their policy, so a page that describes one policy beside those
-    figures must say when they do not belong to it. The drift check is the exception:
-    it counts only the rows run with the described policy, and the note says so.
+    Each shadow row stores a digest of the policy file it was run with and one of how
+    that policy runs (``tine.shadow.run_with``). The shadow report adds all of a
+    tenant's rows together, whatever their policy, so a page that describes one
+    policy beside those figures must say when they do not belong to it. A row run
+    with another file that runs the same way (the policy frozen again) belongs to it.
+    The drift check is the exception: it counts only the rows that belong to the
+    described policy, and the note says so.
     """
     ledger = open_read_only(path)
     try:
         if not _has_table(ledger, "shadow_runs"):
             return None
-        rows = ledger._db.execute("SELECT policy_sha256, COUNT(*) AS runs FROM shadow_runs WHERE tenant=? "
-                                  "GROUP BY policy_sha256", (tenant,)).fetchall()
+        chain = chain_column(ledger)
+        rows = ledger._db.execute(f"SELECT policy_sha256, {chain}, COUNT(*) AS runs FROM shadow_runs WHERE tenant=? "
+                                  "GROUP BY 1, 2", (tenant,)).fetchall()
     finally:
         ledger.close()
-    digest = policy_row_digest(policy)
+    mine = run_with(policy)
     total = sum(row["runs"] for row in rows)
-    other = sum(row["runs"] for row in rows if row["policy_sha256"] != digest)
+    other = sum(row["runs"] for row in rows if not mine(row))
     if not other:
         return None
-    return (f"{other:,} of the {total:,} shadowed requests were run with a different policy file from the one "
+    return (f"{other:,} of the {total:,} shadowed requests were run with a different policy from the one "
             "described on this page. The shadow figures add all of them together. The drift check counts only "
-            "requests run with this policy file.")
+            "requests run with this policy, or with a file of the same stages, answer pattern and comparison.")
 
 
 def reports_from_json(path: Path) -> tuple[dict | None, dict | None]:

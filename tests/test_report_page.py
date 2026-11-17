@@ -645,12 +645,16 @@ def test_cli_says_so_when_shadow_rows_were_run_with_another_policy(tmp_path, cap
     newer = tmp_path / "policy.json"
     newer.write_text(json.dumps({**POLICY, "stages": POLICY["stages"][:1]}), encoding="utf-8")
     text = text_of(cli.build(tenant="acme", ledger=path, policy=newer, note="Made for a test."))
-    assert ("Note. Made for a test. 4 of the 4 shadowed requests were run with a different policy file from the "
+    assert ("Note. Made for a test. 4 of the 4 shadowed requests were run with a different policy from the "
             "one described on this page.") in text
     assert "warning: 4 of the 4 shadowed requests" in capsys.readouterr().err
     same = tmp_path / "same.json"
     same.write_text(json.dumps(POLICY, indent=2), encoding="utf-8")  # layout of the file does not matter
     assert "Note." not in text_of(cli.build(tenant="acme", ledger=path, policy=same))
+    # The policy frozen again runs the same way: its page is about the same requests.
+    again = tmp_path / "again.json"
+    again.write_text(json.dumps({**POLICY, "provenance": {"created": "2026-11-17T10:00:00+00:00"}}), encoding="utf-8")
+    assert "Note." not in text_of(cli.build(tenant="acme", ledger=path, policy=again))
     assert "Note." not in text_of(cli.build(tenant="nobody", ledger=path))
 
 
@@ -681,10 +685,16 @@ def test_a_ledger_from_before_skip_reasons_still_reports_and_is_upgraded(tmp_pat
         old.execute("INSERT INTO shadow_runs VALUES ('r1','acme','openai','t','d',0,NULL,NULL,NULL,'[]',0.0,1.0)")
     _, shadow = cli.reports_from_ledger(path, "acme")  # read-only: no column is added
     assert shadow["shadowed_requests"] == 1 and shadow["sent_to_frontier_for_tools"] == 0
+    # Its rows do not say how their policy ran: they count for the very file only.
+    _, checked = cli.reports_from_ledger(path, "acme", POLICY)
+    assert (checked["drift_requests"], checked["drift_other_policy_requests"]) == (0, 1)
+    assert "1 of the 1 shadowed requests were run with a different policy" in cli.policy_mismatch_note(
+        path, "acme", POLICY)
     ledger = Ledger(path)
     ShadowStore(ledger)
     columns = {row["name"] for row in ledger._db.execute("PRAGMA table_info(shadow_runs)")}
-    assert "skip_reason" in columns and ShadowStore(ledger).report("acme")["shadowed_requests"] == 1
+    assert {"skip_reason", "policy_chain_sha256"} <= columns
+    assert ShadowStore(ledger).report("acme", policies={"policy": POLICY})["drift_other_policy_requests"] == 1
     ledger.close()
 
 
@@ -787,7 +797,10 @@ def test_the_page_shows_what_the_drift_check_allows_for_and_where_that_comes_fro
     assert 'class="alarm"' not in page
     assert ("Differing share the certification allows for 5.89% of requests: the quality limit of 4.00% plus 1.89% "
             "for answers that differed without a loss on 692 graded tasks") in text
-    assert "Drift check compatible with the certification: 2 of 42 accepted answers differ from the frontier's" in text
+    assert ("Differing share the certification allows for 5.89% of requests: the quality limit of 4.00% plus 1.89% "
+            "for answers that differed without a loss on 692 graded tasks; 6.66% of accepted answers") in text
+    assert "Drift check no clear sign of drift: 2 of 42 accepted answers differ from the frontier's" in text
+    assert "left out of the drift check" not in text and "Drift check is for the policy on" not in text
     assert ("When the policy was frozen, 7 of its 692 certify and test tasks had an accepted answer that differed "
             "from the frontier model's without being a loss; the drift check allows for up to 1.89% on top of the "
             "quality limit.") in text
@@ -904,9 +917,13 @@ def test_cli_checks_differing_answers_against_the_described_policys_limit(tmp_pa
     other.write_text(json.dumps({**POLICY, "stages": POLICY["stages"][:1]}), encoding="utf-8")
     text = text_of(cli.build(tenant="acme", ledger=path, policy=other))
     assert "Warning." not in text and "Drift check not checked yet: 0 accepted answers compared" in text
-    assert ("30 of the 30 shadowed requests were run with a different policy file from the one described on this "
+    assert ("30 of the 30 shadowed requests were run with a different policy from the one described on this "
             "page. The shadow figures add all of them together. The drift check counts only requests run with "
-            "this policy file.") in text
+            "this policy, or with a file of the same stages, answer pattern and comparison.") in text
+    # The page says how many requests the check left out, beside counts that cover them all.
+    assert "Accepted answers that differ from the frontier model's 12 (40.0% of those compared)" in text
+    assert ("Requests run with another policy, left out of the drift check 30 Requests the drift check counted 0 "
+            "Drift check not checked yet") in text
 
 
 def holdout_ledger(path=None, *, routed_cost: float = 0.1, held: int = 30) -> Ledger:
@@ -1012,3 +1029,76 @@ def test_cli_shows_the_holdout_estimate_from_a_ledger_file(tmp_path):
     text = text_of(output.read_text(encoding="utf-8"))
     assert text.count("Measured under routing, from a random frontier holdout") == 1
     assert "Held-out requests with known costs 30" in text
+
+
+def test_a_drift_notice_is_shown_with_the_shadow_figures_and_not_as_an_alarm():
+    medqa = {**BASELINE, "tasks": 556, "accepted": 512, "compared": 512, "differing": 13, "differing_lost": 6}
+    recorded = {**POLICY, "stages": POLICY["stages"][:1], "drift_baseline": medqa,
+                "guarantee": {**POLICY["guarantee"], "epsilon": 0.04, "bound": 0.03}}
+    store = ShadowStore(Ledger())
+    accepted = {"accepted": True, "stage": 0, "served_by": "small-a", "answer": "A", "calls": []}
+    for index in range(1000):
+        outcome = accepted if index % 25 < 23 else {**accepted, "accepted": False, "stage": None, "served_by": None}
+        store.record(request_id=f"n{index}", tenant="acme", provider="openai", policy=recorded, outcome=outcome,
+                     frontier_answer="B" if index % 25 < 2 else "A", frontier_cost_usd=1.0)
+    report = store.report("acme", policies={"policy": recorded})
+    assert report["drift_check"] == "notice" and report["drift_warning"] is None
+    page = render(None, report, tenant="acme", generated_at="now", policy=recorded)
+    text = text_of(page)
+    assert 'class="alarm"' not in page and "Warning." not in text and "Drift check notice" in text
+    assert text.count("Accepted answers differ from the frontier's more often than on the graded tasks: 80 of 920") == 1
+    assert headline_sentences(None, report)[0].startswith("Of 1,000 shadowed requests")
+    # No shadowed request, no notice.
+    assert "more often than on the graded tasks" not in render(None, {**report, "shadowed_requests": 0},
+                                                               tenant="acme", generated_at="now")
+
+
+def test_the_page_names_the_policy_the_drift_check_is_for_when_there_are_several():
+    openai = {**POLICY, "stages": POLICY["stages"][:1]}
+    anthropic = {**openai, "frontier": "claude"}
+    store = ShadowStore(Ledger())
+    accepted = {"accepted": True, "stage": 0, "served_by": "small-a", "answer": "A", "calls": []}
+    for index in range(70):
+        used, provider = (openai, "openai") if index < 40 else (anthropic, "anthropic")
+        store.record(request_id=f"p{index}", tenant="acme", provider=provider, policy=used, outcome=accepted,
+                     frontier_answer="B" if index >= 55 else "A", frontier_cost_usd=1.0)
+    report = store.report("acme", policies={"openai": openai, "anthropic": anthropic})
+    text = text_of(render(None, report, tenant="acme", generated_at="now"))
+    assert "Accepted answers that differ from the frontier model's 15 (21.5% of those compared)" in text
+    assert "Drift check is for the policy on anthropic Drift check warning" in text
+    assert "15 of 30 accepted cheaper answers differ" in text and "left out of the drift check" not in text
+
+
+def test_the_policy_section_describes_the_drift_check_only_where_it_applies():
+    """A report saved before the check used a baseline was made with another check, and
+    a policy whose stages are all named checks has none."""
+    rough = "the drift check uses a default allowance of 10 points"
+    old = {"shadowed_requests": 200, "accepted_compared_with_frontier": 102, "accepted_differing_from_frontier": 25,
+           "drift_check": "warning", "drift_epsilon": 0.04,
+           "drift_warning": "Cannot confirm the certification on this traffic: 25 of 102 accepted cheaper answers "
+                            "differ, 12.50% of the 200, above the policy's quality limit of 4.00%."}
+    text = text_of(render(None, old, tenant="acme", generated_at="now", policy=POLICY))
+    assert "Warning. Cannot confirm the certification" in text and rough not in text
+    assert "drift baseline" not in text and "When the policy was frozen, 7 of its" not in text_of(
+        render(None, old, tenant="acme", generated_at="now", policy={**POLICY, "drift_baseline": BASELINE}))
+    # With a report of this check, or none, the sentence is there.
+    new = ShadowStore(Ledger()).report("acme", policies={"policy": POLICY})
+    for report in (None, new):
+        assert rough in text_of(render(None, report, tenant="acme", generated_at="now", policy=POLICY))
+    # A policy with only named checks: nothing it accepts is compared.
+    code = {**POLICY, "stages": [{"models": ["mid"], "check": "tests+judge:sonnet"}]}
+    store = ShadowStore(Ledger())
+    for index in range(40):
+        store.record(request_id=f"c{index}", tenant="acme", provider="openai", policy=code, frontier_answer="x",
+                     frontier_cost_usd=1.0, outcome={"accepted": True, "comparable": False, "stage": 0,
+                                                     "served_by": "mid", "answer": "y", "calls": []})
+    report = store.report("acme", policies={"policy": code})
+    text = text_of(render(None, report, tenant="acme", generated_at="now", policy=code))
+    assert rough not in text and "Differing share the certification allows for" not in text
+    assert ("Drift check not checked: this policy's answers are accepted by a named check and are never compared "
+            "with the frontier's") in text
+    assert ("This policy's answers are accepted by a named check and are never compared with the frontier model's, "
+            "so it has no drift check.") in text
+    # A baseline count too large to be one is described as no baseline, not a traceback.
+    huge = {**POLICY, "drift_baseline": {**BASELINE, "tasks": 10**30}}
+    assert "records no drift baseline" in render(None, None, tenant="acme", generated_at="now", policy=huge)

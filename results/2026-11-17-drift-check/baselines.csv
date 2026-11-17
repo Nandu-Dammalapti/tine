@@ -1,0 +1,10 @@
+policy,graded_tasks,compared,differing,differing_not_lost,upper_95_of_tasks,upper_95_of_compared,allowance_of_requests_at_4pct,allowance_of_accepted_at_4pct,graded_tasks_own_differing_upper_95,shadow_run_differing_not_lost,shadow_run_graded
+MMLU-Pro,692,612,16,7,0.0189,0.0214,0.0589,0.0666,0.0349,3,297
+MedQA,556,512,13,7,0.0235,0.0255,0.0635,0.069,0.0369,0,200
+ARC-Challenge,556,556,15,2,0.0113,0.0113,0.0513,0.0513,0.0412,2,200
+FinQA exact,554,294,77,70,0.152,0.2825,0.192,0.3579,0.1655,23,200
+FinQA by value,554,357,95,83,0.177,0.2723,0.217,0.3343,0.2,25,200
+MATH-500 exact,227,197,11,10,0.0736,0.0846,0.1136,0.1307,0.0789,4,100
+MATH-500 by value,227,223,2,0,0.0131,0.0133,0.0531,0.0541,0.0275,1,100
+IT tickets,692,692,38,19,0.04,0.04,0.08,0.08,0.0714,20,300
+xRouteBench triples,2840,2190,105,76,0.0323,0.0418,0.0723,0.0937,0.0433,44,1414
