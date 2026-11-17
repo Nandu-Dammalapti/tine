@@ -1,0 +1,50 @@
+# Used only by scripts/container_selftest.py, on top of docker-compose.yml:
+#   docker compose -p tine-selftest -f docker-compose.yml -f docker-compose.selftest.yml ...
+# NOT YET RUN BY A DOCKER DAEMON. "docker compose config" accepts the pair (v5.7.0).
+#
+# It tests the same image under the same hardening settings, with three differences:
+# its own generated env file and config folder (deploy/tine.env and deploy/config are
+# neither needed nor read), its own host port, and a stand-in provider as a second
+# container. No provider key is involved and no model is called. The project name
+# tine-selftest gives it a ledger volume of its own, apart from the operator's.
+#
+# "!override" replaces a list from docker-compose.yml. Without it compose would add
+# to the list and still ask for deploy/tine.env.
+
+services:
+  tine:
+    env_file: !override
+      - ${TINE_SELFTEST_DIR:?set by scripts/container_selftest.py}/selftest.env
+    ports: !override
+      - "127.0.0.1:${TINE_SELFTEST_PORT:-18000}:8000"
+    volumes: !override
+      - tine-ledger:/data
+      - ${TINE_SELFTEST_DIR}/config:/config:ro
+    # A test container must not come back by itself after the test.
+    restart: "no"
+    depends_on:
+      standin:
+        condition: service_healthy
+
+  # The provider the proxy under test calls. The same image, because it already holds
+  # Python; the script is mounted, not baked in. Reachable only inside the project's
+  # network, as http://standin:9000.
+  standin:
+    image: tine-proxy:dev
+    pull_policy: never
+    command: ["python", "/selftest/container_standin.py", "--host", "0.0.0.0", "--port", "9000"]
+    volumes:
+      - ./scripts/container_standin.py:/selftest/container_standin.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:9000/health', timeout=3).status == 200 else 1)"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: "no"

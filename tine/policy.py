@@ -24,12 +24,9 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-import numpy as np
-
-from tine.calibration import _probability
-from tine.cascade import candidate_chains, certify_chain, chain_metrics
-from tine.checks import prepare_checks
-from tine.pipeline import complete_tasks, matrix
+# The offline toolkit (numpy, pandas, scikit-learn, matplotlib) is imported inside
+# ``freeze_policy``, its only user here. The proxy imports this module to run a policy
+# and must start without loading any of it.
 
 POLICY_VERSION = 1
 BUILT_IN_CHECKS = ("agreement", "none")
@@ -113,6 +110,13 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     names none would serve every answer of that model unchecked under a guarantee
     that does not cover it.
     """
+    import numpy as np
+
+    from tine.calibration import _probability
+    from tine.cascade import candidate_chains, certify_chain, chain_metrics
+    from tine.checks import prepare_checks
+    from tine.pipeline import complete_tasks, matrix
+
     if not isinstance(single_check, str) or not single_check or single_check == "agreement":
         raise ValueError("single_check must be a check name other than 'agreement'")
     if tenant is not None and (not isinstance(tenant, str) or not tenant.strip()):

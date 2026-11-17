@@ -5,6 +5,7 @@
       "tenant": "example-tenant",
       "task_type": "example",
       "frontier": "EXAMPLE-FRONTIER-MODEL",
+      "answer_pattern": "Answer: ([A-D])",
       "stages": [
         {"models": ["EXAMPLE-SMALL-MODEL-A", "EXAMPLE-SMALL-MODEL-B"], "check": "agreement"},
         {"models": ["EXAMPLE-MID-MODEL"], "check": "tests+judge:example"}

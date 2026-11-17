@@ -5,7 +5,10 @@ Reads a ledger SQLite file (``TINE_LEDGER_PATH`` of the proxy) for one tenant, b
 the same two reports the proxy serves at ``GET /v1/savings`` and ``GET /v1/shadow``,
 and hands them to ``tine.report_page.render``. The shadow report is built only when
 the ledger has a shadow table. A policy JSON file adds a plain-words description of
-the policy the figures came from.
+the policy the figures came from. It is one frozen policy, as ``tine freeze-policy``
+writes it, or the file the proxy itself reads (``TINE_SHADOW_POLICIES`` or
+``TINE_ROUTE_POLICIES``: tenant, then provider, then policy), from which the tenant's
+policy is taken; ``--provider`` says which when the tenant has one for each provider.
 
 The ledger is opened read-only. ``Ledger`` and ``ShadowStore`` create tables and
 switch the journal mode when constructed, which a report must not do to a database a
@@ -113,11 +116,27 @@ def reports_from_json(path: Path) -> tuple[dict | None, dict | None]:
     return saved.get("ledger_report"), saved.get("shadow_report")
 
 
-def read_policy(path: Path, tenant: str) -> dict:
+def read_policy(path: Path, tenant: str, provider: str | None = None) -> dict:
     """A valid policy that names this tenant. A policy for one tenant must not be shown
     beside another tenant's figures. A file edited after freezing still loads; the
-    page says so, and so does a warning here."""
-    policy = validate_policy(json.loads(path.read_text(encoding="utf-8")))
+    page says so, and so does a warning here.
+
+    ``path`` holds one policy, or the proxy's own file: tenant, then provider, then
+    policy. From that file the tenant's policy is taken, ``provider``'s when the tenant
+    has more than one. The policy is not changed, so its digest is the one shadow rows
+    carry."""
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(loaded, dict) and "stages" not in loaded and "version" not in loaded:
+        by_provider = loaded.get(tenant)
+        if not isinstance(by_provider, dict) or not by_provider:
+            raise ValueError(f"{path} maps tenants to policies and has none for tenant {tenant!r}")
+        if provider is None and len(by_provider) == 1:
+            provider = next(iter(by_provider))
+        if provider not in by_provider:
+            raise ValueError(f"{path} has a policy for tenant {tenant!r} on each of {sorted(by_provider)}: "
+                             "name one with --provider")
+        loaded = by_provider[provider]
+    policy = validate_policy(loaded)
     if policy.get("tenant") not in (None, tenant):
         raise ValueError(f"The policy file names tenant {policy.get('tenant')!r}, not {tenant!r}")
     if freeze_state(policy) == FREEZE_EDITED:
@@ -127,11 +146,12 @@ def read_policy(path: Path, tenant: str) -> dict:
 
 
 def build(*, tenant: str, ledger: Path | None = None, report_json: Path | None = None,
-          policy: Path | None = None, generated_at: str | None = None, note: str | None = None) -> str:
+          policy: Path | None = None, generated_at: str | None = None, note: str | None = None,
+          provider: str | None = None) -> str:
     """The HTML page for one tenant from a ledger file or a saved report."""
     if (ledger is None) == (report_json is None):
         raise ValueError("Give exactly one of a ledger file and a saved report")
-    described = read_policy(policy, tenant) if policy else None
+    described = read_policy(policy, tenant, provider) if policy else None
     guarantee = described.get("guarantee") if described and described["stages"] else None
     epsilon = guarantee.get("epsilon") if isinstance(guarantee, dict) else None
     epsilon = epsilon if isinstance(epsilon, (int, float)) and not isinstance(epsilon, bool) else None
@@ -159,14 +179,19 @@ def main(argv=None) -> None:
                         help="JSON with a shadow_report and/or ledger_report object, in place of a ledger")
     parser.add_argument("--tenant", required=True,
                         help="tenant the page is for; a saved report or policy for another tenant is refused")
-    parser.add_argument("--policy", type=Path, help="frozen policy JSON to describe on the page")
+    parser.add_argument("--policy", type=Path,
+                        help="frozen policy JSON to describe on the page: one policy, or the proxy's own "
+                             "tenant -> provider -> policy file")
+    parser.add_argument("--provider", choices=("anthropic", "openai"),
+                        help="with a tenant -> provider -> policy file in which the tenant has a policy for "
+                             "both providers: which one to describe")
     parser.add_argument("--generated-at", help="time to print on the page; default is now, in UTC")
     parser.add_argument("--note", help="one line to show under the headline, for example where the figures came from")
     parser.add_argument("--output", type=Path, required=True, help="HTML file to write")
     args = parser.parse_args(argv)
     try:
         page = build(tenant=args.tenant, ledger=args.ledger, report_json=args.report_json, policy=args.policy,
-                     generated_at=args.generated_at, note=args.note)
+                     generated_at=args.generated_at, note=args.note, provider=args.provider)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(page, encoding="utf-8")
     except (OSError, ValueError, RecursionError, sqlite3.Error) as error:

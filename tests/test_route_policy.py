@@ -333,7 +333,8 @@ def test_a_webhook_cannot_be_sent_the_proxys_own_secrets(variable):
         create_app(config(tenant_checks={"a": leaky}), ledger=Ledger())
 
 
-def test_a_webhook_token_is_sent_only_over_https():
+def test_a_webhook_token_is_sent_only_over_https(monkeypatch):
+    monkeypatch.setenv("CI_TOKEN", "made-up-ci-token")
     plain = {"t": [{"type": "webhook", "url": "http://ci.example/check", "bearer_env": "CI_TOKEN"}]}
     for url in ("http://ci.example/check", "http://127.0.0.1:9000/check", "http://localhost/check"):
         with pytest.raises(ValueError, match="https"):
@@ -346,7 +347,10 @@ def test_a_webhook_token_is_sent_only_over_https():
                                      "bearer_env": "CI_TOKEN"}]}), ledger=Ledger())
 
 
-def test_one_token_variable_cannot_serve_the_webhooks_of_two_tenants():
+def test_one_token_variable_cannot_serve_the_webhooks_of_two_tenants(monkeypatch):
+    monkeypatch.setenv("CI_TOKEN_A", "made-up-token-of-a")
+    monkeypatch.setenv("CI_TOKEN_B", "made-up-token-of-b")
+
     def own(name, variable):
         return {"tests+judge": [{"type": "webhook", "url": f"https://ci.{name}.example/check", "bearer_env": variable}]}
     with pytest.raises(ValueError, match="'CI_TOKEN_A' is sent by the webhook checks of several tenants \\(a, b\\)"):
@@ -368,6 +372,25 @@ def test_one_token_variable_cannot_serve_the_webhooks_of_two_tenants():
     create_app(config(tenant_keys=TWO_TENANTS, route_policies={"b": {"openai": {**CODE, "tenant": "b"}}},
                       checks={"unused": own("x", "CI_TOKEN_B")["tests+judge"]},
                       tenant_checks={"b": own("b", "CI_TOKEN_B")}), ledger=Ledger())
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_a_webhook_token_that_is_not_set_is_refused_at_startup(monkeypatch, value):
+    """The token is read when the check runs. Unset, every run of the check would fail
+    closed, so the proxy says so before it serves anything. The error names the variable."""
+    webhook = {"tests+judge": [{"type": "webhook", "url": "https://ci.example/check", "bearer_env": "CI_TOKEN"}]}
+    if value is None:
+        monkeypatch.delenv("CI_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("CI_TOKEN", value)
+    for changes in ({"checks": webhook}, {"tenant_checks": {"a": webhook}}):
+        with pytest.raises(ValueError, match="checks: bearer_env 'CI_TOKEN' is not set"):
+            create_app(config(**changes), ledger=Ledger())
+    monkeypatch.setenv("CI_TOKEN", "made-up-ci-token")
+    create_app(config(checks=webhook), ledger=Ledger())
+    # A webhook without a token names no variable and needs none.
+    monkeypatch.delenv("CI_TOKEN")
+    create_app(config(checks={"t": [{"type": "webhook", "url": "http://127.0.0.1:9000/check"}]}), ledger=Ledger())
 
 
 def test_a_tenant_check_file_naming_a_tine_variable_is_refused_at_startup(monkeypatch, tmp_path):
@@ -793,6 +816,7 @@ def test_the_new_settings_are_read_from_the_environment(monkeypatch, tmp_path):
     own = tmp_path / "tenant-checks.json"
     own.write_text(json.dumps({"a": tenant_webhook("a")}), encoding="utf-8")
     for name, value in (("TINE_TENANT_KEYS", '{"token-a": "a"}'), ("TINE_TENANT_CHECKS", str(own)),
+                        ("CI_TOKEN_A", "made-up-token-of-a"),
                         ("TINE_ROUTE_DEADLINE_SECONDS", "12.5"), ("TINE_SHADOW_MAX_CONCURRENT", "3"),
                         ("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "0")):
         monkeypatch.setenv(name, value)

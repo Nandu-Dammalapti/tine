@@ -8,4 +8,6 @@ scipy
 scikit-learn
 matplotlib
 pytest==8.4.2
+# Reads docker-compose.yml in tests/test_deploy_files.py.
+pyyaml==6.0.3
 ruff==0.14.3

@@ -1,0 +1,17 @@
+{
+  "example-tenant": {
+    "tests+judge:example": [
+      {
+        "type": "webhook",
+        "url": "https://ci.example-tenant.internal.example/tine-check",
+        "bearer_env": "CI_WEBHOOK_TOKEN",
+        "timeout_seconds": 120
+      },
+      {
+        "type": "judge",
+        "model": "EXAMPLE-JUDGE-MODEL",
+        "effort": "medium"
+      }
+    ]
+  }
+}

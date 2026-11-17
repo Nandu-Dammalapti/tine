@@ -1,20 +1,38 @@
 """Checks on the deployment files that can be made without Docker.
 
-Docker is not available where these tests run, so nothing here builds or starts the
-image. The tests read the files as text and data: the example configuration must
+No Docker daemon is available where these tests run, so nothing here builds or starts
+the image. The tests read the files as text and data: the example configuration must
 load into the real ``ProxyConfig`` and validate, the env example must name exactly
 the variables the proxy reads, and no committed deploy file may hold something that
-looks like a credential.
+looks like a credential. Three things are run rather than read: the Dockerfile's
+command that writes the requirements file, its health check command against the app
+on a local port, and ``tine serve`` with the Dockerfile's arguments. When the docker
+client is installed, ``docker compose config``, which needs no daemon, is run too.
 """
 
+import ast
+import importlib.metadata
 import json
+import logging
+import os
 import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
 import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
+import uvicorn
+import yaml
+from fastapi.testclient import TestClient
+from packaging.requirements import Requirement
 
+from tine import __main__ as cli
 from tine.proxy import ProxyConfig, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +81,8 @@ def ignored_locally(path: Path) -> bool:
 
 def committed_files() -> list[Path]:
     """The deploy files that go into git: everything under deploy/ that is not ignored."""
-    return [ROOT / "Dockerfile", ROOT / "docker-compose.yml", ROOT / ".dockerignore", ROOT / "docs" / "DEPLOY.md",
+    return [ROOT / "Dockerfile", ROOT / "docker-compose.yml", ROOT / "docker-compose.selftest.yml", ROOT / ".dockerignore",
+            ROOT / "docs" / "DEPLOY.md",
             *sorted(path for path in DEPLOY.rglob("*") if path.is_file() and not ignored_locally(path))]
 
 
@@ -82,19 +101,27 @@ def proxy_variables() -> set[str]:
     return set(re.findall(r"TINE_[A-Z0-9_]+", (ROOT / "tine" / "proxy.py").read_text(encoding="utf-8")))
 
 
-def load_example_config(monkeypatch, tmp_path, **overrides) -> ProxyConfig:
-    """Build a ProxyConfig the way the container would: from the example env file,
-    with the in-container /config paths pointed at the committed example files."""
+def set_example_environment(monkeypatch, tmp_path, **overrides) -> None:
+    """Set the environment the container would have: the example env file, with the
+    in-container /config paths pointed at the committed example files. An override of
+    None removes a variable, as commenting its line out does."""
     active, _ = env_example()
     active.update(overrides)
     for name in proxy_variables() | set(active):
         monkeypatch.delenv(name, raising=False)
     for name, value in active.items():
+        if value is None:
+            continue
         found = re.fullmatch(r"/config/(.+)\.json", value)
         if found:
             value = str(DEPLOY / f"{found.group(1)}.example.json")
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("TINE_LEDGER_PATH", str(tmp_path / "ledger.sqlite3"))
+
+
+def load_example_config(monkeypatch, tmp_path, **overrides) -> ProxyConfig:
+    """Build a ProxyConfig the way the container would, from the example env file."""
+    set_example_environment(monkeypatch, tmp_path, **overrides)
     return ProxyConfig.from_env()
 
 
@@ -164,6 +191,56 @@ def test_changing_the_frontier_needs_the_example_policy_switched_off(monkeypatch
     assert config.shadow_policies == {} and config.checks == {}
 
 
+def test_every_commented_out_line_validates_when_switched_on(monkeypatch, tmp_path):
+    """The commented lines are what an operator uncomments later. Each must be a value
+    the proxy accepts. The route policy line has no example file of its own: the shadow
+    example serves, moved over, since a tenant cannot have both."""
+    _, commented = env_example()
+    assert len(commented) >= 15, "the commented lines were not read"
+    route = tmp_path / "route-policies.json"
+    shutil.copy(DEPLOY / "shadow-policies.example.json", route)
+    config = load_example_config(monkeypatch, tmp_path, **{**commented, "TINE_SHADOW_POLICIES": None,
+                                                         "TINE_ROUTE_POLICIES": str(route)})
+    config.validate()
+    assert config.route_policies and config.tenant_checks and config.openai_api_key
+    assert config.ledger_required is True and config.audit_rate == 0.05 and config.max_body_bytes == 10_485_760
+    assert config.denied_fields and config.anthropic_beta_allowlist and config.allowed_models
+    with TestClient(create_app(config)) as client:
+        assert client.get("/health").json()["routing"] == "policy"
+    # With shadow sampling on as well, for the shadow-only lines.
+    config = load_example_config(monkeypatch, tmp_path, **{**commented, "TINE_ROUTE_POLICIES": None,
+                                                         "TINE_SHADOW_SAMPLE_RATE": "0.05"})
+    config.validate()
+    assert (config.shadow_max_concurrent_per_tenant, config.shadow_max_calls_per_minute) == (4, 60)
+
+
+def test_the_example_policy_as_a_route_policy_needs_an_answer_reader(monkeypatch, tmp_path):
+    """Routing compares answers. A policy with agreement stages and no reader is refused,
+    which is why the example carries one and the env example says so beside the line."""
+    example = json.loads((DEPLOY / "shadow-policies.example.json").read_text(encoding="utf-8"))
+    for by_provider in example.values():
+        for policy in by_provider.values():
+            assert policy.pop("answer_pattern"), "the example policy carries its own answer reader"
+    route = tmp_path / "route-policies.json"
+    route.write_text(json.dumps(example), encoding="utf-8")
+    switched = {"TINE_SHADOW_POLICIES": None, "TINE_ROUTE_POLICIES": str(route)}
+    with pytest.raises(ValueError, match="agreement stages but no answer reader"):
+        load_example_config(monkeypatch, tmp_path, **switched).validate()
+    load_example_config(monkeypatch, tmp_path, **switched,
+                        TINE_ANSWER_PATTERN=env_example()[1]["TINE_ANSWER_PATTERN"]).validate()
+
+
+def test_a_webhook_token_the_env_file_does_not_set_is_refused(monkeypatch, tmp_path):
+    """Removing the CI_WEBHOOK_TOKEN line and leaving TINE_CHECKS used to start cleanly:
+    the webhook step then failed every time it ran."""
+    with pytest.raises(ValueError, match="bearer_env 'CI_WEBHOOK_TOKEN' is not set"):
+        load_example_config(monkeypatch, tmp_path, CI_WEBHOOK_TOKEN=None).validate()
+    with pytest.raises(ValueError, match="bearer_env 'CI_WEBHOOK_TOKEN' is not set"):
+        load_example_config(monkeypatch, tmp_path, CI_WEBHOOK_TOKEN="").validate()
+    load_example_config(monkeypatch, tmp_path, CI_WEBHOOK_TOKEN=None, TINE_CHECKS=None,
+                        TINE_SHADOW_POLICIES=None).validate()
+
+
 def test_example_policy_is_priced_and_plainly_marked_as_fake(monkeypatch, tmp_path):
     config = load_example_config(monkeypatch, tmp_path)
     assert config.shadow_policies, "the example env must point at the example policy, or this test checks nothing"
@@ -199,11 +276,51 @@ def urlhost(url: str) -> str:
 
 def test_health_route_the_healthcheck_calls_exists(monkeypatch, tmp_path):
     """The Dockerfile's HEALTHCHECK asks for /health and expects 200."""
-    from fastapi.testclient import TestClient
-
     with TestClient(create_app(load_example_config(monkeypatch, tmp_path))) as client:
         reply = client.get("/health")
     assert reply.status_code == 200 and reply.json()["status"] == "ok"
+
+
+def healthcheck_command() -> list[str]:
+    checks = [arguments for name, arguments in dockerfile_instructions() if name == "HEALTHCHECK"]
+    assert len(checks) == 1
+    return json.loads(checks[0][checks[0].index("CMD") + 3:])
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_the_healthcheck_command_runs_as_written(monkeypatch, tmp_path):
+    """The command from the Dockerfile, with only the port changed, against the app built
+    from the example configuration and served on a local port."""
+    command = healthcheck_command()
+    server = uvicorn.Server(uvicorn.Config(create_app(load_example_config(monkeypatch, tmp_path)), host="127.0.0.1",
+                                           port=0, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 20
+        while not server.started:
+            assert time.monotonic() < deadline and thread.is_alive(), "the app did not start"
+            time.sleep(0.01)
+        port = server.servers[0].sockets[0].getsockname()[1]
+
+        def probe(port: int, **extra: str) -> int:
+            env = {name: value for name, value in os.environ.items() if "proxy" not in name.lower()}
+            return subprocess.run([sys.executable, "-c", command[2].replace(":8000/", f":{port}/")],
+                                  env={**env, **extra}, capture_output=True, timeout=30).returncode
+
+        assert probe(port) == 0
+        # A container given an egress proxy: the loopback check must not go to it.
+        dead = f"http://127.0.0.1:{free_port()}"
+        assert probe(port, HTTP_PROXY=dead, HTTPS_PROXY=dead, ALL_PROXY=dead, http_proxy=dead) == 0
+        assert probe(free_port()) == 1, "nothing listens there: the check must fail"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
 
 
 def credential_lines(path: Path) -> list[int]:
@@ -299,9 +416,7 @@ def test_dockerfile_base_user_and_command():
 
 
 def test_dockerfile_healthcheck_uses_the_standard_library():
-    checks = [arguments for name, arguments in dockerfile_instructions() if name == "HEALTHCHECK"]
-    assert len(checks) == 1
-    command = json.loads(checks[0][checks[0].index("CMD") + 3:])
+    command = healthcheck_command()
     assert command[:2] == ["python", "-c"] and "urllib.request" in command[2]
     assert "http://127.0.0.1:8000/health" in command[2]
     # An HTTP_PROXY variable in the container must not send the loopback check to the proxy.
@@ -321,26 +436,104 @@ def test_dockerfile_carries_no_secret_and_copies_only_the_package():
                 variables.append(arguments.split()[0])
             for variable in variables:
                 assert not SECRET_NAME.search(variable), variable
-    copied = [arguments.split()[0] for name, arguments in steps if name in ("COPY", "ADD")]
-    assert sorted(copied) == ["pyproject.toml", "tine"]
+    copied = [source for name, arguments in steps if name in ("COPY", "ADD") for source in arguments.split()[:-1]]
+    assert sorted(copied) == ["pyproject.toml", "requirements-dev.lock", "tine"]
     assert not any(name == "ADD" for name, _ in steps)
     installs = [arguments for name, arguments in steps if name == "RUN" and "pip install" in arguments]
     assert len(installs) == 1 and "tomllib" in installs[0] and "['project']['dependencies']" in installs[0]
+    # The lock is a constraints file: the image gets the versions the tests ran on, and
+    # none of the lock's development tools.
+    assert "-r /app/requirements.txt -c /app/requirements-dev.lock" in installs[0]
+    assert "-r /app/requirements-dev.lock" not in installs[0]
+
+
+def lock_pins() -> dict[str, str]:
+    pins = {}
+    for line in (ROOT / "requirements-dev.lock").read_text(encoding="utf-8").splitlines():
+        # pip reads a constraints file line by line: each must be a plain "name==version".
+        found = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9.!+_-]+)", line)
+        assert found, f"not a plain pin, so not usable as a pip constraint: {line.split('=')[0]}"
+        pins[normal(found.group(1))] = found.group(2)
+    return pins
+
+
+def normal(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def test_the_requirements_command_runs_and_every_dependency_is_pinned_by_the_lock(tmp_path):
+    """The first half of the Dockerfile's install step, run through sh as Docker runs it,
+    on a copy of pyproject.toml. Each line it writes must be pinned by the lock, inside
+    the declared range, or the constraints file would not decide the version."""
+    install = next(arguments for name, arguments in dockerfile_instructions()
+                   if name == "RUN" and "pip install" in arguments)
+    extract = install.split("&&")[0].strip()
+    assert extract.startswith('python -c "import tomllib') and extract.endswith("> /app/requirements.txt")
+    shutil.copy(ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    command = extract.replace("/app/", f"{tmp_path}/").replace("python -c", f"{sys.executable} -c", 1)
+    done = subprocess.run(["sh", "-c", command], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr[-500:]
+    lines = (tmp_path / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert lines == declared and len(lines) >= 8
+    pins = lock_pins()
+    for line in lines:
+        requirement = Requirement(line)
+        assert normal(requirement.name) in pins, f"{requirement.name} has no pin in requirements-dev.lock"
+        assert requirement.specifier.contains(pins[normal(requirement.name)]), requirement.name
+
+
+def test_everything_the_package_imports_is_installed_by_its_declared_dependencies():
+    """The image installs pyproject's dependencies and what they require, nothing else.
+    A module the package imports from outside that set would be missing in the image
+    while every test here passes, because the development environment has more."""
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    installed, queue = set(), [Requirement(line).name for line in declared]
+    while queue:
+        name = normal(queue.pop())
+        if name in installed:
+            continue
+        installed.add(name)
+        for line in importlib.metadata.requires(name) or []:
+            requirement = Requirement(line)
+            if requirement.marker is None or requirement.marker.evaluate({"extra": ""}):
+                queue.append(requirement.name)
+    owners = importlib.metadata.packages_distributions()
+    imported = set()
+    for path in (ROOT / "tine").glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+    third_party = {name for name in imported if name not in sys.stdlib_module_names and name != "tine"}
+    assert {"fastapi", "httpx", "pydantic", "starlette", "uvicorn", "numpy"} <= third_party
+    # tabulate is optional: pandas asks for it only to print a table, and the one use is guarded.
+    for module in sorted(third_party - {"tabulate"}):
+        assert module in owners, f"{module} is imported by the package and not installed here"
+        assert {normal(owner) for owner in owners[module]} & installed, (
+            f"tine imports {module}, which no dependency in pyproject.toml installs")
+    assert normal("pytest") not in installed and normal("ruff") not in installed
 
 
 def test_dockerignore_admits_only_the_package():
     lines = [line.strip() for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
              if line.strip() and not line.startswith("#")]
     assert lines[0] == "*"
-    assert {line for line in lines if line.startswith("!")} == {"!pyproject.toml", "!tine"}
+    assert {line for line in lines if line.startswith("!")} == {"!pyproject.toml", "!requirements-dev.lock", "!tine"}
     # Exclusions come after the allow-list, because the last matching line wins.
     last_admit = max(index for index, line in enumerate(lines) if line.startswith("!"))
     for name in ("artifacts", ".tine-dev", ".git", ".env", ".env.*", "deploy", "tests", "results", "notebooks"):
         assert name in lines[last_admit + 1:], name
 
 
+def seconds(duration: str) -> int:
+    found = re.fullmatch(r"(\d+)s", str(duration))
+    assert found, f"write the duration in whole seconds: {duration}"
+    return int(found.group(1))
+
+
 def test_compose_file():
-    yaml = pytest.importorskip("yaml")
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     assert list(compose["services"]) == ["tine"]
     service = compose["services"]["tine"]
@@ -353,7 +546,7 @@ def test_compose_file():
     assert mounts["/data"].split(":")[0] in compose["volumes"], "the ledger needs a named volume"
     active, commented = env_example()
     assert active["TINE_LEDGER_PATH"].startswith("/data/")
-    for name in ("TINE_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES"):
+    for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES"):
         assert (active | commented)[name].startswith("/config/")
 
     assert service["read_only"] is True
@@ -363,15 +556,139 @@ def test_compose_file():
     assert service.get("privileged") is not True
     assert str(service["user"]).split(":")[0].isdigit() and int(str(service["user"]).split(":")[0]) > 0
     assert service["restart"] in ("unless-stopped", "always", "on-failure")
-    assert service["ports"] == ["127.0.0.1:8000:8000"], "publish on loopback only: there is no TLS here"
+    # The host port may be moved with TINE_HOST_PORT. The address may not.
+    assert service["ports"] == ["127.0.0.1:${TINE_HOST_PORT:-8000}:8000"], (
+        "publish on loopback only: there is no TLS here")
+    # Docker kills the container after stop_grace_period. The proxy must be gone first,
+    # with the ledger closed, so the wait is longer than tine serve's own limit.
+    assert seconds(service["stop_grace_period"]) >= cli.SERVE_SHUTDOWN_SECONDS + 5
+    assert service["init"] is True
+
+
+def serve_from_the_dockerfile(monkeypatch) -> list[dict]:
+    """Run ``tine serve`` with the Dockerfile's arguments and return what it handed to
+    uvicorn, without starting a server."""
+    command = json.loads(dockerfile_instructions()[-1][1])
+    assert command[:3] == ["python", "-m", "tine"]
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **options: calls.append(options))
+    log = logging.getLogger("tine")
+    kept = (list(log.handlers), log.level, log.propagate)
+    try:
+        cli.main(command[3:])
+    finally:
+        # serve attaches its own handler and stops propagation: undo it for the tests that follow.
+        log.handlers[:], log.propagate = kept[0], kept[2]
+        log.setLevel(kept[1])
+    return calls
+
+
+def test_serve_with_the_dockerfiles_arguments_stops_inside_the_grace_period(monkeypatch, tmp_path):
+    """Without a limit uvicorn waits for every open connection, and a stream that never
+    ends holds a stop until Docker kills the container with the ledger still open."""
+    set_example_environment(monkeypatch, tmp_path)
+    calls = serve_from_the_dockerfile(monkeypatch)
+    assert calls == [{"host": "0.0.0.0", "port": 8000, "timeout_graceful_shutdown": cli.SERVE_SHUTDOWN_SECONDS}]
+    assert 1 <= cli.SERVE_SHUTDOWN_SECONDS <= 25
+    with pytest.raises(SystemExit):
+        cli.main(["serve", "--shutdown-seconds", "0"])
+
+
+def test_a_refused_configuration_ends_serve_with_one_line(monkeypatch, tmp_path):
+    """In a container this line is the end of the log before a restart."""
+    set_example_environment(monkeypatch, tmp_path, TINE_TIMEOUT_SECONDS="30s")
+    with pytest.raises(SystemExit) as stopped:
+        serve_from_the_dockerfile(monkeypatch)
+    assert str(stopped.value) == ("tine serve: the configuration was refused. TINE_TIMEOUT_SECONDS must be a "
+                                  "number, with no unit or other text")
+    assert stopped.value.__suppress_context__, "no traceback of the ValueError above the line"
+
+
+def docker_client() -> str | None:
+    """A docker command that can run ``compose config``, or None. No daemon is needed."""
+    for candidate in (shutil.which("docker"), str(Path.home() / ".docker" / "bin" / "docker"),
+                      "/Applications/Docker.app/Contents/Resources/bin/docker"):
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def test_docker_compose_reads_the_env_example_as_these_tests_do(tmp_path):
+    """Everything above reads the env example with this file's own pattern. Compose has
+    its own rules for quotes, "$" and " #". Where the docker client is installed, ask
+    compose itself (``config`` needs no daemon) and compare."""
+    docker = docker_client()
+    if docker is None:
+        pytest.skip("no docker client on this machine")
+    (tmp_path / "deploy" / "config").mkdir(parents=True)
+    shutil.copy(ROOT / "docker-compose.yml", tmp_path / "docker-compose.yml")
+    shutil.copy(ENV_EXAMPLE, tmp_path / "deploy" / "tine.env")
+    env = {name: value for name, value in os.environ.items() if not name.startswith("TINE_")}
+    done = subprocess.run([docker, "compose", "config", "--format", "json"], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr[-500:]
+    service = json.loads(done.stdout)["services"]["tine"]
+    active, _ = env_example()
+    # Compared as a boolean: a failing assert must not print the values.
+    same = service["environment"] == active
+    assert same, sorted(set(service["environment"]) ^ set(active))
+    assert [(port["host_ip"], port["published"], port["target"]) for port in service["ports"]] == [
+        ("127.0.0.1", "8000", 8000)]
+    # Without the env file every compose command stops, build included.
+    (tmp_path / "deploy" / "tine.env").unlink()
+    missing = subprocess.run([docker, "compose", "config", "-q"], cwd=tmp_path, env=env, capture_output=True,
+                             text=True, timeout=60)
+    assert missing.returncode != 0 and "tine.env" in missing.stderr
 
 
 def test_deploy_doc_states_what_was_not_done():
     text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
-    assert "has not been built or run" in text
+    # No daemon had built the image when this was written. This sentence, the same claim at
+    # the top of the Dockerfile and both compose files, and docs/PROXY.md change together
+    # when someone has built it.
+    assert "No Docker daemon has built or run the image yet" in text
+    assert "NOT YET BUILT BY A DOCKER DAEMON" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    for name in ("docker-compose.yml", "docker-compose.selftest.yml"):
+        assert "BY A DOCKER DAEMON" in (ROOT / name).read_text(encoding="utf-8"), name
+    assert "This script has not been run against a real Docker daemon" in text
     assert "—" not in text
     for name in ("TINE_SHADOW_SAMPLE_RATE", "TINE_SHADOW_MAX_COST_USD", "SQLite", "TLS", "backup"):
         assert name in text, name
+
+
+def test_deploy_doc_restarts_with_force_recreate_after_a_file_edit():
+    """Compose does not recreate a container because a mounted file changed. A plain
+    "up -d" given as the restart step after a policy edit would leave routing on."""
+    text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if "restart" in line.lower() and "docker compose up -d" in line:
+            assert "docker compose up -d --force-recreate" in line, line
+    off = text[text.index("\n## Turn routing off\n"):]
+    off = off[:off.index("\n## ", 1)]
+    assert "docker compose up -d --force-recreate" in off and '"routing": "frontier-default"' in off
+    # The first-start steps come before the first compose command, which needs the env file.
+    run = text[text.index("\n## Run it\n"):]
+    assert run.index("cp deploy/tine.env.example deploy/tine.env") < run.index("docker compose build")
+    assert "TINE_MODEL_PRICES" in run[:run.index("docker compose build")]
+    assert "unknown_answer_cost_requests" in text and "host.docker.internal" in text and "NO_PROXY" in text
+
+
+def test_deploy_doc_gives_the_one_command_check():
+    text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+    start = text.index("\n## Check the image with one command\n")
+    section = text[start:text.index("\n## ", start + 1)]
+    assert "python3 scripts/container_selftest.py" in section
+    assert "No model is called and nothing is paid for" in section
+    assert start < text.index("\n## Test the container on your own machine\n")
+    known = script_options("container_selftest.py")
+    assert len(known) >= 5
+    for span in re.findall(r"`(--[^`]+)`", section):
+        used = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", span))
+        assert used <= known | {"--shutdown-seconds"}, f"container_selftest.py has no {sorted(used - known)}"
+    # Every check the script prints is in the sample. tests/test_container_selftest.py pins their order.
+    names = re.findall(r'add\("([^"]+)",', (ROOT / "scripts" / "container_selftest.py").read_text(encoding="utf-8"))
+    printed = [line.split("  ")[0].strip() for line in section.splitlines() if re.search(r"\s{2}PASS\s{2}", line)]
+    assert sorted(printed) == sorted(name for name in names if name not in ("connection", "docker"))
 
 
 def local_test_section() -> str:
@@ -387,7 +704,7 @@ def script_options(name: str) -> set[str]:
 
 def test_deploy_doc_gives_the_local_test_in_order():
     section = local_test_section()
-    steps = ["scripts/container_env.py", "docker compose build", "docker compose up -d", "docker compose ps",
+    steps = ["scripts/container_env.py", "docker compose build", "docker compose up -d --wait", "docker compose ps",
              "python3 scripts/container_smoke.py", "docker compose logs tine", "docker compose cp tine:/data/",
              "scripts/savings_report.py", "docker compose stop", "docker compose down"]
     places = [section.index(step) for step in steps]
