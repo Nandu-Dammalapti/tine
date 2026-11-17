@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
 from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineError, MeasuredCostError
-from .policy import FREEZE_EDITED, freeze_state, run_stages_async
+from .policy import FREEZE_EDITED, answer_mode, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
     TOOLS_SKIP_REASON, NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries,
@@ -545,7 +545,7 @@ def _policy_summary(policy: dict, config: ProxyConfig) -> dict:
     """What an operator needs to know about a loaded policy, for the log and /v1/shadow."""
     reader = _answer_reader(policy, config)
     summary = {"task_type": policy.get("task_type"), "cheaper_stages": len(policy["stages"]),
-               "answer_reader": reader, "freeze_digest": freeze_state(policy)}
+               "answer_reader": reader, "answer_compare": answer_mode(policy), "freeze_digest": freeze_state(policy)}
     if reader["answer_pattern"] is None and any(stage["check"] == "agreement" for stage in policy["stages"]):
         summary["warning"] = ("agreement stages with no answer reader: whole reply texts are compared, so cheaper "
                               "answers are rarely accepted and the projection is low; set the policy's "
@@ -608,9 +608,10 @@ def create_app(
                 summary = _policy_summary(policy, config)
                 reader = summary["answer_reader"]
                 log.info("%s policy for tenant %r on %s: task_type %r, %d cheaper stage(s), answer reader %s (%s), "
-                         "policy file %s", label, name, provider, summary["task_type"], summary["cheaper_stages"],
+                         "answers compared %s, policy file %s", label, name, provider, summary["task_type"],
+                         summary["cheaper_stages"],
                          repr(reader["answer_pattern"]) if reader["answer_pattern"] else "none", reader["source"],
-                         summary["freeze_digest"])
+                         summary["answer_compare"], summary["freeze_digest"])
                 if "warning" in summary:
                     log.warning("%s policy for tenant %r on %s: %s", label, name, provider, summary["warning"])
                 if summary["freeze_digest"] == FREEZE_EDITED:

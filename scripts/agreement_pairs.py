@@ -14,7 +14,11 @@ into inputs for ``tine cascade --checks``:
 The cascade then treats a pair as one candidate whose check is agreement, so chains,
 certification and savings all include the cost of the second opinion. No model is
 called. Answers are compared after trimming and collapsing whitespace; an empty or
-missing answer never agrees.
+missing answer never agrees. ``--answer-compare math`` compares them by value
+instead, after dropping LaTeX notation that does not change it (``\\dfrac`` and
+``\\frac``, ``14.5\\%`` and ``14.50``). Both use ``tine.policy.canonical_answer``,
+the function the proxy uses, so a policy frozen from these checks with the same
+``--answer-compare`` is run on the comparison it was certified on.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.data import _validate_csv_structure, read_outcomes, validate_outcomes, write_outcomes  # noqa: E402
+from tine.policy import ANSWER_COMPARE_MODES, same_answer  # noqa: E402
 
 
 def normalize(answer) -> str | None:
@@ -92,10 +97,11 @@ def answers_from_csv(path: Path, *, tenant: str | None = None) -> dict[tuple[str
 
 def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float = 0.5,
                 models: list[str] | None = None, group_size: int = 2, include_singles: bool = False,
-                grade_conflicts: str = "error"):
+                grade_conflicts: str = "error", answer_compare: str = "exact"):
     """Returns (group outcomes frame, check rows, report). A group of ``group_size``
     models (2 = a pair) is kept if its mean cost is at most ``max_cost_share`` of the
-    frontier's mean cost. A group agrees only when every member gives the same answer.
+    frontier's mean cost. A group agrees only when every member gives the same answer,
+    compared as ``tine.policy.same_answer`` does in ``answer_compare`` mode.
 
     Members that give the same answer should have the same grade. Where they do not,
     the compared answer is not what was graded (free-form answers extracted from a
@@ -104,6 +110,8 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
     reading, and reports how many there were."""
     if grade_conflicts not in ("error", "wrong"):
         raise ValueError("grade_conflicts must be 'error' or 'wrong'")
+    if answer_compare not in ANSWER_COMPARE_MODES:
+        raise ValueError(f"answer_compare must be one of {list(ANSWER_COMPARE_MODES)}")
     outcomes = validate_outcomes(outcomes)
     if outcomes.tenant.nunique() != 1:
         raise ValueError("Build agreement groups for one tenant at a time")
@@ -152,8 +160,7 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
                 pair[column] = None
         agree, conflicted = [], []
         for task_id in shared:
-            given = {answers.get((task_id, model)) for model in group}
-            same = len(given) == 1 and None not in given
+            same = same_answer([answers.get((task_id, model)) for model in group], answer_compare)
             if same:
                 grades = [member.at[task_id, "success"] for member in members]
                 known = {bool(value) for value in grades if not pd.isna(value)}
@@ -175,7 +182,7 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
     frame = pd.concat(frames, ignore_index=True)
     return frame, checks, {"frontier": frontier, "group_size": group_size, "pairs": len(pairs),
                            "models_in_pairs": candidates, "include_singles": include_singles,
-                           "grade_conflicts_counted_wrong": conflicts,
+                           "grade_conflicts_counted_wrong": conflicts, "answer_compare": answer_compare,
                            "max_cost_share": max_cost_share, "agreement_rate": agreement}
 
 
@@ -198,6 +205,9 @@ def main(argv=None) -> None:
                         help="also offer each cheaper model alone, accepted without any check")
     parser.add_argument("--grade-conflicts", choices=("error", "wrong"), default="error",
                         help="agreeing answers graded differently: refuse the data, or count the group as wrong")
+    parser.add_argument("--answer-compare", choices=ANSWER_COMPARE_MODES, default="exact",
+                        help="how two answers are compared: exact text, or math, by value after dropping LaTeX "
+                             "notation; freeze the policy with the same tine freeze-policy --answer-compare")
     args = parser.parse_args(argv)
     if bool(args.bench_dir) == bool(args.answers):
         parser.error("Pass exactly one of --bench-dir and --answers")
@@ -212,7 +222,7 @@ def main(argv=None) -> None:
     frame, checks, report = build_pairs(outcomes, answers,
                                         args.frontier, max_cost_share=args.max_cost_share, models=args.models,
                                         group_size=args.group_size, include_singles=args.include_singles,
-                                        grade_conflicts=args.grade_conflicts)
+                                        grade_conflicts=args.grade_conflicts, answer_compare=args.answer_compare)
     write_outcomes(frame, args.output)
     args.checks.parent.mkdir(parents=True, exist_ok=True)
     with args.checks.open("w", newline="", encoding="utf-8") as stream:

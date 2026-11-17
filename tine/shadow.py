@@ -14,7 +14,9 @@ What the report can and cannot say:
   request. Equal answers are evidence for exact-answer work (a label, a number, a
   choice); they are not a test of correctness, and for free-form text two right
   answers rarely match. The quality guarantee comes from the policy's own
-  certification, not from this comparison.
+  certification, not from this comparison. Answers are compared the way the policy's
+  agreement compares them: exactly, or by value with ``answer_compare: "math"``
+  (``tine.policy.canonical_answer``).
 - Shadow calls cost money on the customer's account. That spend is reported and
   capped. The cap counts known costs: it is held in memory per tenant, a run in
   flight reserves room under it, and calls whose cost is not known are counted
@@ -53,7 +55,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from tine.policy import BUILT_IN_CHECKS, known_cost, run_stages_async, same_answer, validate_policy
+from tine.policy import BUILT_IN_CHECKS, answer_mode, known_cost, run_stages_async, same_answer, validate_policy
 
 SHADOW_SCOPE = (
     "sampled requests answered by the frontier model; the policy's cheaper stages were run in the "
@@ -269,10 +271,13 @@ class ShadowStore:
     def record(self, *, request_id: str, tenant: str, provider: str, policy: dict, outcome: dict,
                frontier_answer: str | None, frontier_cost_usd: float | None, skip_reason: str | None = None) -> None:
         """Store one shadow run. ``skip_reason`` marks a request the policy would have
-        sent to the frontier without trying its stages; ``outcome`` then has no calls."""
+        sent to the frontier without trying its stages; ``outcome`` then has no calls.
+        The accepted answer is compared with the frontier's the way the policy's
+        agreement compares answers (``answer_compare``)."""
         matches = None
         if outcome["accepted"] and outcome.get("comparable", True):
-            matches = int(frontier_answer is not None and same_answer([outcome["answer"], frontier_answer]))
+            matches = int(frontier_answer is not None
+                          and same_answer([outcome["answer"], frontier_answer], answer_mode(policy)))
         spent = shadow_entries(outcome)
         digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         with self._ledger._lock, self._ledger._db:

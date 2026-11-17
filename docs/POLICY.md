@@ -38,6 +38,10 @@ certified experiment does. The file it writes holds:
   pattern. It must read the same answer that the recorded answers behind `--checks`
   held (for example, what you gave `scripts/agreement_pairs.py`), or live agreement
   is not the agreement that was measured. Policy files without it still load.
+- `answer_compare`, only with `--answer-compare {exact,math}`: how agreement compares
+  two answers (Comparing answers, below). Without it the file has no such field and
+  answers are compared exactly, as before. It must match the `--answer-compare` given
+  to `scripts/agreement_pairs.py` when the checks were built.
 
 `--tenant NAME` names the tenant in the file (default: the tenant in `--input`).
 When it differs, the outcomes' tenant is kept in `provenance.outcomes_tenant`. Do not
@@ -100,6 +104,8 @@ The path for exact-answer tasks (labels, choices, numbers):
    ```
 
    Every member of a group is charged, so savings are net of the second opinion.
+   For answers written as LaTeX (numbers in `\boxed{...}`), add
+   `--answer-compare math` here and the same flag in step 5.
 5. **Freeze.**
 
    ```bash
@@ -202,16 +208,55 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
   number from 0 to 1. Strings, booleans, NaN and infinity are refused;
 - that says `certified: true` without numeric epsilon, delta and bound, with the
   bound at most epsilon;
-- whose `answer_pattern`, when present, is empty or not a valid regular expression.
+- whose `answer_pattern`, when present, is empty or not a valid regular expression;
+- whose `answer_compare`, when present, is not `exact` or `math`.
 
 The proxy also requires `tenant` to be the tenant the policy is configured for. A
 file edited after freezing still loads, flagged by the freeze digest; a file with no
 digest cannot be checked. `task_type` is recorded, logged by the proxy at startup,
 and not read by the runner.
 
-Two answers agree when they are equal after collapsing whitespace. The words
-`None`, `[None]` and `null` count as no answer, as they did when agreement was
+### Comparing answers
+
+By default two answers agree when they are equal after collapsing whitespace. The
+words `None`, `[None]` and `null` count as no answer, as they did when agreement was
 measured (`scripts/agreement_pairs.py`).
+
+That is too strict for answers written as LaTeX. On FinQA and MATH-500 the answer is
+the content of `\boxed{...}`, and `14.5\%`, `14.5%` and `14.50`, or `\dfrac{1}{2}`
+and `\frac{1}{2}`, count as different answers, so the pair escalates to the
+frontier and the saving is lost.
+
+A policy with `"answer_compare": "math"` compares answers by value instead. Both
+answers are rewritten by `tine.policy.canonical_answer` and then compared exactly.
+The rewrite:
+
+- unwraps `\text{...}`;
+- drops `\left`, `\right`, the spaces `\!`, `\,`, `\;` and `\ `, degree signs
+  (`^\circ`, `^{\circ}`), percent signs (`\%`, `%`) and escaped dollar signs (`\$`);
+- writes `\dfrac` and `\tfrac` as `\frac`;
+- removes all whitespace, `$` at either end and a trailing `.`;
+- writes a plain decimal number in one exact form, so `14.50` is `14.5` and `1,234`
+  is `1234`. Commas count only between groups of three digits.
+
+Numbers are compared exactly. There is no tolerance: two answers agree only when they
+are the same value.
+
+It does not catch:
+
+- the same value in two notations: `0.5` and `\frac{1}{2}`, `\frac12` and
+  `\frac{1}{2}`, `9.9%` and `0.099`, `1e3` and `1000`;
+- units written differently or on one side only: `5` and `5\text{ cm}`;
+- reordered terms (`x+1` and `1+x`) and equivalent expressions in general.
+
+It also joins two answers that differ only in what it drops: `50%` and `50` agree,
+and the list `1, 234` reads as the number `1234`.
+
+The same function decides agreement offline (`scripts/agreement_pairs.py
+--answer-compare math`) and in the proxy, so a policy certified offline is certified
+on the comparison the proxy makes. Build the checks and freeze the policy with the
+same mode. Changing the field by hand changes what runs but not what was certified,
+and it shows as an edit.
 
 A policy's `answer_pattern` is the regular expression the proxy uses to read a
 comparable answer for that policy ([PROXY.md](PROXY.md)). It wins over

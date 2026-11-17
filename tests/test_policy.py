@@ -11,8 +11,8 @@ from tine.__main__ import main
 from tine.data import write_outcomes
 from tine.ledger import Ledger
 from tine.policy import (
-    DIGEST_FIELD, FREEZE_EDITED, FREEZE_NO_DIGEST, FREEZE_UNCHANGED, dumps, freeze_policy, freeze_state, policy_digest,
-    run_policy, run_stages_async, same_answer, validate_policy,
+    DIGEST_FIELD, FREEZE_EDITED, FREEZE_NO_DIGEST, FREEZE_UNCHANGED, answer_mode, canonical_answer, dumps,
+    freeze_policy, freeze_state, policy_digest, run_policy, run_stages_async, same_answer, validate_policy,
 )
 
 
@@ -384,3 +384,92 @@ def test_a_policy_without_stages_need_not_state_a_bound_but_what_it_states_is_ch
         validate_policy({**empty, "guarantee": {"certified": False, "epsilon": "0.5"}})
     with pytest.raises(ValueError, match="answer_pattern"):
         validate_policy({**POLICY, "answer_pattern": "("})
+
+
+@pytest.mark.parametrize("same", [
+    [r"14.5\%", "14.5%", "14.50", "14.5", "$14.5$", r"14.5\%."],
+    [r"\dfrac{1}{2}", r"\frac{1}{2}", r"\tfrac{1}{2}", r"\frac { 1 } { 2 }"],
+    ["1,234", "1234", r"\$1,234", "1234.0", r"1\,234"],
+    [r"90^\circ", r"90^{\circ}", "90"],
+    [r"\text{(B)}", "(B)", r"\text{ (B) }"],
+    [r"\left( 1, 2 \right)", "(1,2)", r"(1,\!2)", r"(1,\ 2)"],
+    ["0", "-0.0", "0.00", "+0"],
+    [".5", "0.5", "0.50"],
+])
+def test_math_comparison_reads_one_value_written_several_ways(same):
+    forms = {canonical_answer(answer, "math") for answer in same}
+    assert len(forms) == 1 and None not in forms and same_answer(same, "math")
+    # Exact comparison, the default, keeps today's behaviour: these differ as text.
+    assert not same_answer(same)
+
+
+@pytest.mark.parametrize("different", [
+    ["14.5", "14.51"], ["0.5", r"\frac{1}{2}"], [r"9.9\%", "0.099"], ["1e3", "1000"], [r"\frac12", r"\frac{1}{2}"],
+    ["12345678901234567", "12345678901234568"], ["1,2345", "12345"], ["x+1", "1+x"], ["5", r"5\text{ cm}"],
+    [r"\rightarrow", "ow"],
+])
+def test_math_comparison_never_joins_different_values_or_notations_it_does_not_know(different):
+    """Agreement must mean the same value: no tolerance, and nothing it cannot read."""
+    assert not same_answer(different, "math")
+
+
+def test_canonical_answer_keeps_missing_answers_missing_and_exact_mode_as_it_was():
+    for missing in (None, "", "  ", "None", "[None]", "null", 3, "$ $", "$$", "."):
+        assert canonical_answer(missing, "math") is None
+    assert canonical_answer("  a \n b ") == "a b" and canonical_answer(r"\dfrac{1}{2}") == r"\dfrac{1}{2}"
+    assert canonical_answer("14.50", "math") == "14.5" and canonical_answer("100", "math") == "100"
+    assert canonical_answer(r"\$1,234.50", "math") == "1234.5" and canonical_answer(".5", "math") == "0.5"
+    assert not same_answer([None, None], "math") and not same_answer(["$", "$"], "math")
+    with pytest.raises(ValueError, match="answer comparison"):
+        canonical_answer("1", "numeric")
+
+
+def test_a_policy_names_how_its_agreement_compares_answers():
+    assert answer_mode(POLICY) == "exact" and answer_mode({**POLICY, "answer_compare": "math"}) == "math"
+    for mode in ("exact", "math", None):
+        validate_policy({**POLICY, "answer_compare": mode})
+    for bad in ("Math", "", "numeric", 1, ["math"]):
+        with pytest.raises(ValueError, match="answer_compare"):
+            validate_policy({**POLICY, "answer_compare": bad})
+
+
+def test_run_policy_agrees_by_value_only_when_the_policy_says_so():
+    answers = {"a": r"14.5\%", "b": "14.50", "c": "never", "big": "14.5"}
+    call, made = caller(answers)
+    assert run_policy(POLICY, call)["served_by"] == "c" and made == ["a", "b", "c"]
+    call, made = caller(answers)
+    outcome = run_policy({**POLICY, "answer_compare": "math"}, call)
+    assert outcome["served_by"] == "a" and outcome["result"]["answer"] == r"14.5\%" and made == ["a", "b"]
+    # A caller's own agreement test still wins.
+    call, _ = caller(answers)
+    assert run_policy({**POLICY, "answer_compare": "math"}, call, agree=lambda found: False)["served_by"] == "c"
+
+    async def call_async(model):
+        return {"answer": answers[model], "cost_usd": 1.0}
+    routed = asyncio.run(run_stages_async({**POLICY, "answer_compare": "math"}, call_async))
+    assert routed["accepted"] and routed["stage"] == 0
+    assert asyncio.run(run_stages_async(POLICY, call_async))["stage"] == 1
+
+
+def test_freeze_policy_writes_the_answer_comparison_only_when_asked(tmp_path, capsys):
+    frame, checks = recorded()
+    plain = freeze_policy(frame, "frontier", checks, epsilon=0.02)
+    assert "answer_compare" not in plain and answer_mode(plain) == "exact"
+    math_policy = freeze_policy(frame, "frontier", checks, epsilon=0.02, answer_compare="math")
+    assert math_policy["answer_compare"] == "math" and freeze_state(json.loads(dumps(math_policy))) == FREEZE_UNCHANGED
+    assert {key: math_policy[key] for key in ("stages", "guarantee", "estimate")} == {
+        key: plain[key] for key in ("stages", "guarantee", "estimate")}
+    with pytest.raises(ValueError, match="answer_compare"):
+        freeze_policy(frame, "frontier", checks, epsilon=0.02, answer_compare="numeric")
+    small, small_checks = recorded(tasks=300)
+    write_outcomes(small, tmp_path / "outcomes.csv")
+    small_checks.to_csv(tmp_path / "checks.csv", index=False)
+    common = ["freeze-policy", "--input", str(tmp_path / "outcomes.csv"), "--frontier", "frontier",
+              "--checks", str(tmp_path / "checks.csv"), "--epsilon", "0.04"]
+    main([*common, "--output", str(tmp_path / "math.json"), "--answer-compare", "math"])
+    main([*common, "--output", str(tmp_path / "plain.json")])
+    assert json.loads((tmp_path / "math.json").read_text(encoding="utf-8"))["answer_compare"] == "math"
+    assert "answer_compare" not in json.loads((tmp_path / "plain.json").read_text(encoding="utf-8"))
+    with pytest.raises(SystemExit):
+        main([*common, "--output", str(tmp_path / "bad.json"), "--answer-compare", "numeric"])
+    assert "--answer-compare" in capsys.readouterr().err and not (tmp_path / "bad.json").exists()

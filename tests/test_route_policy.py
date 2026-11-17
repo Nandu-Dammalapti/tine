@@ -117,6 +117,26 @@ def test_a_failing_cheap_model_or_a_streaming_request_still_gets_the_frontier():
     assert seen == ["frontier"] and "x-tine-route" not in response.headers
 
 
+def test_live_agreement_compares_answers_by_value_only_when_the_policy_says_so():
+    """MATH-style replies: one value written two ways. An exact policy escalates; a
+    math policy serves the first cheaper model's reply as it was written."""
+    boxed = {**AGREE, "answer_pattern": r"\\boxed\{(.+)\}"}
+    replies = {"small-a": r"Hence \boxed{\dfrac{1}{2}}", "small-b": r"\boxed{\frac{1}{2}}", "frontier": r"\boxed{0.5}"}
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": boxed}}), world(replies, seen))
+    assert seen == ["small-a", "small-b", "frontier"] and response.headers["x-tine-route"] == "frontier"
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": {**boxed, "answer_compare": "math"}}}),
+                        world(replies, seen))
+    assert seen == ["small-a", "small-b"] and response.headers["x-tine-route"] == "stage-0"
+    assert response.json() == chat(replies["small-a"]) and row["model"] == "small-a"
+    # A fraction and a decimal are not read as one value: math mode compares notation it knows.
+    seen = []
+    response, _ = ask(config(route_policies={"a": {"openai": {**boxed, "answer_compare": "math"}}}),
+                      world({**replies, "small-b": r"\boxed{0.5}"}, seen))
+    assert seen == ["small-a", "small-b", "frontier"] and response.headers["x-tine-route"] == "frontier"
+
+
 def test_the_baseline_is_estimated_only_when_asked_for():
     seen = []
     _, row = ask(config(route_policies={"a": {"openai": AGREE}}, route_estimate_baseline=True),
