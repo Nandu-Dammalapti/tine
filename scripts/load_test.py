@@ -18,9 +18,19 @@ What the numbers mean, and what they do not:
 - The provider is a stand-in on the same machine. No real model is called, nothing is
   paid and no request leaves the machine. The stand-in's latency is a setting, so a
   figure here says what the proxy adds to a reply, never how long a model takes.
-- "Added latency" is the difference between two measured distributions (through the
-  proxy, and at the stand-in directly) over loopback. A real deployment adds a network
-  hop to the proxy and TLS to the provider, which are not in it.
+- "Added latency" compares requests through the proxy with the same requests at the
+  stand-in directly, over loopback. A real deployment adds a network hop to the proxy
+  and TLS to the provider, which are not in it. Every result names the basis of its
+  figure (``added_latency_basis``): the difference of the two sides' percentiles; the
+  per-request difference when replies vary in length (the stand-in gives the same
+  request the same latency on both sides, so pairs cancel the spread); or, when the
+  direct side was itself queueing, latency over the stand-in's set reply time. Under
+  routing only frontier-holdout requests are compared, because a routed request waits
+  for other models than the direct one does.
+- A closed loop with instant replies and more than one request in flight saturates
+  whatever it is aimed at: latency is then requests in flight over throughput, which is
+  time spent queueing, not what one request costs. Only the one-in-flight scenario
+  measures per-request overhead; the others measure the ceiling.
 - The generator, the stand-in and the proxy share one machine's cores. On a laptop, and
   above all on a busy one, they slow each other. Every summary carries the load average
   at its start and end and sets ``busy_machine`` when it was high: such a run shows that
@@ -32,7 +42,12 @@ What the numbers mean, and what they do not:
   type ``load-test``, model names of the stand-in, and guarantee fields that are only
   placeholders the proxy's validator requires. Nothing was certified. Its acceptance
   share is a setting of the stand-in (``--agree-share``), so savings and quality
-  figures from these runs mean nothing; only timings and counts do.
+  figures from these runs mean nothing; only timings and counts do. Results keep the
+  counts; what the proxy computed from made-up prices and that setting is set apart
+  under ``synthetic_not_evidence`` with the policy's note beside it.
+- Every scenario states its prompt size and reply length. The proxy's work per request
+  grows with the body (it parses it, writes it to the ledger and fingerprints it), so a
+  figure at 2,000 characters does not describe requests of 200,000.
 - Peak memory and CPU time of the proxy come from the child's resource usage when it
   exits (``wait4``); memory during a run is read from the operating system for that one
   process. Neither is available for a proxy started elsewhere (``--base-url``).
@@ -231,8 +246,9 @@ class StandInServer:
     asyncio server so that it stays several times faster than the proxy it stands
     behind."""
 
-    def __init__(self, settings: StandIn) -> None:
+    def __init__(self, settings: StandIn, instance: str = "") -> None:
         self.settings = settings
+        self.instance = instance  # given back by GET /health, so a starter can tell this server from another
         self.filler = " ".join(_WORDS[index % len(_WORDS)] for index in range(max(0, settings.reply_tokens)))
         self.requests = 0
         self.connections = 0
@@ -371,7 +387,8 @@ class StandInServer:
 
     async def respond(self, writer: asyncio.StreamWriter, method: bytes, path: str, raw: bytes) -> None:
         if method == b"GET" and path in ("/health", "/stats"):
-            writer.write(self._json(200, {"status": "ok", "standin": True} if path == "/health" else self.stats()))
+            health = {"status": "ok", "standin": True, "pid": os.getpid(), "instance": self.instance}
+            writer.write(self._json(200, health if path == "/health" else self.stats()))
             return
         provider = next((name for name, route in ROUTES.items() if route == path), None)
         if method != b"POST" or provider is None:
@@ -404,11 +421,15 @@ class StandInServer:
         finally:
             self.in_flight -= 1
 
+    def first_byte_seconds(self, plan: dict) -> float:
+        """When a stream's first byte is sent, counted from the request."""
+        return min(plan["seconds"], self.settings.ttfb_ms / 1000 * (0.75 + 0.5 * plan["jitter"]))
+
     async def stream(self, writer: asyncio.StreamWriter, provider: str, plan: dict, request_id: bytes) -> None:
         opening, deltas, closing = self.stream_parts(provider, plan)
         head = (b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\n"
                 b"%stransfer-encoding: chunked\r\n\r\n" % request_id)
-        first = min(plan["seconds"], self.settings.ttfb_ms / 1000 * (0.75 + 0.5 * plan["jitter"]))
+        first = self.first_byte_seconds(plan)
         gap = (plan["seconds"] - first) / len(deltas)
         if first > 0:
             await asyncio.sleep(first)
@@ -426,9 +447,9 @@ class StandInServer:
         writer.write(_framed(deltas[-1]) + _framed(closing) + b"0\r\n\r\n")
 
 
-async def serve_standin(settings: StandIn, host: str, port: int) -> None:
+async def serve_standin(settings: StandIn, host: str, port: int, instance: str = "") -> None:
     """Serve until SIGTERM or SIGINT. Prints one JSON line when it is listening."""
-    state = StandInServer(settings)
+    state = StandInServer(settings, instance)
     server = await asyncio.start_server(state.handle, host, port, backlog=4096)
     stop = asyncio.Event()
     for name in (signal.SIGTERM, signal.SIGINT):
@@ -895,8 +916,13 @@ def free_port() -> int:
     global _next_port
     for _ in range(PORTS[1] - PORTS[0] + 1):
         port, _next_port = _next_port, _next_port + 1 if _next_port < PORTS[1] else PORTS[0]
+        # Asked by connecting first: a server listening on every address (0.0.0.0) does
+        # not always stop a bind to 127.0.0.1, and it would answer in place of ours.
+        with socket.socket() as knock:
+            knock.settimeout(0.5)
+            if knock.connect_ex(("127.0.0.1", port)) == 0:
+                continue
         with socket.socket() as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", port))
             except OSError:
@@ -983,6 +1009,22 @@ def _stop_children() -> None:
                 pass
 
 
+def stop_on_signals() -> None:
+    """Make SIGTERM and SIGHUP end the tool the way Ctrl-C does. Their default action
+    kills the process at once: no ``finally`` block and no exit hook runs, and the
+    stand-in, the proxy and the temporary folder are left behind, still listening. (A
+    SIGKILL cannot be caught: after one, look for listeners on ports 18000-18999.)"""
+    def stop(number, frame) -> None:
+        for name in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(name, signal.SIG_IGN)  # a second signal must not interrupt the cleaning up
+        raise SystemExit(128 + number)
+    for name in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(name, stop)
+        except ValueError:  # not the main thread (a test runner): nothing to install
+            return
+
+
 def process_now(pid: int) -> dict | None:
     """A running process's resident memory and the CPU time it has used so far, read
     from the system for that one process: libproc on macOS, /proc on Linux. None where
@@ -1022,15 +1064,22 @@ def raise_file_limit() -> int:
     return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
-async def wait_ready(url: str, child: Child | None, seconds: float, what: str) -> None:
+async def wait_ready(url: str, child: Child | None, seconds: float, what: str) -> dict:
+    """Wait for ``GET /health`` to answer 200 and return what it said. An answer alone
+    does not show that ``child`` gave it: another server may hold the port."""
     client = Client(url)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if child is not None and child.exited():
             raise RuntimeError(f"{what} exited with code {child.exit_code} before it answered:\n{child.log_tail()}")
         try:
-            if (await client.get("/health", timeout=2.0)).status == 200:
-                return
+            reply = await client.get("/health", timeout=2.0)
+            if reply.status == 200:
+                try:
+                    body = json.loads(reply.body)
+                except ValueError:
+                    body = None
+                return body if isinstance(body, dict) else {}
         except Exception:
             pass
         await asyncio.sleep(0.1)
@@ -1040,11 +1089,49 @@ async def wait_ready(url: str, child: Child | None, seconds: float, what: str) -
 
 async def start_standin(settings: StandIn, workdir: Path, *, host: str = "127.0.0.1",
                         port: int | None = None) -> tuple[Child, str]:
+    """Start the stand-in and make sure the server that answers on its port is this one:
+    it gives back its process id and a word made up for this start."""
     port = port or free_port()
+    instance = os.urandom(8).hex()
     child = Child([sys.executable, str(Path(__file__).resolve()), "provider", "--host", host, "--port", str(port),
-                   *settings.argv()], env=child_environment(), log=workdir / f"standin-{port}.log")
+                   "--instance", instance, *settings.argv()], env=child_environment(),
+                  log=workdir / f"standin-{port}.log")
     url = f"http://127.0.0.1:{port}"
-    await wait_ready(url, child, 30.0, "The stand-in provider")
+    try:
+        health = await wait_ready(url, child, 30.0, "The stand-in provider")
+        if health.get("pid") != child.pid or health.get("instance") != instance or child.exited():
+            raise RuntimeError(
+                f"Another server answers on port {port}, not the stand-in this tool started (its GET /health said "
+                f"{json.dumps(health)[:200]}). Nothing was measured: free the port or give another --provider-port."
+                f" The stand-in's own log:\n{child.log_tail()}")
+    except BaseException:
+        child.stop(grace=5.0)
+        raise
+    return child, url
+
+
+async def start_proxy(settings: dict, ledger: Path, log: Path, seconds: float = 90.0) -> tuple[Child, str]:
+    """Start ``python -m tine serve`` on a free port and make sure the server that
+    answers there is that process. The proxy's ``GET /health`` does not name its
+    process, so the proof is its own log line that it is listening on the port, with
+    the process still alive after the answer."""
+    port = free_port()
+    child = Child([sys.executable, "-m", "tine", "serve", "--host", "127.0.0.1", "--port", str(port)],
+                  env=child_environment({**settings, "TINE_LEDGER_PATH": str(ledger)}), log=log)
+    url = f"http://127.0.0.1:{port}"
+    try:
+        await wait_ready(url, child, seconds, "The proxy")
+        listening = f"running on http://127.0.0.1:{port} "
+        for _ in range(50):  # the log line is written just after the socket opens
+            if child.exited() or listening in log.read_text(errors="replace"):
+                break
+            await asyncio.sleep(0.1)
+        if child.exited() or listening not in log.read_text(errors="replace"):
+            raise RuntimeError(f"Another server answers on port {port}, not the proxy this tool started. Nothing "
+                               f"was measured. The proxy's own log:\n{child.log_tail()}")
+    except BaseException:
+        child.stop(grace=5.0)
+        raise
     return child, url
 
 
@@ -1077,6 +1164,7 @@ class Scenario:
     direct_seconds: float | None = None  # measure the stand-in for this long only (the soak)
     sample_seconds: float | None = None  # sample memory and ledger size this often during proxy runs
     window_seconds: float | None = None  # report latency per stretch of this length
+    unloaded_seconds: float = 3.0  # closed loop, several in flight: also ask the stand-in one at a time, this long
     kind: str = "compare"  # or "ledger"
     sizes: tuple = ()  # kind "ledger": rows to fill before measuring
     environment: dict = field(default_factory=dict)  # further TINE_ settings
@@ -1084,10 +1172,12 @@ class Scenario:
     def seconds(self) -> float:
         """Roughly how long it takes to run."""
         if self.kind == "ledger":
-            return sum(25 + size / 2500 for size in self.sizes)
+            weight = max(1.0, self.load.get("prompt_chars", 2000) / 2000)
+            return sum(25 + size * weight / 2500 for size in self.sizes)
         each = self.load.get("warmup_seconds", 0.0) + self.load.get("duration", 0.0)
         direct = self.load.get("warmup_seconds", 0.0) + self.direct_seconds if self.direct_seconds else each
-        return 12 + self.rounds * (each + direct + (3 if self.mode == "shadow" else 0))
+        probe = self.unloaded_seconds + 1 if (self.load.get("in_flight") or 1) > 1 else 0
+        return 12 + probe + self.rounds * (each + direct + (3 if self.mode == "shadow" else 0))
 
 
 def proxy_settings(scenario: Scenario, provider_url: str, policies: str | None) -> dict:
@@ -1125,18 +1215,34 @@ def write_policies(folder: Path) -> Path:
     return path
 
 
+CONTAINER_LEDGER = "ledger.sqlite3"
+
+
 def docker_line(scenario: Scenario, *, provider_port: int, base_url: str, policies: Path | None,
-                image: str = "tine-proxy:dev", name: str = "tine-load-proxy") -> str:
+                image: str = "tine-proxy:dev", name: str = "tine-load-proxy", data: Path | None = None) -> str:
     """The exact ``docker run`` line for a proxy container that this scenario can be
-    measured through. The container reaches the stand-in on the host as
-    ``host.docker.internal``; settings are passed with ``-e``, never an env file."""
+    measured through. It carries what docker-compose.yml sets for the documented
+    deployment (read-only root, a small /tmp, the unprivileged user, no capabilities,
+    no new privileges, an init process), so the container measured is that one.
+    Settings are passed with ``-e``, never an env file.
+
+    The container reaches the stand-in on the host as ``host.docker.internal`` over
+    plain HTTP, with the fake key. With ``data`` that host folder is mounted at /data
+    and holds the ledger, so this tool can read its size; without it the ledger is in
+    the image's anonymous volume, as fast as the container's own disk, and unread."""
     published = urlsplit(base_url).port or 80
     inside = f"/config/{policies.name}" if policies else None
     parts = ["docker", "run", "--rm", "-d", "--name", name, "-p", f"127.0.0.1:{published}:8000",
-             "--add-host", "host.docker.internal:host-gateway"]
+             "--add-host", "host.docker.internal:host-gateway",
+             "--read-only", "--tmpfs", "/tmp:size=64m,mode=1777", "--user", "10001:10001", "--cap-drop", "ALL",
+             "--security-opt", "no-new-privileges:true", "--init"]
     if policies is not None and scenario.mode != "passthrough":
         parts += ["-v", f"{policies.parent}:/config:ro"]
-    for key, value in proxy_settings(scenario, f"http://host.docker.internal:{provider_port}", inside).items():
+    settings = proxy_settings(scenario, f"http://host.docker.internal:{provider_port}", inside)
+    if data is not None:
+        parts += ["-v", f"{data}:/data"]
+        settings["TINE_LEDGER_PATH"] = f"/data/{CONTAINER_LEDGER}"
+    for key, value in settings.items():
         parts += ["-e", f"{key}={value}"]
     return shlex.join([*parts, image])
 
@@ -1183,12 +1289,25 @@ async def timed_get(client: Client, path: str, times: int = 3) -> dict:
             "ms": [round(value, 2) for value in took], "bytes": reply.size, "body": body}
 
 
-_SHADOW_FIELDS = (
+# Counts of what shadow mode did: these say how the proxy behaved under the load.
+_SHADOW_COUNTS = (
     "sampling", "sampled_requests", "shadowed_requests", "shadow_coverage", "skipped_busy", "skipped_stopped",
     "failed_shadow_runs", "skipped_rate_limited", "skipped_rate_cap", "rate_limited_runs", "streamed_not_shadowed",
-    "policy_would_accept", "policy_would_accept_share", "accepted_compared_with_frontier",
-    "accepted_matching_frontier_share", "shadow_calls", "failed_shadow_calls", "unknown_cost_shadow_calls",
-    "drift_check")
+    "shadow_calls", "failed_shadow_calls", "unknown_cost_shadow_calls")
+# What the proxy concluded about the policy. Here that is the stand-in's --agree-share
+# and --differ-share and made-up prices given back, so it is kept apart from the result.
+_SHADOW_SYNTHETIC = ("policy_would_accept", "policy_would_accept_share", "accepted_compared_with_frontier",
+                     "accepted_matching_frontier_share", "drift_check")
+_HOLDOUT_COUNTS = ("routed_requests", "holdout_requests", "routed_unknown_cost_requests",
+                   "holdout_unknown_cost_requests")
+ROUTE_FIGURES = {
+    "holdout": "sent to the frontier by the random holdout: the same call the direct request makes, so the "
+               "difference is the proxy's overhead on the frontier path",
+    "stage": "answered by this stage's cheaper models: the request waited for each of them, every one with a "
+             "latency of its own from the stand-in's settings, so this is the policy's shape, not proxy overhead",
+    "frontier": "escalated: the cheaper models were asked first and then the frontier, so this is the policy's "
+                "shape, not proxy overhead",
+}
 
 
 async def standin_stats(provider_url: str) -> dict:
@@ -1225,6 +1344,115 @@ def same_bytes(direct: list[Row], through: list[Row]) -> dict:
             for kind, counts in out.items()}
 
 
+def planned_times(settings: StandIn, load: Load, rows: list[Row]) -> dict[int, tuple[float, float | None]]:
+    """What the stand-in was set to take for each measured request, in milliseconds: the
+    whole reply and, for a stream, its first byte. Worked out here from the stand-in's
+    settings and the request, not measured, and for the model the generator asked for
+    (under routing the proxy asks other models, whose times are other draws). A request
+    the stand-in answers with an error is left out."""
+    state = StandInServer(settings)
+    fixed = not (settings.latency_spread_ms or settings.slow_share or settings.error_share or settings.ttfb_ms)
+    requests = None if fixed else Requests(load)
+    out: dict[int, tuple[float, float | None]] = {}
+    for row in rows:
+        if not row.measured or row.index in out:
+            continue
+        if fixed:  # the same for every request: no need to build each one again
+            out[row.index] = (settings.latency_ms, 0.0 if row.stream else None)
+            continue
+        route, stream, body = requests.body(row.index)
+        plan = state.plan(route, json.dumps(body).encode())
+        if plan["status"] == 200:
+            out[row.index] = (plan["seconds"] * 1000, state.first_byte_seconds(plan) * 1000 if stream else None)
+    return out
+
+
+def _good(rows: list[Row]) -> list[Row]:
+    return [row for row in rows if row.measured and 200 <= row.status < 300]
+
+
+def over_planned(rows: list[Row], planned: dict) -> dict:
+    """Latency and time to first byte of answered requests, each minus what the stand-in
+    was set to take for that request: what everything else took (the generator, the
+    stand-in's own handling, a proxy in between, and any queueing in them)."""
+    whole, first = [], []
+    for row in _good(rows):
+        if row.index in planned:
+            times, (total, opening) = timings(row.scheduled, row.sent, row.first, row.done), planned[row.index]
+            whole.append(times["latency_ms"] - total)
+            if row.stream and opening is not None and times["ttfb_ms"] is not None:
+                first.append(times["ttfb_ms"] - opening)
+    return {"latency_ms": distribution(whole), "ttfb_ms": distribution(first)}
+
+
+def paired(direct: list[Row], through: list[Row]) -> dict:
+    """Request by request: latency through the proxy minus the latency of the same
+    request (same index, so the same body and the same stand-in latency) asked directly,
+    over requests answered 2xx on both sides. Where replies vary in length this is far
+    steadier than a difference of medians, which moves by milliseconds when one long
+    reply is measured on one side only."""
+    theirs = {row.index: row for row in _good(direct)}
+    whole, first = [], []
+    for row in _good(through):
+        other = theirs.get(row.index)
+        if other is None or other.stream != row.stream:
+            continue
+        whole.append(((row.done - row.scheduled) - (other.done - other.scheduled)) * 1000)
+        if row.stream and row.first is not None and other.first is not None:
+            first.append(((row.first - row.scheduled) - (other.first - other.scheduled)) * 1000)
+    return {"pairs": len(whole), "added_ms": distribution(whole), "added_ttfb_ms": distribution(first)}
+
+
+def by_route(direct: list[Row], through: list[Row]) -> dict:
+    """Routing: answered requests grouped by the proxy's ``x-tine-route`` header, with
+    their latency and, request by request, that latency minus the same request asked
+    directly. Only ``holdout`` requests make the calls the direct request makes (one, to
+    the frontier), so only their difference is the proxy's overhead. A ``stage-N``
+    request waited for every cheaper model of that stage, each with a latency of its
+    own, and a ``frontier`` request for those and then the frontier: their figures are
+    the policy's shape under the stand-in's settings."""
+    theirs = {row.index: row for row in _good(direct)}
+    groups: dict[str, list[Row]] = {}
+    for row in _good(through):
+        groups.setdefault(row.via or "no x-tine-route header", []).append(row)
+    out = {}
+    for via, rows in sorted(groups.items()):
+        out[via] = {"requests": len(rows),
+                    "latency_ms": distribution([(row.done - row.scheduled) * 1000 for row in rows]),
+                    "minus_direct_ms": distribution([
+                        ((row.done - row.scheduled) - (theirs[row.index].done - theirs[row.index].scheduled)) * 1000
+                        for row in rows if row.index in theirs])}
+    return out
+
+
+def direct_is_saturated(direct_over: float | None, unloaded_over: float | None, proxy_over: float | None) -> bool:
+    """Whether the direct side was queueing enough to spoil a subtraction. Arguments are
+    medians of latency over the stand-in's set reply time: asked directly under the
+    load, asked directly one request at a time, and through the proxy. In a closed loop
+    with fast replies the direct side's latency is requests in flight over what the
+    generator and the stand-in can do, and subtracting that from the proxy's side
+    under-reports the proxy. True when that queueing is more than a tenth of what the
+    proxy side shows (and more than 0.2 ms, which is timer noise)."""
+    if direct_over is None or unloaded_over is None or proxy_over is None:
+        return False
+    queueing = direct_over - unloaded_over
+    return queueing > 0.2 and queueing > 0.1 * (proxy_over - unloaded_over)
+
+
+BASES = {
+    "percentiles": "Through the proxy minus direct, percentile by percentile, per round",
+    "paired": ("Request by request: latency through the proxy minus the same request's latency asked directly. The "
+               "stand-in gives a request the same latency on both sides, so the spread of reply times cancels; "
+               "p50, p95 and p99 are percentiles of those differences"),
+    "over_planned": ("The direct side was itself queueing, so it is not subtracted: latency through the proxy minus "
+                     "the stand-in's set reply time for the same request, less the median the stand-in and the "
+                     "generator take over that set time when asked one request at a time"),
+    "holdout": ("Routing: frontier-holdout requests only (x-tine-route: holdout), each minus the same request asked "
+                "directly. Other requests wait for other models than the direct request does; see routing."
+                "latency_by_route_ms"),
+}
+
+
 def machine() -> dict:
     return {"platform": platform.platform(), "python": platform.python_version(), "cpu_count": os.cpu_count(),
             "open_file_limit": resource.getrlimit(resource.RLIMIT_NOFILE)[0],
@@ -1236,12 +1464,14 @@ def machine() -> dict:
 
 async def compare(scenario: Scenario, workdir: Path, *, base_url: str | None = None, provider_host: str = "127.0.0.1",
                   provider_port: int | None = None, ledger: Path | None = None, wait_seconds: float = 180.0,
-                  image: str = "tine-proxy:dev") -> dict:
+                  image: str = "tine-proxy:dev", mount_ledger: bool = False) -> dict:
     """Measure one scenario at the stand-in directly and through the proxy.
 
     Without ``base_url`` the proxy is ``python -m tine serve`` started here with a fresh
     ledger in ``workdir``. With it, the proxy is one that someone else starts (a
-    container): the ``docker run`` line it needs is printed and this waits for it."""
+    container): the ``docker run`` line it needs is printed and this waits for it.
+    ``mount_ledger`` puts the container's ledger in ``workdir/data`` so that its size
+    can be read here."""
     settings = StandIn(**{key: tuple(value) if isinstance(value, list) else value
                           for key, value in scenario.provider.items()})
     policies = write_policies(workdir / "config") if scenario.mode != "passthrough" else None
@@ -1249,22 +1479,30 @@ async def compare(scenario: Scenario, workdir: Path, *, base_url: str | None = N
     proxy, docker = None, None
     try:
         if base_url is None:
-            port = free_port()
             ledger = workdir / "ledger.sqlite3"
-            proxy = Child([sys.executable, "-m", "tine", "serve", "--host", "127.0.0.1", "--port", str(port)],
-                          env=child_environment({**proxy_settings(scenario, provider_url, str(policies)),
-                                                 "TINE_LEDGER_PATH": str(ledger)}),
-                          log=workdir / "proxy.log")
-            proxy_url = f"http://127.0.0.1:{port}"
+            proxy, proxy_url = await start_proxy(proxy_settings(scenario, provider_url, str(policies)), ledger,
+                                                 workdir / "proxy.log")
         else:
             proxy_url = base_url.rstrip("/")
+            data = None
+            if mount_ledger:
+                # The container's user (10001) is not this one: it must be able to write here.
+                data = (workdir / "data").resolve()
+                data.mkdir(parents=True, exist_ok=True)
+                data.chmod(0o777)
+                ledger = data / CONTAINER_LEDGER
             docker = docker_line(scenario, provider_port=urlsplit(provider_url).port, base_url=proxy_url,
-                                 policies=policies, image=image)
+                                 policies=policies.resolve() if policies else None, image=image, data=data)
             say("Start the proxy container with exactly this line (the stand-in is already listening):\n\n  "
-                + docker + "\n\nOn Linux the stand-in must also listen where the container can reach it: add "
-                "--provider-host 0.0.0.0 to this command. Remove the container afterwards with: "
-                "docker rm -f tine-load-proxy\n")
-        await wait_ready(proxy_url, proxy, 90.0 if proxy else wait_seconds, "The proxy")
+                + docker + "\n\nThe container reaches the stand-in on this host as host.docker.internal, over plain "
+                "HTTP and with a made-up key; nothing else is sent there. On Linux the stand-in must also listen "
+                "where the container can reach it: add --provider-host 0.0.0.0 to this command. "
+                + ("The ledger is in a folder mounted from this host so that its size can be read; a mounted folder "
+                   "can be slower than the container's own disk, so compare timings with a run without "
+                   "--mount-ledger. " if mount_ledger else
+                   "The ledger stays inside the container, so its size is not in the result (--mount-ledger). ")
+                + "Remove the container afterwards with: docker rm -f tine-load-proxy\n")
+            await wait_ready(proxy_url, None, wait_seconds, "The proxy")
         # A proxy started by someone else must be the one this scenario describes.
         health = json.loads((await Client(proxy_url).get("/health")).body)
         wanted = {"routing": "policy" if scenario.mode == "route" else "frontier-default",
@@ -1305,6 +1543,19 @@ async def _measure(scenario: Scenario, settings: StandIn, workdir: Path, provide
                             "cpu_seconds": round(now["cpu_seconds"], 3) if now else None,
                             "ledger_bytes": stats.get("bytes"), "ledger_rows": (stats.get("rows") or {}).get("requests")})
 
+    # With several requests in flight in a closed loop, the stand-in is first asked one
+    # request at a time: what it and the generator take over the set reply time when
+    # nothing queues. The direct run under load is judged against this.
+    unloaded = None
+    if (scenario.load.get("in_flight") or 1) > 1 and scenario.unloaded_seconds > 0:
+        alone = Load(**{**scenario.load, "base_url": provider_url, "nonce": f"{run}-alone", "in_flight": 1,
+                        "duration": scenario.unloaded_seconds, "requests": None, "warmup_seconds": 0.0,
+                        "warmup_requests": 1, "outcome_share": 0.0})
+        summary, alone_rows = await run_load(alone)
+        over = over_planned(alone_rows, planned_times(settings, alone, alone_rows))
+        unloaded = {"requests": summary["measured_requests"], "latency_ms": summary["latency_ms"],
+                    "over_planned_ms": over["latency_ms"], "over_planned_ttfb_ms": over["ttfb_ms"]}
+
     for number in range(scenario.rounds):
         # The same requests on both sides, and the order swapped every round, so that a
         # machine that gets busier or quieter during the run weighs on both.
@@ -1335,6 +1586,15 @@ async def _measure(scenario: Scenario, settings: StandIn, workdir: Path, provide
                                  "connections": after["connections"] - before["connections"]})
         for kind, counts in same_bytes(rows["direct"], rows["proxy"]).items():
             equal[kind].update({"equal": counts["equal"], "different": counts["different"]})
+        planned = planned_times(settings, load, rows["direct"] + rows["proxy"])
+        entry["over_planned_ms"] = {
+            "direct": over_planned(rows["direct"], planned),
+            # Under routing the proxy asks other models, whose set times are other draws.
+            "proxy": over_planned(rows["proxy"], planned) if scenario.mode != "route" else None}
+        if scenario.mode == "route":
+            entry["by_route"] = by_route(rows["direct"], rows["proxy"])
+        else:
+            entry["paired"] = paired(rows["direct"], rows["proxy"])
         rounds.append(entry)
         say(f"  {scenario.name} round {number + 1}/{scenario.rounds}: direct p50 "
             f"{(entry['direct']['latency_ms'] or {}).get('p50')} ms at {entry['direct']['throughput_rps']}/s, proxy p50 "
@@ -1346,6 +1606,47 @@ async def _measure(scenario: Scenario, settings: StandIn, workdir: Path, provide
     def added(group: str, name: str) -> dict | None:
         return spread([None if through is None or direct is None else through - direct
                        for through, direct in zip(per_round("proxy", group, name), per_round("direct", group, name))])
+
+    def dig(entry: dict, *keys):
+        value = entry
+        for key in keys:
+            value = (value or {}).get(key)
+        return value
+
+    def over(side: str, figure: str, name: str) -> dict | None:
+        return spread([dig(entry, "over_planned_ms", side, figure, name) for entry in rounds])
+    routed = scenario.mode == "route"
+    alone = {figure: dig(unloaded or {}, key, "p50")
+             for figure, key in (("latency_ms", "over_planned_ms"), ("ttfb_ms", "over_planned_ttfb_ms"))}
+    medians = {side: (over(side, "latency_ms", "p50") or {}).get("median") for side in ("direct", "proxy")}
+    saturated = (not routed and scenario.load.get("rate") is None
+                 and direct_is_saturated(medians["direct"], alone["latency_ms"], medians["proxy"]))
+    varied = bool(settings.latency_spread_ms or settings.slow_share or settings.ttfb_ms)
+    basis = "holdout" if routed else "over_planned" if saturated else "paired" if varied else "percentiles"
+    by_percentiles = {
+        "latency_ms": {name: added("latency_ms", name) for name in ("p50", "p95", "p99")},
+        "ttfb_ms": {name: added("streamed_ttfb_ms", name) for name in ("p50", "p95")}}
+    by_pairs = {
+        "latency_ms": {name: spread([dig(entry, "paired", "added_ms", name) for entry in rounds])
+                       for name in ("p50", "p95", "p99")},
+        "ttfb_ms": {name: spread([dig(entry, "paired", "added_ttfb_ms", name) for entry in rounds])
+                    for name in ("p50", "p95")},
+        "pairs": [dig(entry, "paired", "pairs") for entry in rounds]}
+
+    if basis == "paired" and not any(by_pairs["pairs"]):
+        basis = "percentiles"  # no request was answered on both sides (nearly all refused on one)
+
+    def less_alone(figure: str, name: str) -> dict | None:
+        return spread([None if value is None or alone[figure] is None else value - alone[figure]
+                       for value in (dig(entry, "over_planned_ms", "proxy", figure, name) for entry in rounds)])
+    headline = {
+        "percentiles": by_percentiles, "paired": by_pairs,
+        "over_planned": {"latency_ms": {name: less_alone("latency_ms", name) for name in ("p50", "p95", "p99")},
+                         "ttfb_ms": {name: less_alone("ttfb_ms", name) for name in ("p50", "p95")}},
+        "holdout": {"latency_ms": {name: spread([dig(entry, "by_route", "holdout", "minus_direct_ms", name)
+                                                 for entry in rounds]) for name in ("p50", "p95", "p99")},
+                    "ttfb_ms": {"p50": None, "p95": None}},
+    }[basis]
 
     def together(side: str) -> dict:
         measured = [row for row in pooled[side] if row.measured]
@@ -1386,22 +1687,37 @@ async def _measure(scenario: Scenario, settings: StandIn, workdir: Path, provide
         "busy_machine": any(entry[side]["busy_machine"] for entry in rounds for side in ("direct", "proxy")),
         "machine": {**began, "load_average_end": [round(value, 2) for value in os.getloadavg()]},
         "settings": {"standin": asdict(settings), "load": scenario.load, "mode": scenario.mode,
+                     "prompt_chars": scenario.load.get("prompt_chars", Load.prompt_chars),
+                     "reply_tokens": settings.reply_tokens,
                      "sample_rate": scenario.sample_rate, "audit_rate": scenario.audit_rate,
                      "proxy_timeout_seconds": scenario.timeout_seconds or "the proxy's default (30)",
                      "rounds": scenario.rounds,
-                     "proxy": "python -m tine serve, started by this tool" if proxy else f"already running at {proxy_url}"},
+                     "proxy": ("python -m tine serve, started by this tool" if proxy
+                               else f"already running at {proxy_url}")},
         "docker_run": docker,
         "direct": together("direct"), "proxy": together("proxy"),
-        # Through the proxy minus direct, per round: the median over rounds and their range.
-        "added_latency_ms": {name: added("latency_ms", name) for name in ("p50", "p95", "p99")},
-        "added_ttfb_ms": {name: added("streamed_ttfb_ms", name) for name in ("p50", "p95")},
+        # What the proxy added, per round: the median over rounds and their range. The
+        # basis says how it was worked out; the other ways are kept alongside.
+        "added_latency_ms": headline["latency_ms"],
+        "added_ttfb_ms": headline["ttfb_ms"],
+        "added_latency_basis": {"name": basis, "what": BASES[basis]},
+        "added_by_percentiles_ms": None if routed else by_percentiles,
+        "added_paired_ms": None if routed else by_pairs,
+        # Latency minus the stand-in's set reply time for the same request. Direct, this
+        # is the generator's and the stand-in's own time, and any queueing in them.
+        "over_planned_ms": {
+            "direct": {name: over("direct", "latency_ms", name) for name in ("p50", "p95")},
+            "proxy": None if routed else {name: over("proxy", "latency_ms", name) for name in ("p50", "p95")},
+            "direct_one_request_at_a_time": unloaded},
+        "direct_saturated": saturated,
         "throughput_ratio": ratio,
         "relayed_bytes": {kind: {"compared": sum(counts.values()), **dict(counts)} for kind, counts in equal.items()},
         "proxy_process": process,
         "ledger": ledger_now,
+        # How long GET /v1/savings (the ledger report) and GET /v1/shadow took; not what they said.
         "report_endpoints": {
-            "savings": {key: value for key, value in savings.items() if key != "body"},
-            "shadow": {key: value for key, value in shadow.items() if key != "body"}},
+            "ledger_report": {key: value for key, value in savings.items() if key != "body"},
+            "shadow_report": {key: value for key, value in shadow.items() if key != "body"}},
         "shadow": None, "routing": None,
         # What the proxy sent upstream during its runs. Many more connections than the
         # most requests in flight means they are opened and closed instead of reused,
@@ -1410,19 +1726,34 @@ async def _measure(scenario: Scenario, settings: StandIn, workdir: Path, provide
         "standin": provider_stats,
         "rounds": rounds,
     }
+    note = synthetic_policy()["note"]
     if scenario.mode == "shadow" and isinstance(shadow.get("body"), dict):
-        result["shadow"] = {**{key: shadow["body"].get(key) for key in _SHADOW_FIELDS},
+        result["shadow"] = {**{key: shadow["body"].get(key) for key in _SHADOW_COUNTS},
                             "seconds_shadow_calls_ran_on_after_each_round": drains,
-                            "standin_calls_by_model": provider_stats["by_model"]}
-    if scenario.mode == "route":
+                            "standin_calls_by_model": provider_stats["by_model"],
+                            "synthetic_not_evidence": {
+                                "note": note, **{key: shadow["body"].get(key) for key in _SHADOW_SYNTHETIC}}}
+    if routed:
         routes: Counter = Counter()
         for entry in rounds:
             routes.update(entry["proxy"]["proxy_headers"]["x-tine-route"])
         holdout = (savings.get("body") or {}).get("holdout_estimate") or {}
-        result["routing"] = {"x_tine_route": dict(routes),
-                             "holdout_estimate": {key: value for key, value in holdout.items()
-                                                  if key not in ("method", "scope")} or None,
-                             "standin_calls_by_model": provider_stats["by_model"]}
+        vias = sorted({via for entry in rounds for via in entry["by_route"]})
+        result["routing"] = {
+            "x_tine_route": dict(routes),
+            **{key: holdout.get(key) for key in _HOLDOUT_COUNTS},
+            # Per x-tine-route value. Only "holdout" is the proxy's overhead (see by_route).
+            "latency_by_route_ms": {via: {
+                "requests": sum(dig(entry, "by_route", via, "requests") or 0 for entry in rounds),
+                "what": ROUTE_FIGURES.get(via.split("-")[0], "requests the policy did not route"),
+                "latency_p50": spread([dig(entry, "by_route", via, "latency_ms", "p50") for entry in rounds]),
+                "latency_p95": spread([dig(entry, "by_route", via, "latency_ms", "p95") for entry in rounds]),
+                "minus_direct_p50": spread([dig(entry, "by_route", via, "minus_direct_ms", "p50") for entry in rounds]),
+                "minus_direct_p95": spread([dig(entry, "by_route", via, "minus_direct_ms", "p95") for entry in rounds]),
+            } for via in vias},
+            "standin_calls_by_model": provider_stats["by_model"],
+            "synthetic_not_evidence": {"note": note, "holdout_estimate": {
+                key: value for key, value in holdout.items() if key not in _HOLDOUT_COUNTS} or None}}
     if scenario.window_seconds:
         result["windows"] = windows(pooled["proxy"], scenario.window_seconds)
     if scenario.sample_seconds:
@@ -1473,9 +1804,40 @@ def observations(result: dict) -> list[str]:
         out.append(f"{unrecorded} replies carried x-tine-ledger: unavailable: the proxy could not write their ledger row")
     ratio = result["throughput_ratio"]
     closed = all(entry["proxy"]["loop"] == "closed" for entry in result["rounds"])
-    if closed and ratio and ratio["median"] > 0.7 and not result["settings"]["standin"]["latency_ms"]:
+    standin = result["settings"]["standin"]
+    in_flight = result["settings"]["load"].get("in_flight") or 1
+    if closed and ratio and ratio["median"] > 0.7 and not standin["latency_ms"]:
         out.append("With instant replies the proxy kept more than 0.7 of the direct throughput: the generator or the "
                    "stand-in may be the limit here, not the proxy")
+    planned = result["over_planned_ms"]
+    alone = ((planned["direct_one_request_at_a_time"] or {}).get("over_planned_ms") or {}).get("p50")
+    under_load = (planned["direct"]["p50"] or {}).get("median")
+    if result["direct_saturated"]:
+        other = (result["added_by_percentiles_ms"]["latency_ms"]["p50"] or {}).get("median")
+        out.append(f"Asked directly with {in_flight} in flight, replies took a median of {under_load} ms longer than "
+                   f"the stand-in was set to take, against {alone} ms one request at a time: the generator and the "
+                   "stand-in were queueing. Subtracting that from the proxy's side would under-report the proxy, so "
+                   "the added latency here is latency through the proxy over the stand-in's set reply time. The "
+                   f"difference of percentiles ({other} ms at the median) is kept in added_by_percentiles_ms and is "
+                   "too low")
+    instant = not (standin["latency_ms"] or standin["latency_spread_ms"] or standin["ttfb_ms"] or standin["slow_share"])
+    if closed and in_flight > 1 and instant and result["settings"]["mode"] != "route":
+        rate = (proxy["throughput_rps"] or {}).get("median")
+        out.append(f"Closed loop, instant replies, {in_flight} in flight: the proxy is kept saturated, so its latency "
+                   f"is requests in flight over throughput ({in_flight} / {rate} a second"
+                   + (f" = {in_flight / rate * 1000:.1f} ms" if rate else "") + "). The added latency of this "
+                   "scenario is time spent queueing in the proxy at its ceiling, not what one request costs; the "
+                   "one-in-flight scenario measures that")
+    routing = result.get("routing")
+    if routing:
+        held = routing["latency_by_route_ms"].get("holdout")
+        shape = "; ".join(f"{via}: p50 {(figures['latency_p50'] or {}).get('median')} ms over {figures['requests']}"
+                          for via, figures in routing["latency_by_route_ms"].items())
+        out.append("Under routing a request's latency is the policy's shape under the stand-in's settings, not proxy "
+                   "overhead: a stage waits for the slower of its cheaper models, each with a latency of its own, and "
+                   f"an escalated request then asks the frontier too ({shape}). Added latency is therefore from the "
+                   + (f"{held['requests']} frontier-holdout requests only" if held else
+                      "frontier-holdout requests only, and there were none (set --audit-rate), so none is reported"))
     for entry in result["rounds"]:
         delay = entry["proxy"].get("send_delay_ms")
         if delay and delay["p99"] > 20:
@@ -1502,11 +1864,20 @@ def observations(result: dict) -> list[str]:
     if shadow and shadow.get("sampled_requests"):
         out.append(f"Shadow mode ran {shadow['shadowed_requests']} of {shadow['sampled_requests']} sampled requests "
                    f"(coverage {shadow['shadow_coverage']}); skipped_busy {shadow['skipped_busy']}, "
-                   f"failed {shadow['failed_shadow_runs']}; sampling is {shadow['sampling']!r}")
-    for name in ("savings", "shadow"):
+                   f"skipped_rate_limited {shadow['skipped_rate_limited']}, skipped_rate_cap "
+                   f"{shadow['skipped_rate_cap']}, skipped_stopped {shadow['skipped_stopped']}, rate_limited_runs "
+                   f"{shadow['rate_limited_runs']}, failed {shadow['failed_shadow_runs']}; sampling is "
+                   f"{shadow['sampling']!r}")
+        if shadow.get("skipped_rate_limited"):
+            out.append(f"Shadow mode was paused by the stand-in's 429 and 529 replies: {shadow['skipped_rate_limited']} "
+                       f"of {shadow['sampled_requests']} sampled requests were skipped as rate limited (the proxy "
+                       "holds shadow runs back after a provider refusal, for the reply's retry-after or 30 s "
+                       "doubling). While it is paused callers are served and no shadow work runs, so this run's "
+                       "timings do not measure shadow mode's overhead")
+    for name, path in (("ledger_report", "savings"), ("shadow_report", "shadow")):
         report = result["report_endpoints"][name]
         if report.get("median_ms", 0) > 250:
-            out.append(f"GET /v1/{name} took {report['median_ms']} ms, and the proxy answers nothing else meanwhile")
+            out.append(f"GET /v1/{path} took {report['median_ms']} ms, and the proxy answers nothing else meanwhile")
     return out
 
 
@@ -1567,14 +1938,11 @@ async def ledger_growth(scenario: Scenario, workdir: Path) -> dict:
         filled = await asyncio.to_thread(fill_ledger, path, size, prompt_chars=scenario.load.get("prompt_chars", 2000),
                                          reply_tokens=settings.reply_tokens)
         standin, provider_url = await start_standin(settings, folder)
-        port = free_port()
-        proxy = Child([sys.executable, "-m", "tine", "serve", "--host", "127.0.0.1", "--port", str(port)],
-                      env=child_environment({**proxy_settings(shadowing, provider_url, str(policies)),
-                                             "TINE_LEDGER_PATH": str(path)}), log=folder / "proxy.log")
-        proxy_url = f"http://127.0.0.1:{port}"
+        proxy = None
         try:
             begun = time.monotonic()
-            await wait_ready(proxy_url, proxy, 120.0, "The proxy")
+            proxy, proxy_url = await start_proxy(proxy_settings(shadowing, provider_url, str(policies)), path,
+                                                 folder / "proxy.log", 120.0)
             startup = time.monotonic() - begun
             tenant = Client(proxy_url)
             asked = scenario.load.get("requests", 40)
@@ -1596,9 +1964,9 @@ async def ledger_growth(scenario: Scenario, workdir: Path) -> dict:
                 await report
             stats = ledger_stats(path)
         finally:
-            process = await asyncio.to_thread(proxy.stop)
+            process = await asyncio.to_thread(proxy.stop) if proxy is not None else None
             await asyncio.to_thread(standin.stop)
-        slowest = max(range(len(one_by_one)), key=one_by_one.__getitem__) if one_by_one else None
+        slowest =max(range(len(one_by_one)), key=one_by_one.__getitem__) if one_by_one else None
         entry = {
             "rows_filled": size, "fill": filled, "proxy_startup_seconds": round(startup, 2),
             "requests_one_at_a_time": {"latency_ms": summary["latency_ms"], "statuses": summary["statuses"],
@@ -1606,9 +1974,9 @@ async def ledger_growth(scenario: Scenario, workdir: Path) -> dict:
                                        "second_ms": one_by_one[1] if len(one_by_one) > 1 else None,
                                        "slowest_ms": one_by_one[slowest] if one_by_one else None,
                                        "slowest_was_request_number": slowest},
-            "savings": {key: value for key, value in savings.items() if key != "body"},
-            "shadow": {key: value for key, value in shadow.items() if key != "body"},
-            "request_ms_while_savings_report_runs": behind,
+            "ledger_report": {key: value for key, value in savings.items() if key != "body"},
+            "shadow_report": {key: value for key, value in shadow.items() if key != "body"},
+            "request_ms_while_ledger_report_runs": behind,
             "ledger": stats, "proxy_process": process, "busy_machine": summary["busy_machine"],
         }
         out.append(entry)
@@ -1621,10 +1989,10 @@ async def ledger_growth(scenario: Scenario, workdir: Path) -> dict:
             notes.append(BUSY)
         timed = entry["requests_one_at_a_time"]
         median = (timed["latency_ms"] or {}).get("p50")
-        waited = max(entry["request_ms_while_savings_report_runs"], default=0.0)
+        waited = max(entry["request_ms_while_ledger_report_runs"], default=0.0)
         if median and waited > 5 * median + 10:
-            notes.append(f"At {entry['rows_filled']:,} rows GET /v1/savings took {entry['savings'].get('median_ms')} ms "
-                         f"and GET /v1/shadow {entry['shadow'].get('median_ms')} ms; a request sent while the savings "
+            notes.append(f"At {entry['rows_filled']:,} rows GET /v1/savings took {entry['ledger_report'].get('median_ms')} ms "
+                         f"and GET /v1/shadow {entry['shadow_report'].get('median_ms')} ms; a request sent while the savings "
                          f"report was being made took {waited} ms against a median of {median} ms. The reports read "
                          "the tenant's whole table on the proxy's one event loop, so nothing else is answered meanwhile")
         if median and timed["slowest_ms"] > 10 * median + 20:
@@ -1633,7 +2001,9 @@ async def ledger_growth(scenario: Scenario, workdir: Path) -> dict:
                          "after a start reads every stored shadow row of the tenant, also on the event loop")
     return {"scenario": scenario.name, "about": scenario.about, "caveat": CAVEAT, "machine": machine(),
             "busy_machine": any(entry["busy_machine"] for entry in out),
-            "settings": {"standin": asdict(settings), "shadow_sample_rate": 1.0, "sizes": list(scenario.sizes)},
+            "settings": {"standin": asdict(settings), "shadow_sample_rate": 1.0, "sizes": list(scenario.sizes),
+                         "prompt_chars": scenario.load.get("prompt_chars", Load.prompt_chars),
+                         "reply_tokens": settings.reply_tokens},
             "sizes": out, "observations": notes}
 
 
@@ -1658,13 +2028,26 @@ def scenarios(*, quick: bool = False, soak_seconds: float = 300.0, soak_rate: fl
     real = {"latency_ms": ms(1500), "latency_spread_ms": ms(1000)}
     medium = {"latency_ms": ms(300), "latency_spread_ms": ms(300)}
     out = [Scenario(
-        f"a-passthrough-instant-{n}", f"Pass-through, instant replies, {n} in flight: the proxy's own overhead"
-        + (" and its ceiling" if n >= 50 else ""), provider=instant, rounds=rounds,
+        f"a-passthrough-instant-{n}", f"Pass-through, instant replies, {n} in flight: "
+        + ("the proxy's own overhead per request" if n == 1 else
+           "the proxy's ceiling (kept saturated, so latency here is time queueing, not per-request overhead)"),
+        provider=instant, rounds=rounds,
         load={"in_flight": n, "duration": lasting(10), "warmup_seconds": warm}) for n in (1, 10, 50, 200)]
+    # The proxy parses each body, writes it to the ledger and fingerprints it, so its
+    # work grows with the request. Agent traffic sends tens to hundreds of kilobytes.
+    out += [Scenario(
+        f"a-bigprompt-{chars // 1000}k-instant-1", f"Pass-through, prompts of {chars:,} characters, instant replies, "
+        "1 in flight: the proxy's own overhead per request at that size", provider=instant, rounds=rounds,
+        load={"in_flight": 1, "duration": lasting(10), "warmup_seconds": warm, "prompt_chars": chars})
+        for chars in (50_000, 200_000)]
     out += [Scenario(
         f"b-passthrough-realistic-{n}", f"Pass-through, replies of about 2 s (1.5 to 2.5), {n} in flight",
         provider=real, rounds=rounds, load={"in_flight": n, "duration": lasting(seconds, 2500), "warmup_seconds": warm})
         for n, seconds in ((10, 40), (50, 30))]
+    out.append(Scenario(
+        "b-bigprompt-200k-10", "Pass-through, prompts of 200,000 characters, replies of 0.3 to 0.6 s, 10 in flight",
+        provider=medium, rounds=rounds,
+        load={"in_flight": 10, "duration": lasting(20, 600), "warmup_seconds": warm, "prompt_chars": 200_000}))
     out += [
         Scenario("c-streams-instant", "Streams with no provider delay, 10 in flight: what relaying a stream costs",
                  provider={**instant, "chunks": 20}, rounds=rounds,
@@ -1673,6 +2056,10 @@ def scenarios(*, quick: bool = False, soak_seconds: float = 300.0, soak_rate: fl
                  "20 in flight: time to first byte and total", provider={**real, "ttfb_ms": ms(400), "chunks": 150},
                  rounds=rounds,
                  load={"in_flight": 20, "duration": lasting(30, 2500), "warmup_seconds": warm, "stream_share": 1.0}),
+        Scenario("c-streams-long-reply", "Streams of about 2 s carrying a reply of 2,000 words in 400 events, 20 in "
+                 "flight: what a long streamed reply costs the proxy",
+                 provider={**real, "ttfb_ms": ms(400), "chunks": 400, "reply_tokens": 2000}, rounds=rounds,
+                 load={"in_flight": 20, "duration": lasting(30, 2500), "warmup_seconds": warm, "stream_share": 1.0}),
     ]
     policy_load = {"in_flight": 20, "duration": lasting(20, 600), "warmup_seconds": warm}
     out += [Scenario(
@@ -1680,6 +2067,11 @@ def scenarios(*, quick: bool = False, soak_seconds: float = 300.0, soak_rate: fl
         + (" (the policy loaded, nothing sampled: the baseline for the two below)" if not rate else "")
         + ", replies of 0.3 to 0.6 s, 20 in flight", provider=medium, rounds=rounds, load=policy_load,
         mode="shadow", sample_rate=rate) for rate in (0.0, 0.1, 1.0)]
+    out.append(Scenario(
+        "d-shadow-rate-limited", "Shadow mode at sample rate 1.0 while the provider refuses 5% of calls with 429 or "
+        "529: shows shadow mode pausing itself after a refusal. Its timings are not shadow mode's overhead",
+        provider={**medium, "error_share": 0.05, "error_statuses": (429, 529)}, rounds=rounds, load=policy_load,
+        mode="shadow", sample_rate=1.0))
     out += [Scenario(
         f"e-route-agree-{share}", f"Live routing through the synthetic agreement policy: the cheaper models agree on "
         f"{share:.0%} of prompts, 10% of requests held out for the frontier, replies of 0.3 to 0.6 s, 20 in flight",
@@ -1696,6 +2088,12 @@ def scenarios(*, quick: bool = False, soak_seconds: float = 300.0, soak_rate: fl
         + " and ".join(f"{size:,}" for size in ledger_sizes) + " rows (filled directly through tine.ledger.Ledger, "
         "not through the proxy)", provider=instant, kind="ledger", sizes=tuple(ledger_sizes),
         load={"requests": 20 if quick else 60}))
+    large = (100,) if quick else (2_000,)
+    out.append(Scenario(
+        "g-ledger-large-rows", "The same on a ledger already holding " + " and ".join(f"{size:,}" for size in large)
+        + " rows of agent size: prompts of 50,000 characters and replies of 2,000 words",
+        provider={**instant, "reply_tokens": 2000}, kind="ledger", sizes=large,
+        load={"requests": 20 if quick else 60, "prompt_chars": 50_000}))
     out.append(Scenario(
         "h-soak", f"A soak: {soak_seconds:.0f} s through the proxy at a steady {soak_rate:g} requests a second (open "
         "loop), half of them reporting an outcome, with latency per stretch and memory and ledger size sampled",
@@ -1713,18 +2111,30 @@ def scenarios(*, quick: bool = False, soak_seconds: float = 300.0, soak_rate: fl
                  timeout_seconds=ms(3000) / 1000,
                  load={"in_flight": 400, "duration": lasting(25, 4000), "warmup_seconds": warm}),
     ]
+    if quick:
+        for scenario in out:
+            scenario.unloaded_seconds = 1.0
     return out
 
 
 CSV_COLUMNS = (
-    "scenario", "mode", "in_flight", "rate_rps", "stream_share", "ledger_rows_filled", "rounds", "busy_machine",
+    "scenario", "mode", "in_flight", "rate_rps", "stream_share", "prompt_chars", "reply_tokens",
+    "ledger_rows_filled", "rounds", "busy_machine",
     "direct_rps", "proxy_rps", "throughput_ratio", "direct_p50_ms", "proxy_p50_ms", "direct_p99_ms", "proxy_p99_ms",
-    "proxy_max_ms", "added_p50_ms", "added_p50_min_ms", "added_p50_max_ms", "added_p95_ms", "added_p99_ms",
-    "added_ttfb_p50_ms", "added_ttfb_p95_ms", "proxy_statuses", "proxy_client_errors", "relayed_bytes_different",
+    "proxy_max_ms",
+    # What the proxy added and how that was worked out (see BASES). Blank under routing,
+    # where only the holdout_ columns are the proxy's overhead.
+    "added_basis", "added_p50_ms", "added_p50_min_ms", "added_p50_max_ms", "added_p95_ms", "added_p99_ms",
+    "added_ttfb_p50_ms", "added_ttfb_p95_ms", "added_is_queueing_at_saturation",
+    "added_by_percentiles_p50_ms", "added_paired_p50_ms", "added_paired_p95_ms",
+    "direct_over_planned_p50_ms", "direct_alone_over_planned_p50_ms", "direct_saturated",
+    "holdout_requests", "holdout_added_p50_ms", "holdout_added_p95_ms", "route_p50_ms",
+    "proxy_statuses", "proxy_client_errors", "relayed_bytes_different",
     "proxy_peak_rss_mb", "proxy_cpu_ms_per_request", "proxy_cpu_share", "upstream_requests", "upstream_connections",
     "ledger_rows", "ledger_bytes", "savings_ms", "shadow_ms",
-    "request_ms_while_report_runs", "shadow_coverage", "shadow_skipped_busy", "x_tine_route", "load_average_start",
-    "load_average_end", "observations")
+    "request_ms_while_report_runs", "shadow_coverage", "shadow_skipped_busy", "shadow_skipped_rate_limited",
+    "shadow_skipped_rate_cap", "shadow_skipped_stopped", "shadow_rate_limited_runs", "x_tine_route",
+    "load_average_start", "load_average_end", "observations")
 
 
 def csv_rows(result: dict) -> list[dict]:
@@ -1739,6 +2149,7 @@ def csv_rows(result: dict) -> list[dict]:
     if "sizes" in result:
         return [{
             "scenario": f"{result['scenario']}-{entry['rows_filled']}", "mode": "shadow", "in_flight": 1,
+            "prompt_chars": result["settings"]["prompt_chars"], "reply_tokens": result["settings"]["reply_tokens"],
             "ledger_rows_filled": entry["rows_filled"], "busy_machine": entry["busy_machine"],
             "proxy_p50_ms": (entry["requests_one_at_a_time"]["latency_ms"] or {}).get("p50"),
             "proxy_p99_ms": (entry["requests_one_at_a_time"]["latency_ms"] or {}).get("p99"),
@@ -1747,19 +2158,43 @@ def csv_rows(result: dict) -> list[dict]:
             "proxy_peak_rss_mb": megabytes(entry["proxy_process"]),
             "ledger_rows": (entry["ledger"] or {}).get("rows", {}).get("requests"),
             "ledger_bytes": (entry["ledger"] or {}).get("bytes"),
-            "savings_ms": entry["savings"].get("median_ms"), "shadow_ms": entry["shadow"].get("median_ms"),
-            "request_ms_while_report_runs": max(entry["request_ms_while_savings_report_runs"], default=None),
+            "savings_ms": entry["ledger_report"].get("median_ms"),
+            "shadow_ms": entry["shadow_report"].get("median_ms"),
+            "request_ms_while_report_runs": max(entry["request_ms_while_ledger_report_runs"], default=None),
             "load_average_start": result["machine"]["load_average"][0],
             "observations": len(result["observations"])} for entry in result["sizes"]]
     direct, proxy, load = result["direct"], result["proxy"], result["settings"]["load"]
 
     def middle(value: dict | None, name: str = "median"):
         return value[name] if value else None
-    added, first = result["added_latency_ms"], result["added_ttfb_ms"]
+    routed = result["settings"]["mode"] == "route"
+    blank = {"p50": None, "p95": None, "p99": None}
+    # Under routing the headline is from holdout requests only: it goes in its own columns.
+    added, first = (blank, blank) if routed else (result["added_latency_ms"], result["added_ttfb_ms"])
+    held = result["added_latency_ms"] if routed else blank
+    by_route = (result["routing"] or {}).get("latency_by_route_ms") or {}
+    standin = result["settings"]["standin"]
+    queueing = (not routed and load.get("rate") is None and (load.get("in_flight") or 1) > 1
+                and not (standin["latency_ms"] or standin["latency_spread_ms"] or standin["ttfb_ms"]
+                         or standin["slow_share"]))
+    planned = result["over_planned_ms"]
+    percentiles = (result["added_by_percentiles_ms"] or {}).get("latency_ms") or blank
+    pairs = (result["added_paired_ms"] or {}).get("latency_ms") or blank
     return [{
         "scenario": result["scenario"], "mode": result["settings"]["mode"], "in_flight": load.get("in_flight"),
         "rate_rps": load.get("rate"), "stream_share": load.get("stream_share", 0.0),
+        "prompt_chars": result["settings"]["prompt_chars"], "reply_tokens": result["settings"]["reply_tokens"],
         "rounds": result["settings"]["rounds"], "busy_machine": result["busy_machine"],
+        "added_basis": result["added_latency_basis"]["name"], "added_is_queueing_at_saturation": queueing,
+        "added_by_percentiles_p50_ms": middle(percentiles["p50"]),
+        "added_paired_p50_ms": middle(pairs["p50"]), "added_paired_p95_ms": middle(pairs["p95"]),
+        "direct_over_planned_p50_ms": middle(planned["direct"]["p50"]),
+        "direct_alone_over_planned_p50_ms": middle(
+            (planned["direct_one_request_at_a_time"] or {}).get("over_planned_ms"), "p50"),
+        "direct_saturated": result["direct_saturated"],
+        "holdout_requests": (by_route.get("holdout") or {}).get("requests") if routed else None,
+        "holdout_added_p50_ms": middle(held["p50"]), "holdout_added_p95_ms": middle(held["p95"]),
+        "route_p50_ms": " ".join(f"{via}:{middle(figures['latency_p50'])}" for via, figures in by_route.items()),
         "direct_rps": middle(direct["throughput_rps"]), "proxy_rps": middle(proxy["throughput_rps"]),
         "throughput_ratio": middle(result["throughput_ratio"]),
         "direct_p50_ms": middle(direct["latency_ms"], "p50"), "proxy_p50_ms": middle(proxy["latency_ms"], "p50"),
@@ -1780,10 +2215,12 @@ def csv_rows(result: dict) -> list[dict]:
         "upstream_connections": result["upstream"]["connections_opened"],
         "ledger_rows": ((result["ledger"] or {}).get("rows") or {}).get("requests"),
         "ledger_bytes": (result["ledger"] or {}).get("bytes"),
-        "savings_ms": result["report_endpoints"]["savings"].get("median_ms"),
-        "shadow_ms": result["report_endpoints"]["shadow"].get("median_ms"),
+        "savings_ms": result["report_endpoints"]["ledger_report"].get("median_ms"),
+        "shadow_ms": result["report_endpoints"]["shadow_report"].get("median_ms"),
         "shadow_coverage": (result["shadow"] or {}).get("shadow_coverage"),
-        "shadow_skipped_busy": (result["shadow"] or {}).get("skipped_busy"),
+        **{f"shadow_{name}": (result["shadow"] or {}).get(name)
+           for name in ("skipped_busy", "skipped_rate_limited", "skipped_rate_cap", "skipped_stopped",
+                        "rate_limited_runs")},
         "x_tine_route": compact((result["routing"] or {}).get("x_tine_route")),
         "load_average_start": result["machine"]["load_average"][0],
         "load_average_end": result["machine"]["load_average_end"][0],
@@ -1925,6 +2362,8 @@ def main(argv=None) -> None:
     provider = commands.add_parser("provider", help="Run the stand-in provider")
     provider.add_argument("--host", default="127.0.0.1")
     provider.add_argument("--port", type=int, default=PORTS[0] + 1)
+    provider.add_argument("--instance", default="", help="a word GET /health gives back, to tell this server from "
+                                                         "another on the same port")
     provider.add_argument("--ceiling", type=float, metavar="SECONDS",
                           help="measure how fast the stand-in is (buffered, then streamed), print it and exit")
     add_standin_arguments(provider)
@@ -1943,6 +2382,9 @@ def main(argv=None) -> None:
     both.add_argument("--audit-rate", type=float, default=0.0, help="routing: TINE_AUDIT_RATE, the frontier holdout")
     both.add_argument("--proxy-timeout", type=float, help="TINE_TIMEOUT_SECONDS (the proxy's default is 30)")
     both.add_argument("--rounds", type=int, default=3, help="direct and proxied runs alternate this many times")
+    both.add_argument("--unloaded-seconds", type=float, default=3.0,
+                      help="with several in flight: first ask the stand-in one request at a time for this long, to "
+                           "tell whether the direct side queues under the load (0: skip)")
     both.add_argument("--base-url", help="measure a proxy that is already running (a container) instead of starting "
                                          "one; the docker run line it must be started with is printed")
     both.add_argument("--image", default="tine-proxy:dev", help="the image named in the printed docker run line")
@@ -1950,6 +2392,9 @@ def main(argv=None) -> None:
     both.add_argument("--provider-port", type=int, help="the stand-in's port (default: a free one in 18000-18999)")
     both.add_argument("--wait-seconds", type=float, default=180.0, help="with --base-url: wait this long for the proxy")
     both.add_argument("--ledger", type=Path, help="with --base-url: the proxy's ledger file, if this machine can read it")
+    both.add_argument("--mount-ledger", action="store_true",
+                      help="with --base-url: the printed docker run line mounts WORKDIR/data at /data and keeps the "
+                           "ledger there, so that its size and rows are in the result (use --workdir and --keep)")
     both.add_argument("--sample-seconds", type=float, help="sample the proxy's memory and ledger size this often")
     both.add_argument("--window-seconds", type=float, help="also report latency per stretch of this many seconds")
     both.add_argument("--output", type=Path, help="also write the result here")
@@ -1973,13 +2418,15 @@ def main(argv=None) -> None:
 
     args = parser.parse_args(argv)
     raise_file_limit()
+    if args.command != "provider" or args.ceiling:
+        stop_on_signals()
 
     if args.command == "provider":
         if args.ceiling:
             with tempfile.TemporaryDirectory(prefix="tine-load-") as folder:
                 print(json.dumps(asyncio.run(ceiling(args.ceiling, Path(folder))), indent=2))
             return
-        asyncio.run(serve_standin(standin_from(args), args.host, args.port))
+        asyncio.run(serve_standin(standin_from(args), args.host, args.port, args.instance))
         return
 
     if args.command == "run":
@@ -2003,11 +2450,16 @@ def main(argv=None) -> None:
                 args.name, "One scenario from the command line", provider=asdict(standin_from(args)),
                 load=load_from(args), mode=args.mode, sample_rate=args.sample_rate if args.mode == "shadow" else 0.0,
                 audit_rate=args.audit_rate, timeout_seconds=args.proxy_timeout, rounds=args.rounds,
-                sample_seconds=args.sample_seconds, window_seconds=args.window_seconds)
+                sample_seconds=args.sample_seconds, window_seconds=args.window_seconds,
+                unloaded_seconds=args.unloaded_seconds)
             Load(**{**scenario.load, "base_url": "http://check"}).check()
-            result = asyncio.run(compare(
-                scenario, workdir, base_url=args.base_url, provider_host=args.provider_host,
-                provider_port=args.provider_port, ledger=args.ledger, wait_seconds=args.wait_seconds, image=args.image))
+            try:
+                result = asyncio.run(compare(
+                    scenario, workdir, base_url=args.base_url, provider_host=args.provider_host,
+                    provider_port=args.provider_port, ledger=args.ledger, wait_seconds=args.wait_seconds,
+                    image=args.image, mount_ledger=args.mount_ledger))
+            except RuntimeError as error:  # a server that did not start, or was not ours: said plainly
+                raise SystemExit(f"load_test: {error}") from None
             if args.output:
                 args.output.write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(brief(result), indent=2))
