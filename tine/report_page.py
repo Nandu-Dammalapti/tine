@@ -10,7 +10,9 @@ The page adds almost no arithmetic of its own. Every cost, saving and share is o
 reports computed, so the page cannot disagree with ``GET /v1/savings`` or
 ``GET /v1/shadow``. The exceptions are differences of counts the reports already hold
 (accepted answers that were not compared, confirmed successes outside the measured
-saving, and those of them outside the estimated figure too) and 1 - delta.
+saving, and those of them outside the estimated figure too), 1 - delta, and the upper
+bound on a policy file's drift baseline, worked out by the function the drift check
+itself uses (``tine.shadow.drift_allowance``).
 
 A saving measured against the frontier model's measured cost is never mixed with one
 whose baseline was estimated: the ledger reports them apart and so does the page. Under
@@ -30,7 +32,9 @@ Four rules it holds to:
   carried word for word into the last section.
 - No percentage is rounded in the policy's favour. Savings and shares are rounded
   down, the loss bound and the observed loss are rounded up. Dollar amounts are
-  rounded to the nearest shown digit.
+  rounded to the nearest shown digit. So are the share of differing answers the drift
+  check allows for and its parts, which are not results: they are shown as the drift
+  check's own sentence on the same page shows them.
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
-from tine.policy import FREEZE_EDITED, freeze_state
+from tine.policy import BUILT_IN_CHECKS, DRIFT_BASELINE_MAX_TASKS, FREEZE_EDITED, freeze_state
+from tine.shadow import DRIFT_DEFAULT_ALLOWANCE, drift_allowance
 
 NOT_KNOWN = "not known"
 SMALLEST_SHOWN_USD = 1e-6
@@ -350,6 +355,55 @@ def _drift_warning(shadow: dict | None) -> str | None:
     return warning.strip() if _shadow_has_data(shadow) and isinstance(warning, str) and warning.strip() else None
 
 
+def _drift_notice(shadow: dict | None) -> str | None:
+    """The shadow report's notice that accepted answers differ more often than on the
+    graded tasks, short of a warning."""
+    notice = _get(shadow, "drift_notice")
+    return notice.strip() if _shadow_has_data(shadow) and isinstance(notice, str) and notice.strip() else None
+
+
+def _drift_allowance(shadow: dict) -> str | None:
+    """The share of differing answers the drift check allows for, and what it is made
+    of, from the report's own fields. None for a report that states none: one saved
+    before the field existed, or one whose check had no quality limit to go by."""
+    if _number(shadow.get("drift_allowance")) is None:
+        return None
+    baseline = shadow.get("drift_baseline")
+    if isinstance(baseline, dict):
+        added = (f"{percent(baseline.get('upper'), digits=2)} for answers that differed without a loss on "
+                 f"{count(baseline.get('tasks'))} graded tasks")
+    else:
+        added = f"a default {percent(DRIFT_DEFAULT_ALLOWANCE, digits=2)} (the policy file records no baseline)"
+    among = (f"; {percent(shadow.get('drift_allowance_accepted'), digits=2)} of accepted answers"
+             if _number(shadow.get("drift_allowance_accepted")) is not None else "")
+    return (f"{percent(shadow.get('drift_allowance'), digits=2)} of requests: the quality limit of "
+            f"{percent(shadow.get('drift_epsilon'), digits=2)} plus {added}{among}")
+
+
+def _drift_baseline_words(policy: dict, shadow: dict | None = None) -> str | None:
+    """What a policy file records for the drift check, as a sentence. None when the
+    shadow report beside it was saved before the check used a baseline: the sentence
+    would describe a check that report was not made with."""
+    stages = policy.get("stages") if isinstance(policy.get("stages"), list) else []
+    if not any(isinstance(stage, dict) and stage.get("check") in BUILT_IN_CHECKS for stage in stages):
+        return ("This policy's answers are accepted by a named check and are never compared with the frontier "
+                "model's, so it has no drift check.")
+    if isinstance(shadow, dict) and "drift_check" in shadow and "drift_basis" not in shadow:
+        return None
+    baseline = policy.get("drift_baseline")
+    harmless, tasks = (_whole(_get(baseline, name)) for name in ("differing_not_lost", "tasks"))
+    if harmless is None or not tasks or not 0 <= harmless <= tasks or tasks > DRIFT_BASELINE_MAX_TASKS:
+        return ("This policy file records no drift baseline, so the drift check uses a default allowance of "
+                f"{DRIFT_DEFAULT_ALLOWANCE * 100:g} points and shows only large changes.")
+    parts = baseline.get("parts")
+    named = (" and ".join(parts) if isinstance(parts, list) and parts and all(isinstance(part, str) for part in parts)
+             else "graded")
+    upper = drift_allowance(0.0, {"tasks": tasks, "differing_not_lost": harmless})["drift_baseline"]["upper"]
+    return (f"When the policy was frozen, {count(harmless)} of its {count(tasks)} {_esc(named)} tasks had an accepted "
+            "answer that differed from the frontier model's without being a loss; the drift check allows for up to "
+            f"{percent(upper, digits=2)} on top of the quality limit.")
+
+
 def _live_headline(ledger: dict, shadow: dict | None) -> list[str]:
     clause = _saving_clause(ledger.get("verified_savings_usd"), ledger.get("savings_fraction"),
                             word="net saving", against="the baseline")
@@ -590,10 +644,17 @@ def _shadow_section(shadow: dict | None) -> str:
             differing = (f"{differing} ({percent(shadow.get('accepted_differing_from_frontier_share'), rounding='up')}"
                          " of those compared)")
         check = shadow.get("drift_check")
+        allowed = _drift_allowance(shadow)
+        other, several = _whole(shadow.get("drift_other_policy_requests")), shadow.get("drift_policies")
         pairs += [
             ("Accepted answers that differ from the frontier model's", differing),
-            ("Checked against the policy's quality limit",
-             _esc(check) if isinstance(check, str) and check.strip() else NOT_KNOWN),
+            *([("Differing share the certification allows for", allowed)] if allowed else []),
+            # Which requests the check below counted, when it is not all of them.
+            *([("Drift check is for the policy on", _esc(shadow.get("drift_policy")))]
+              if isinstance(several, dict) and isinstance(shadow.get("drift_policy"), str) else []),
+            *([("Requests run with another policy, left out of the drift check", count(other)),
+               ("Requests the drift check counted", count(shadow.get("drift_requests")))] if other else []),
+            ("Drift check", _esc(check) if isinstance(check, str) and check.strip() else NOT_KNOWN),
         ]
     pairs += [
         ("What shadow mode itself cost, on calls with a known cost", _shadow_spend(shadow)),
@@ -610,6 +671,8 @@ def _shadow_section(shadow: dict | None) -> str:
                if saving is not None and saving < 0 else "")
     if _drift_warning(shadow):
         warning += f'<p class="warn">{_esc(_drift_warning(shadow))}</p>'
+    elif _drift_notice(shadow):
+        warning += f'<p class="warn">{_esc(_drift_notice(shadow))}</p>'
     coverage = _coverage_sentence(shadow)
     if coverage:
         warning += f'<p class="warn">{_esc(coverage)}</p>'
@@ -812,7 +875,7 @@ def _guarantee_rows(guarantee: dict, frozen: str) -> list[tuple[str, str]]:
     ]
 
 
-def _policy_section(policy: dict | None) -> str:
+def _policy_section(policy: dict | None, shadow: dict | None = None) -> str:
     if not isinstance(policy, dict):
         return ""
     stages = policy.get("stages") if isinstance(policy.get("stages"), list) else []
@@ -854,6 +917,9 @@ def _policy_section(policy: dict | None) -> str:
                      f"{percent(estimate.get('savings'), rounding='down')}. "
                      "That is an offline estimate from recorded answers, not a measurement of this tenant's "
                      "traffic.</p>")
+    drift_words = _drift_baseline_words(policy, shadow) if stages else None
+    if drift_words:
+        parts.append(f'<p class="small">{drift_words}</p>')
     return "".join(parts) + "</section>"
 
 
@@ -1022,7 +1088,8 @@ def render(ledger_report: dict | None, shadow_report: dict | None, *, tenant: st
     alarmed = f'<p class="alarm" role="alert"><strong>Warning.</strong> {_esc(alarm)}</p>' if alarm else ""
     first, *rest = sentences
     lead = f'<p class="lead">{_esc(" ".join(rest))}</p>' if rest else ""
-    sections = (_shadow_section(shadow_report), _ledger_section(ledger_report), _policy_section(policy),
+    sections = (_shadow_section(shadow_report), _ledger_section(ledger_report),
+                _policy_section(policy, shadow_report),
                 _limits_section(ledger_report, shadow_report, policy))
     return (
         '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">'

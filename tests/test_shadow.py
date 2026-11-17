@@ -537,43 +537,73 @@ def shadow_rows(store, matching, differing, not_accepted=0):
 
 def test_too_many_answers_that_differ_from_the_frontier_cannot_confirm_the_certification():
     store = ShadowStore(Ledger())
-    shadow_rows(store, matching=18, differing=12, not_accepted=10)  # cheap models agreeing on wrong answers
+    shadow_rows(store, matching=16, differing=14, not_accepted=10)  # cheap models agreeing on wrong answers
     report = store.report("a", epsilon=0.02)
-    assert report["accepted_differing_from_frontier"] == 12 and report["accepted_differing_from_frontier_share"] == 0.4
+    assert report["accepted_differing_from_frontier"] == 14
+    assert report["accepted_differing_from_frontier_share"] == pytest.approx(14 / 30)
+    # No policy file was given, so there is no baseline: the limit plus the default ten points.
     assert report["drift_check"] == "warning" and report["drift_warning"].startswith(
-        "Cannot confirm the certification on this traffic: 12 of 30 accepted cheaper answers differ from the "
-        "frontier model's answer, 30.00% of the 40 shadowed requests whose answer was compared with the frontier's "
-        "or sent to the frontier, more than the policy's quality limit of 2.00%.")
-    assert (report["drift_requests"], report["drift_share"]) == (40, 0.3)
-    assert store.report("a")["drift_warning"] is None and store.report("a")["drift_check"].startswith("not checked:")
-    assert store.report("a", epsilon=0.5)["drift_check"].startswith("within the limit: 12 of 30")
+        "Cannot confirm the certification on this traffic: 14 of 30 accepted cheaper answers differ from the "
+        "frontier model's answer, 35.00% of the 40 shadowed requests the policy was run on. That is clearly more "
+        "than 12.00%: the quality limit of 2.00% plus a default 10.00%")
+    assert (report["drift_requests"], report["drift_share"]) == (40, 0.35)
+    assert (report["drift_basis"], report["drift_baseline"]) == ("default", None)
+    assert report["drift_allowance"] == pytest.approx(0.12) and report["drift_evidence_needed"] == 20.0
+    # Half of the evidence is the share of requests' (66.1 alone); the other half is that of
+    # the share of accepted answers, against a default third.
+    assert report["drift_allowance_accepted"] == 1 / 3 and report["drift_evidence"] == pytest.approx(33.3, rel=0.01)
+    assert report["drift_scope"] == {"requests": 40, "compared": 30, "differing": 14, "latest": False,
+                                     "among": "requests"}
+    assert (report["drift_differing"], report["drift_compared"]) == (14, 30)
+    assert (report["drift_policy"], report["drift_policies"], report["drift_other_policy_requests"]) == (None,) * 3
+    unchecked = store.report("a")
+    assert unchecked["drift_warning"] is None and unchecked["drift_check"].startswith("not checked:")
+    assert unchecked["drift_allowance"] is None and unchecked["drift_evidence"] is None
+    assert store.report("a", epsilon=0.5)["drift_check"].startswith("rough check, no warning: 14 of 30")
     few = ShadowStore(Ledger())
     shadow_rows(few, matching=10, differing=19)
     assert few.report("a", epsilon=0.02)["drift_warning"] is None
     assert few.report("a", epsilon=0.02)["drift_check"] == ("not checked yet: 29 accepted answers compared with the "
                                                             "frontier's, 30 needed")
+    assert few.report("a", epsilon=0.02)["drift_evidence"] is None  # the allowance is known, nothing is weighed
+    assert few.report("a", epsilon=0.02)["drift_allowance"] == pytest.approx(0.12)
     assert few.report("a", epsilon=0.02, min_compared=29)["drift_check"] == "warning"
+    # 12 of 30 over 40 requests, which the plain comparison with epsilon warned on, is
+    # not clearly above the default level.
+    fewer = ShadowStore(Ledger())
+    shadow_rows(fewer, matching=18, differing=12, not_accepted=10)
+    report = fewer.report("a", epsilon=0.02)
+    assert report["drift_warning"] is None and report["drift_evidence"] == pytest.approx(3.16, rel=0.01)
+    for bad in (0, 1, -0.1, 1.5, True, "0.02"):
+        with pytest.raises(ValueError, match="epsilon"):
+            fewer.report("a", epsilon=bad)
 
 
 def test_differing_answers_are_counted_over_all_the_traffic_the_limit_is_about():
     """Epsilon bounds the loss over all tasks, and a request sent to the frontier loses
-    nothing. 4 differing answers among 50 accepted of 100 shadowed requests are at most
-    4% of the traffic, within a 5% limit, though they are 8% of the accepted answers."""
+    nothing. 4 differing answers among 50 accepted of 100 shadowed requests are 4% of
+    the traffic, though they are 8% of the accepted answers."""
     store = ShadowStore(Ledger())
     shadow_rows(store, matching=46, differing=4, not_accepted=50)
     report = store.report("a", epsilon=0.05)
     assert report["accepted_differing_from_frontier_share"] == 0.08 and report["drift_share"] == 0.04
     assert report["drift_warning"] is None and report["drift_check"] == (
-        "within the limit: 4 of 50 accepted answers differ from the frontier's, 4.00% of the 100 shadowed requests "
-        "whose answer was compared with the frontier's or sent to the frontier, at most the policy's quality limit "
-        "of 5.00%")
-    assert store.report("a", epsilon=0.03)["drift_check"] == "warning"
-    # Accepted answers that were not compared (a code check) cannot be told either way: left out.
+        "rough check, no warning: 4 of 50 accepted answers differ from the frontier's, 4.00% of the 100 shadowed "
+        "requests the policy was run on. That is not clearly above 15.00%: the quality limit of 5.00% plus a default "
+        "10.00%, used because this policy file records no baseline of its own. Of the accepted answers alone 8.00% "
+        "differ, against 33.33% allowed for. Only a large change shows at this level; freeze the policy again from "
+        "recorded answers to record a baseline")
+    # A differing share just above epsilon is no longer a warning: differing is not the loss.
+    tighter = store.report("a", epsilon=0.03)
+    assert tighter["drift_check"].startswith("rough check, no warning: 4 of 50")
+    assert tighter["drift_evidence"] == pytest.approx(0.064, rel=0.01)
+    # Accepted answers that were not compared (a code check) are requests like the others, and never differ.
     for index in range(20):
         store.record(request_id=f"code{index}", tenant="a", provider="openai", policy=POLICY, frontier_answer="A",
                      frontier_cost_usd=1.0, outcome={"accepted": True, "comparable": False, "stage": 0,
                                                      "served_by": "small-a", "answer": "x", "calls": []})
-    assert store.report("a", epsilon=0.05)["drift_requests"] == 100
+    assert store.report("a", epsilon=0.05)["drift_requests"] == 120
+    assert store.report("a", epsilon=0.05)["drift_compared"] == 50
 
 
 def test_the_shadow_endpoint_checks_differing_answers_against_the_policys_limit():
@@ -583,8 +613,11 @@ def test_the_shadow_endpoint_checks_differing_answers_against_the_policys_limit(
     body = report.json()
     assert body["drift_epsilon"] == 0.02 and body["drift_warning"].startswith(
         "Cannot confirm the certification on this traffic: 30 of 30 accepted cheaper answers")
+    assert (body["drift_policy"], body["drift_policies"], body["drift_other_policy_requests"]) == ("openai", None, 0)
+    assert body["drift_basis"] == "default" and body["drift_evidence"] == 1e12  # capped
     _, report, _ = ask(config(shadow_policies={"a": {"openai": limited}}), serve(SAME, []), count=30)
-    assert report.json()["drift_warning"] is None and report.json()["drift_check"].startswith("within the limit")
+    assert report.json()["drift_warning"] is None
+    assert report.json()["drift_check"].startswith("rough check, no warning")
     # A policy with stages must state its limit (validate_policy), so the endpoint always
     # has one to check against; each tenant's own policy gives it.
     _, report, _ = ask(config(), agree_wrongly, count=30)
@@ -816,3 +849,38 @@ def test_refused_calls_cost_nothing_and_a_webhook_429_is_not_a_provider_refusal(
     # A judge goes to Anthropic, so a shadow run of an OpenAI policy with one waits for both.
     assert _providers_reached("openai", judged, checks) == {"openai", "anthropic"}
     assert _providers_reached("openai", POLICY, checks) == {"openai"}
+
+
+def test_a_proxy_restarted_with_the_policy_frozen_again_keeps_the_drift_warning(tmp_path):
+    """The policy is frozen again to record a drift baseline and the proxy restarts on
+    the same ledger. The new file runs the same way, so its check goes on from the
+    requests of the old one, and the counts on the report agree with each other."""
+    refrozen = {**POLICY, "provenance": {"created": "2026-11-17T10:00:00+00:00"},
+                "drift_baseline": {"tasks": 692, "accepted": 612, "compared": 612, "differing": 16,
+                                   "differing_lost": 9, "differing_not_lost": 7}}
+
+    async def run(policy, answers, count, legacy=False):
+        ledger = Ledger(tmp_path / "ledger.sqlite3")
+        if legacy:  # rows as a proxy stored them before it kept how a policy runs
+            with ledger._db:
+                ledger._db.execute("UPDATE shadow_runs SET policy_chain_sha256=NULL")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(serve(answers, []))) as upstream:
+            app = create_app(config(shadow_policies={"a": {"openai": policy}}), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                for index in range(count):
+                    await client.post("/v1/chat/completions", headers=headers, json={
+                        "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                report = (await client.get("/v1/shadow", headers=headers)).json()
+        ledger.close()
+        return report
+
+    wrong = asyncio.run(run(POLICY, {"frontier": "B", "small-a": "A", "small-b": "A"}, 40))
+    assert wrong["drift_check"] == "warning" and wrong["drift_differing"] == 40
+    # Started once more with the old file, the proxy marks the rows it stored before; then the new file.
+    asyncio.run(run(POLICY, {}, 0, legacy=True))
+    healthy = asyncio.run(run(refrozen, {"frontier": "A", "small-a": "A", "small-b": "A"}, 5))
+    assert healthy["drift_check"] == "warning" and healthy["drift_basis"] == "baseline"
+    assert (healthy["drift_requests"], healthy["drift_differing"], healthy["drift_other_policy_requests"]) == (45, 40, 0)
+    assert (healthy["accepted_differing_from_frontier"], healthy["accepted_matching_frontier"],
+            healthy["accepted_compared_with_frontier"]) == (40, 5, 45)

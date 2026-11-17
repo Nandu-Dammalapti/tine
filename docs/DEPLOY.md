@@ -46,11 +46,14 @@ The container runs `python -m tine serve --host 0.0.0.0 --port 8000` as user 100
 health check calls `GET /health` with the Python standard library. The check ignores `HTTP_PROXY`, so
 it still reaches the loopback address when you give the container an egress proxy.
 
-The proxy does not load numpy, pandas, scikit-learn or matplotlib, although the image holds them for
-`python -m tine freeze-policy`. Outside Docker it was ready 0.3 seconds after it was started.
+The proxy starts without loading numpy, pandas, scikit-learn or matplotlib, although the image holds
+them for `python -m tine freeze-policy`. Outside Docker it was ready 0.3 seconds after it was started.
+The first `GET /v1/shadow` that runs a drift check ([PROXY.md](PROXY.md), The drift check) loads numpy
+and scipy, which work out its bounds, and they stay loaded. It never loads pandas, scikit-learn or
+matplotlib.
 
-The package is all the image holds, so these are the commands to run in the container. Neither loads
-those libraries:
+The package is all the image holds, so these are the commands to run in the container. Neither needs
+those libraries to start:
 
 | Command | Use |
 | --- | --- |
@@ -726,8 +729,11 @@ have done. Shadow calls are real calls on your provider account and cost real mo
 8. **Restart and read the report.** `docker compose up -d --force-recreate` (a changed policy file
    alone does not make plain `up -d` restart the container), then `GET /v1/shadow` with the tenant
    token. `GET /health` shows `"shadow": "sampling"` when it is on. Read each token's acceptance share
-   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed` and `drift_warning`
-   before routing anything.
+   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed`, `drift_check` and
+   `drift_warning` before routing anything. A `drift_check` that starts with `rough check` means the
+   policy file records no drift baseline, so only a large change would show. A `drift_check` of
+   `notice` means accepted answers differ from the frontier's more often than on the graded tasks,
+   within what the certification allows for: grade a sample ([PROXY.md](PROXY.md), The drift check).
 
 What the cap does and does not do:
 
@@ -862,7 +868,7 @@ one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
 `policy_sha256`, `route_stage`, `route_skip_reason`, `checks_json` and `holdout` columns to `requests`,
-`skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
+`skip_reason` and `policy_chain_sha256` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
 - an estimated baseline becomes `estimated`;
@@ -873,6 +879,9 @@ by this rule:
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
 have no `policy_sha256`, `route_stage`, `checks_json` or `holdout`, older shadow runs have no check steps,
 earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
+Older shadow runs have no `policy_chain_sha256`; a proxy that starts with the policy file they were run
+with fills it in, so that the drift check of that policy frozen again still counts them
+([POLICY.md](POLICY.md), The drift baseline).
 
 ## Checked without Docker
 
@@ -946,6 +955,9 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
 - **Import cost.** Importing the proxy took 0.13 to 0.26 seconds and about 50 MB, and loaded none of
   numpy, pandas, scipy, scikit-learn or matplotlib. Before `tine/policy.py` was changed to import them
   only when a policy is frozen, it took 1.8 seconds and 212 MB with matplotlib's cache already built.
+  The drift check added later needs numpy and scipy for its bounds. Measured on a Mac outside Docker,
+  not in the image: the first shadow report with a drift check took 0.34 seconds and raised the
+  process's peak memory from 51 MB to 122 MB; later reports do not pay it again.
 - **Health check.** The Dockerfile's command, with the port changed, exited 0 in 0.04 seconds, exited
   0 with `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` set to a dead address, and exited 1 with nothing
   listening.

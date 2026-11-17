@@ -1145,6 +1145,37 @@ def test_starting_the_proxy_loads_none_of_the_offline_toolkit():
     assert done.stdout.strip() == "[]"
 
 
+def test_a_drift_check_in_the_proxy_loads_numpy_and_scipy_and_no_more_of_the_toolkit():
+    """The drift check's bounds come from scipy, so the first shadow report that runs one
+    loads numpy and scipy in the serving process. It must stop there: pandas,
+    scikit-learn and matplotlib are for freezing a policy."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    probe = (
+        "import sys; import tine.proxy, tine.__main__\n"
+        "from tine.ledger import Ledger\n"
+        "from tine.shadow import ShadowStore\n"
+        "policy = {'version': 1, 'tenant': 'acme', 'task_type': 'quiz', 'frontier': 'big',\n"
+        "          'stages': [{'models': ['small-a', 'small-b'], 'check': 'agreement'}],\n"
+        "          'guarantee': {'certified': True, 'epsilon': 0.04, 'delta': 0.05, 'bound': 0.03},\n"
+        "          'drift_baseline': {'tasks': 692, 'compared': 612, 'differing': 16, 'differing_not_lost': 7}}\n"
+        "store = ShadowStore(Ledger())\n"
+        "accepted = {'accepted': True, 'stage': 0, 'served_by': 'small-a', 'answer': 'A', 'calls': []}\n"
+        "for index in range(42):\n"
+        "    store.record(request_id=f'r{index}', tenant='acme', provider='openai', policy=policy, outcome=accepted,\n"
+        "                 frontier_answer='B' if index < 2 else 'A', frontier_cost_usd=1.0)\n"
+        "before = sorted(name for name in ('numpy', 'scipy') if name in sys.modules)\n"
+        "report = store.report('acme', policies={'policy': policy})\n"
+        "print(before, report['drift_basis'], report['drift_check'].split(':')[0])\n"
+        "print(sorted(name for name in ('pandas', 'sklearn', 'matplotlib') if name in sys.modules))\n")
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert done.returncode == 0, done.stderr[-500:]
+    assert done.stdout.splitlines() == ["[] baseline no clear sign of drift", "[]"]
+
+
 def test_copying_the_ledger_loads_none_of_the_offline_toolkit(tmp_path):
     """``tine backup-ledger`` runs in the container beside the proxy, where /data and
     /tmp are all it can write: like serving, it must not need matplotlib's cache folder."""

@@ -1,0 +1,10 @@
+policy,epsilon,traffic,differing_chance_per_accepted_answer,streams,requests,read_every,share_with_a_warning,share_with_a_warning_or_notice
+MMLU-Pro,0.04,at the allowance,0.0666,300,20000,25,0.016666666666666666,
+MMLU-Pro,0.04,like the graded tasks,0.02614,300,20000,25,0.0,0.0033333333333333335
+MMLU-Pro at 2%,0.02,at the allowance,0.04399,300,20000,25,0.01,
+MMLU-Pro at 2%,0.02,like the graded tasks,0.02614,300,20000,25,0.0,0.0
+FinQA exact,0.04,at the allowance,0.35791,300,20000,25,0.04666666666666667,
+FinQA exact,0.04,like the graded tasks,0.2619,300,20000,25,0.0,0.0
+IT tickets,0.04,at the allowance,0.08003,300,20000,25,0.013333333333333334,
+IT tickets,0.04,like the graded tasks,0.05491,300,20000,25,0.0,0.0
+"no baseline, 88% accepted",0.04,at the allowance,0.15909,300,20000,25,0.013333333333333334,
