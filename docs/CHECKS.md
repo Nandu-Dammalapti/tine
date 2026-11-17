@@ -133,7 +133,11 @@ graded differently, because the group's grade is then not defined by the answer.
 wrong` keeps such data and counts the group as wrong on those tasks; the count is in the report. Use
 it for free-form answers extracted from responses, and say so with the result. `--answers` reads
 extracted answers from a CSV in place of a benchmark folder, and `--include-singles` also offers
-each cheaper model alone with no check, the alternative an agreement check has to beat.
+each cheaper model alone with no check, the alternative an agreement check has to beat. When no
+pair costs at most `--max-cost-share` of the frontier, the script stops and names the cheapest
+pair's share. With `--include-singles` it goes on with the single models that are cheap enough, and
+the report says that no pair was (`no_pair_cheap_enough`, `cheapest_pair_cost_share`). Tested with
+made-up outcomes only.
 
 ### Which candidates chains are built from
 
