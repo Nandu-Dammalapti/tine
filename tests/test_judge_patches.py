@@ -258,3 +258,36 @@ def test_patch_judge_check_accepts_on_the_verdict_or_a_threshold_and_fails_close
         messages = property(lambda self: (_ for _ in ()).throw(ConnectionError()))
     failed = patch_judge_check(Down(), model="claude-haiku-5-5")(good)
     assert failed == {"passed": False, "cost_usd": None, "detail": "ConnectionError"}
+
+
+def test_an_approval_in_an_unfinished_judge_reply_is_not_a_verdict():
+    """The measured judge holds the proxy's rule: only a reply that ended normally and
+    calls no tool can approve. The call is still paid for."""
+    from types import SimpleNamespace as NS
+
+    from tine.judge import judge_once, patch_judge_check
+
+    approval = NS(type="text", text=json.dumps({"verdict": "accept", "probability": 0.95, "reason": "fine"}))
+
+    def client(stop_reason, content):
+        return NS(messages=NS(create=lambda **request: NS(
+            content=content, stop_reason=stop_reason, usage=NS(input_tokens=500, output_tokens=8000))))
+
+    case = {"repository": "o/r", "issue": "i", "patch": "p"}
+    for stop_reason in ("end_turn", "stop_sequence"):
+        assert judge_once(client(stop_reason, [approval]), case, model="claude-haiku-5-5")["verdict"] == "accept"
+        assert patch_judge_check(client(stop_reason, [approval]), model="claude-haiku-5-5")(case)["passed"]
+    for stop_reason in ("max_tokens", "pause_turn", "tool_use", "refusal", None):
+        verdict = judge_once(client(stop_reason, [approval]), case, model="claude-haiku-5-5")
+        assert verdict["verdict"] == "unparsed" and verdict["probability"] is None
+        assert verdict["reason"] == str(stop_reason)
+        assert verdict["cost_usd"] == pytest.approx((500 * 0.10 + 8000 * 0.50) / 1e6)
+        for threshold in (None, 0.5):
+            check = patch_judge_check(client(stop_reason, [approval]), model="claude-haiku-5-5", threshold=threshold)
+            assert check(case) == {"passed": False, "cost_usd": verdict["cost_usd"], "detail": "unparsed"}
+    # A reply that ends normally but carries a tool call beside the approval.
+    for kind in ("tool_use", "server_tool_use"):
+        called = [approval, NS(type=kind, id="t", name="n", input={})]
+        verdict = judge_once(client("end_turn", called), case, model="claude-haiku-5-5")
+        assert verdict["verdict"] == "unparsed" and verdict["reason"] == "tool_use"
+        assert not patch_judge_check(client("end_turn", called), model="claude-haiku-5-5")(case)["passed"]

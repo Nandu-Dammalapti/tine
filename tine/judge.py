@@ -151,8 +151,11 @@ def parse_verdict(text: str) -> dict:
 def judge_once(client, case: dict, *, model: str, effort: str = "medium", max_tokens: int = 8000,
                style: str = "verdict", prices: tuple[float, float] | None = None) -> dict:
     """One judge call on a Claude model. ``case`` needs ``repository``, ``issue`` and
-    ``patch``. Returns the verdict (``unparsed`` for a refusal or a reply with no
-    usable verdict), the tokens the API reported and what the call cost."""
+    ``patch``. Returns the verdict, the tokens the API reported and what the call cost.
+    The verdict is ``unparsed`` for a reply with no usable verdict and for a reply that
+    is not finished: a refusal, one cut off by the token limit, a paused one, or one
+    that calls a tool. An approval read out of such a reply is not the judge's answer.
+    The proxy's judge step holds the same rule (``tine.runtime_checks``)."""
     price_in, price_out = prices or ANTHROPIC_PRICES[model]
     messages = build_messages(case, style)
     response = client.messages.create(
@@ -162,12 +165,16 @@ def judge_once(client, case: dict, *, model: str, effort: str = "medium", max_to
     result = {"prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
               "cost_usd": (response.usage.input_tokens * price_in + response.usage.output_tokens * price_out) / 1e6}
     text = "".join(block.text for block in response.content if block.type == "text")
+    reason = str(response.stop_reason)
     try:
-        if response.stop_reason == "refusal":
-            raise ValueError("refusal")
+        if response.stop_reason not in ("end_turn", "stop_sequence"):
+            raise ValueError("unfinished")
+        if any(str(block.type).endswith("tool_use") for block in response.content):
+            reason = "tool_use"
+            raise ValueError("tool call")
         result.update(parse_verdict(text))
     except ValueError:
-        result.update({"verdict": "unparsed", "probability": None, "reason": str(response.stop_reason)[:200]})
+        result.update({"verdict": "unparsed", "probability": None, "reason": reason[:200]})
     return result
 
 
