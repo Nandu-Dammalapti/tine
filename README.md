@@ -30,6 +30,7 @@ Agreement on more exact-answer datasets: [results/2026-11-16-agreement-more-data
 
 ## Documentation
 
+- [docs/HANDOFF.md](docs/HANDOFF.md): handoff note (2026-11-17): where things stand, what is proven and not, open problems and what to build next.
 - [docs/EVIDENCE.md](docs/EVIDENCE.md): evidence brief for outside readers, with a source for every number.
 - [docs/PROXY.md](docs/PROXY.md): the development proxy, ledger, shadow mode, routing through a policy and named checks.
 - [docs/POLICY.md](docs/POLICY.md): frozen policies.
