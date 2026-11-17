@@ -45,6 +45,12 @@ Every step fails closed: an error, a timeout, a malformed reply or a refusal is 
 rejection, so the request moves on to the next model. What a step costs is returned
 and becomes routing cost. A cost a webhook reports that is not a usable amount is
 unknown, never part of a sum.
+
+The judge's own reply must finish with ``end_turn`` or ``stop_sequence`` and contain
+no tool call before its verdict can be used. A cut-off, paused, refused, or otherwise
+unfinished judge reply rejects with ``not_a_finished_judge_reply``, even if its text
+contains an approval. Its measured cost is still included in the check audit. A
+missing stop reason is unknown completion, not permission to accept.
 """
 
 from __future__ import annotations
@@ -209,8 +215,13 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
         response.raise_for_status()
         payload = response.json()
         cost = cost_of("anthropic", step["model"], payload)
-        if payload.get("stop_reason") == "refusal":
-            return {"passed": False, "cost_usd": cost}
+        # A parseable approval is not final if the judge was cut off, paused,
+        # called a tool, or did not report a normal completion. The call was
+        # still paid for, so retain its usage-derived cost on rejection.
+        if (not isinstance(payload, dict)
+                or payload.get("stop_reason") not in ("end_turn", "stop_sequence")
+                or not plain_finish("anthropic", payload)):
+            return {"passed": False, "cost_usd": cost, "reason": "not_a_finished_judge_reply"}
         try:
             verdict = parse_verdict(response_text("anthropic", payload) or "")
         except ValueError:
