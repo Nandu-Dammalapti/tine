@@ -261,6 +261,31 @@ def test_total_tasks_for_power_inverts_plan(fraction):
         total_tasks_for_power(fraction, 0.04, 0.05, rate, split="other")
 
 
+@pytest.mark.parametrize("fraction,rate,expected", [(0.5, 0.0, 158), (0.3, 0.0073, 522), (1.0, 0.0073, 156)])
+def test_first_random_power_search_reaches_target_at_its_limit(fraction, rate, expected):
+    # Independently average the binomial pass probability over every certify size.
+    sizes = np.arange(expected + 1)
+    powers = np.array([pass_probability(int(n), 0.04, 0.05, rate) for n in sizes])
+    totals = np.arange(expected + 1)[:, None]
+    chances = binom.pmf(sizes, totals, fraction) @ powers
+    assert np.flatnonzero(chances >= 0.8).tolist() == [expected]
+    for limit in (expected - 1, expected, expected + 1):
+        assert total_tasks_for_power(
+            fraction, 0.04, 0.05, rate, split="random", stable=False, max_tasks=limit,
+        ) == (None if limit < expected else expected)
+
+
+@pytest.mark.parametrize("limit", [-1, True, 1.5, float("nan"), "100"])
+def test_power_search_limits_require_nonnegative_integer_counts(limit):
+    for search in (
+        lambda: tasks_needed(0.04, 0.05, max_tasks=limit),
+        lambda: tasks_for_power(0.04, 0.05, 0.0, max_tasks=limit),
+        lambda: total_tasks_for_power(0.0, 0.04, 0.05, 0.0, max_tasks=limit),
+    ):
+        with pytest.raises(ValueError, match="max_tasks"):
+            search()
+
+
 def test_project_numbers_in_the_doc():
     """docs/PLANNING.md quotes these; a change here means the doc must change."""
     rate = 2 / 274
