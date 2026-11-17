@@ -765,8 +765,93 @@ def test_deploy_doc_gives_the_local_test_in_order():
     # The image was not built when this was written. The sentence goes when someone has built it.
     assert "has still not been built" in section
     # The ledger copy holds prompts: it is written where git ignores it.
-    assert "docker compose cp tine:/data/ledger.backup.sqlite3 artifacts/" in section
+    assert "docker compose cp tine:/data/ledger-copy.sqlite3 artifacts/" in section
     assert "/artifacts/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+
+
+# How the ledger leaves a running container. /data/ledger.sqlite3 copied alone had no
+# tables on the first real container run: the ledger is in write-ahead mode. The copy
+# is made on the volume because docker cp cannot read the /tmp tmpfs.
+BACKUP_COMMAND = "docker compose exec tine python -m tine backup-ledger --output /data/ledger-copy.sqlite3"
+COPY_OUT = "docker compose cp tine:/data/ledger-copy.sqlite3 "
+
+
+def test_the_docs_take_the_ledger_out_with_the_backup_command():
+    deploy = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+    report = (ROOT / "docs" / "REPORT.md").read_text(encoding="utf-8")
+    start = deploy.index("\n## Back up the ledger\n")
+    places = {"DEPLOY.md, the local test": local_test_section(),
+              "DEPLOY.md, Back up the ledger": deploy[start:deploy.index("\n## ", start + 1)],
+              "REPORT.md": report[:report.index("\n## Usage\n")]}
+    for name, text in places.items():
+        assert text.index(BACKUP_COMMAND + "\n") < text.index(COPY_OUT) < text.index(
+            "docker compose exec tine rm /data/ledger-copy.sqlite3"), name
+        assert "tmpfs" in text, name
+    for name, text in (("DEPLOY.md", deploy), ("REPORT.md", report)):
+        # Never the main file alone, never from the tmpfs, and no hand-written backup beside the command.
+        assert not re.search(r"(?:docker|compose) cp \S*:/data/ledger\.sqlite3", text), name
+        assert not re.search(r"(?:docker|compose) cp \S*:/tmp/", text) and "--output /tmp/ledger" not in text, name
+        assert "sqlite3.connect(" not in text, name
+    # The report is made from the copy with the policies file the container reads, as it
+    # is, and the tenant to take from it.
+    for name in ("DEPLOY.md, the local test", "REPORT.md"):
+        commands = [" ".join(block.replace("\\\n", " ").split())
+                    for block in re.findall(r"```bash\n(.*?)```", places[name], flags=re.DOTALL)]
+        assert any(re.search(r"scripts/savings_report\.py --ledger \S*ledger\S*\.sqlite3 --tenant \S+ "
+                             r"--policy deploy/config/route-policies\.json ", command) for command in commands), name
+    # The option the docs use is the one the command has, and the one-command check runs the same.
+    main = (ROOT / "tine" / "__main__.py").read_text(encoding="utf-8")
+    assert 'add_parser("backup-ledger"' in main and 'backup.add_argument("--output"' in main
+    selftest = (ROOT / "scripts" / "container_selftest.py").read_text(encoding="utf-8")
+    assert 'LEDGER_COPY = "/data/ledger-copy.sqlite3"' in selftest
+    assert '"python", "-m", "tine", "backup-ledger", "--output", LEDGER_COPY' in selftest
+    assert '"--policy", "/config/route-policies.json"' in selftest
+
+
+def test_the_docs_list_the_two_commands_a_deployment_uses(capsys):
+    """``tine serve`` and ``tine backup-ledger`` are what runs in the container. Both are
+    in the package's help, and the two pages name every option they have."""
+    from tine.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    listed = capsys.readouterr().out
+    assert "backup-ledger" in listed and "serve" in listed
+    options = {}
+    for command in ("serve", "backup-ledger"):
+        with pytest.raises(SystemExit):
+            main([command, "--help"])
+        options[command] = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", capsys.readouterr().out)) - {"--help"}
+    assert options == {"serve": {"--host", "--port", "--shutdown-seconds"},
+                       "backup-ledger": {"--ledger", "--output", "--force"}}
+    for name in ("DEPLOY.md", "PROXY.md"):
+        text = (ROOT / "docs" / name).read_text(encoding="utf-8")
+        rows = {command: next(line for line in text.splitlines() if line.startswith(f"| `python -m tine {command}"))
+                for command in options}
+        for command, row in rows.items():
+            assert options[command] <= set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", row)), (name, command)
+
+
+def test_the_timeout_default_reads_the_same_in_code_example_and_docs():
+    """600 seconds everywhere, and the example leaves the line commented out so that the
+    proxy's own default is the one a container gets."""
+    from tine.proxy import DEFAULT_TIMEOUT_SECONDS
+
+    assert DEFAULT_TIMEOUT_SECONDS == 600.0
+    example = (ROOT / "deploy" / "tine.env.example").read_text(encoding="utf-8")
+    assert "# Upstream timeout in seconds. Default 600. When the container is stopped, requests" in example
+    assert "# still in flight after 20 seconds are cut" in example and "\n# TINE_TIMEOUT_SECONDS=600\n" in example
+    assert not re.search(r"(?m)^TINE_TIMEOUT_SECONDS=", example)
+    proxy = (ROOT / "docs" / "PROXY.md").read_text(encoding="utf-8")
+    assert re.search(r"\| `TINE_TIMEOUT_SECONDS` \|[^\n]*Default 600\.", proxy)
+    deploy = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+    assert "(`TINE_TIMEOUT_SECONDS`, default 600)" in deploy
+    for name, text in (("PROXY.md", proxy), ("DEPLOY.md", deploy), ("tine.env.example", example)):
+        assert not re.search(r"TINE_TIMEOUT_SECONDS`?[^.\n]{0,40}[Dd]efault(?: of)? 30\b", text), name
+        assert not re.search(r"Upstream timeout[^.\n]*\. Default 30\b", text), name
+    # The stop limit the example's comment gives is the one serve has.
+    from tine.__main__ import SERVE_SHUTDOWN_SECONDS
+    assert SERVE_SHUTDOWN_SECONDS == 20 < DEFAULT_TIMEOUT_SECONDS
 
 
 def test_deploy_doc_uses_only_options_the_scripts_have():

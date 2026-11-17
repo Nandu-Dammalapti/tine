@@ -17,8 +17,10 @@ What it checks, one line each, PASS or FAIL:
 - ``GET /health`` answers, and a request without a token is refused with 401;
 - a request and a streamed request go through to the stand-in and back, are written
   to the ledger and have a cost; ``GET /v1/savings`` shows them;
-- ``scripts/savings_report.py``, fed to the container's Python, makes the savings
-  page from the ledger there;
+- ``python -m tine backup-ledger`` copies the ledger while the proxy has it open,
+  ``docker compose cp`` brings the copy out whole, and ``scripts/savings_report.py``,
+  fed to the container's Python, makes the savings page from that copy and the
+  policies file the proxy reads;
 - the process runs as uid 10001, cannot write outside ``/data`` and ``/tmp``, and
   the image holds only the package;
 - after the mounted policy file is edited and the container restarted, ``/health``
@@ -43,6 +45,7 @@ import json
 import os
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -68,6 +71,8 @@ DOCKER_FOLDERS = (Path.home() / ".docker" / "bin", Path("/Applications/Docker.ap
 # proxy cuts what is still open after 20 (tine serve --shutdown-seconds).
 STOP_LIMIT_SECONDS = 28.0
 REPORT_PATH = "/tmp/selftest-report.html"
+# The copy goes on the ledger volume: /tmp is a tmpfs, and docker cp cannot read one.
+LEDGER_COPY = "/data/ledger-copy.sqlite3"
 
 
 class Unusable(Exception):
@@ -235,6 +240,19 @@ def savings(proxy) -> dict:
     return report if reply.status == 200 and isinstance(report, dict) else {}
 
 
+def requests_in(path: Path) -> int | None:
+    """How many of the test tenant's requests a ledger copy on the host holds, or None
+    when it cannot be read as a ledger. Opened read-only."""
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            return connection.execute("SELECT COUNT(*) FROM requests WHERE tenant = ?", (TENANT,)).fetchone()[0]
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError):
+        return None
+
+
 def checks(docker: Docker, proxy, work: Path, add, wait: float) -> None:
     """Every check on the running container, in order. ``add(name, passed, detail)``."""
     nonce = secrets.token_hex(4)
@@ -279,16 +297,36 @@ def checks(docker: Docker, proxy, work: Path, add, wait: float) -> None:
         f"tenant {after.get('tenant')!r}, {grew} new request(s), answer cost unknown for {unknown}, known answer "
         f"cost {smoke.usd(after.get('known_answer_cost_total_usd'))}")
 
+    # The way docs/DEPLOY.md takes the ledger out of a running container: the package's
+    # backup command, then one file copied to the host. /data/ledger.sqlite3 copied
+    # alone lacks what is still in its write-ahead log.
+    recorded = smoke.count(after, "requests")
+    copied = docker.compose("exec", "-T", "tine", "python", "-m", "tine", "backup-ledger", "--output", LEDGER_COPY,
+                            "--force")
+    on_host = work / "ledger-copy.sqlite3"
+    brought = docker.compose("cp", f"tine:{LEDGER_COPY}", str(on_host)) if copied.returncode == 0 else copied
+    on_copy = requests_in(on_host) if brought.returncode == 0 else None
+    on_host.unlink(missing_ok=True)  # it holds the test prompts; the count is all that is needed
+    add("ledger copy", brought.returncode == 0 and on_copy == recorded,
+        f"backup-ledger and docker compose cp: the copy on the host holds {on_copy} of {recorded} request(s)"
+        if brought.returncode == 0 and on_copy is not None
+        else "the copy on the host is not a readable ledger" if brought.returncode == 0
+        else f"{'docker compose cp' if copied.returncode == 0 else 'backup-ledger'} ended with status "
+             f"{brought.returncode}: {tail(brought.stdout, 2)}")
+
     # The image has no scripts/ folder, so the report script is fed to the container's
-    # Python on standard input. It opens the ledger read-only while the proxy runs.
-    made = docker.compose("exec", "-T", "tine", "python", "-", "--ledger", "/data/ledger.sqlite3", "--tenant", TENANT,
-                          "--output", REPORT_PATH, stdin=ROOT / "scripts" / "savings_report.py")
+    # Python on standard input. It reads the copy, and takes the tenant's policy from the
+    # file the proxy reads.
+    made = docker.compose("exec", "-T", "tine", "python", "-", "--ledger", LEDGER_COPY, "--tenant", TENANT,
+                          "--policy", "/config/route-policies.json", "--output", REPORT_PATH,
+                          stdin=ROOT / "scripts" / "savings_report.py")
     page = docker.compose("exec", "-T", "tine", "cat", REPORT_PATH) if made.returncode == 0 else made
     html = page.stdout or ""
     add("savings report page", made.returncode == 0 and page.returncode == 0 and "<html" in html[:400].lower()
-        and "</html>" in html[-400:].lower() and TENANT in html,
-        f"a page of {len(html):,} characters was made inside the container" if made.returncode == 0
-        else f"the report script ended with status {made.returncode}: {tail(made.stdout, 2)}")
+        and "</html>" in html[-400:].lower() and TENANT in html and "The policy in plain words" in html,
+        f"a page of {len(html):,} characters was made inside the container from the copy and the policies file"
+        if made.returncode == 0 else f"the report script ended with status {made.returncode}: {tail(made.stdout, 2)}")
+    docker.compose("exec", "-T", "tine", "rm", "-f", LEDGER_COPY)
 
     user = docker.compose("exec", "-T", "tine", "id", "-u")
     add("runs as uid 10001", user.returncode == 0 and (user.stdout or "").strip() == "10001",

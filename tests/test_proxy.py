@@ -1120,3 +1120,21 @@ def test_starting_the_proxy_loads_none_of_the_offline_toolkit():
                           cwd=Path(__file__).resolve().parents[1])
     assert done.returncode == 0, done.stderr[-500:]
     assert done.stdout.strip() == "[]"
+
+
+def test_copying_the_ledger_loads_none_of_the_offline_toolkit(tmp_path):
+    """``tine backup-ledger`` runs in the container beside the proxy, where /data and
+    /tmp are all it can write: like serving, it must not need matplotlib's cache folder."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    Ledger(tmp_path / "ledger.sqlite3").close()
+    probe = ("import sys; from tine.__main__ import main; "
+             f"main(['backup-ledger', '--ledger', {str(tmp_path / 'ledger.sqlite3')!r}, "
+             f"'--output', {str(tmp_path / 'copy.sqlite3')!r}]); "
+             "print(sorted(name for name in ('numpy', 'pandas', 'scipy', 'sklearn', 'matplotlib') if name in sys.modules))")
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert done.returncode == 0, done.stderr[-500:]
+    assert done.stdout.strip().splitlines()[-1] == "[]" and (tmp_path / "copy.sqlite3").is_file()

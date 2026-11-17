@@ -39,6 +39,16 @@ it still reaches the loopback address when you give the container an egress prox
 The proxy does not load numpy, pandas, scikit-learn or matplotlib, although the image holds them for
 `python -m tine freeze-policy`. Outside Docker it was ready 0.3 seconds after it was started.
 
+The package is all the image holds, so these are the commands to run in the container. Neither loads
+those libraries:
+
+| Command | Use |
+| --- | --- |
+| `python -m tine serve --host 0.0.0.0 --port 8000` | The image's command. `--shutdown-seconds N` (default 20) is how long requests in flight get after a stop ([Stopping and restarting](#stopping-and-restarting)) |
+| `python -m tine backup-ledger --output /data/NAME` | One whole copy of the ledger while the proxy runs ([Back up the ledger](#back-up-the-ledger)). `--ledger PATH` reads another ledger than `TINE_LEDGER_PATH`; `--force` replaces an existing copy |
+
+`scripts/savings_report.py` is not in the image. It runs on the host, on a copy of the ledger.
+
 ## Run it
 
 Start Docker Desktop, then check the commands in a new terminal:
@@ -211,6 +221,13 @@ Compose waits 30 seconds (`stop_grace_period`) before it kills the container, so
 first. If you want longer requests to finish, raise both: add `--shutdown-seconds N` to the command
 in a compose override, and set `stop_grace_period` to at least N plus 10.
 
+The 20 seconds are much shorter than the time a provider is given for one reply
+(`TINE_TIMEOUT_SECONDS`, default 600). A request that would have been answered inside that time is
+still cut when a stop comes more than 20 seconds before its reply. In the live pilots 12 of about
+3,600 frontier replies took longer than 30 seconds, the longest 53. Stop or restart when traffic is
+low, or raise the two settings above. The provider may still charge for a reply the proxy did not wait
+for, and what the ledger holds for a cut request was not checked.
+
 After a stop, `docker compose ps -a` will probably show exit code 143. That is a clean stop: the server
 shuts down, then ends by the same signal Docker sent (128 + 15). Exit code 137 means Docker had to kill
 it. Outside Docker the process ended by the signal after logging `Finished server process`; the code
@@ -264,8 +281,10 @@ Docker could not be used. What it checks:
 - `/health` answers, and a request with no token or a wrong one gets 401;
 - a request and a streamed request go to the stand-in and back, are recorded in the ledger and have a
   cost, and `/v1/savings` shows them;
+- `python -m tine backup-ledger` copies the ledger while the proxy has it open, `docker compose cp`
+  brings the copy to the host, and the copy holds every request made so far;
 - `scripts/savings_report.py`, fed to the container's Python on standard input, makes the savings page
-  from the ledger inside the container;
+  from that copy and the policies file the proxy reads;
 - the process runs as uid 10001, cannot write to `/app`, `/config` or `/var/tmp`, and can write to
   `/data` and `/tmp`;
 - `/app` holds only `pyproject.toml`, `requirements-dev.lock`, `requirements.txt` and `tine/`;
@@ -285,8 +304,9 @@ around, `--skip-build` to test the image that already exists, `--wait SECONDS` f
 **This script has not been run against a real Docker daemon.** It was run with the Mac's `python3`
 (3.9) against a stand-in for the `docker` command that starts the real proxy and the real stand-in
 provider as local processes (`tests/test_container_selftest.py`). So its requests, the policy edit and
-restart, the report page and the stop are tested; its `docker` commands, the build, uid 10001 and the
-read-only filesystem are not. `docker compose config` accepts the two compose files together. These
+restart, the ledger copy, the report page and the stop are tested; its `docker` commands, the build,
+uid 10001 and the read-only filesystem are not. The stand-in's `docker compose cp` is a file copy, so
+it does not show what Docker's own does with a file on the volume. `docker compose config` accepts the two compose files together. These
 lines are from that run; with a real daemon the stop takes about 20 seconds, not 3:
 
 ```text
@@ -298,13 +318,14 @@ token needed                  PASS  401 with no token, 401 with a wrong one
 request                       PASS  status 200, served by selftest-frontier, route -, ledger recorded
 streamed request              PASS  status 200, served by selftest-frontier, route -, ledger recorded
 savings                       PASS  tenant 'selftest', 2 new request(s), answer cost unknown for 0, known answer cost $0.000270
-savings report page           PASS  a page of 10,123 characters was made inside the container
+ledger copy                   PASS  backup-ledger and docker compose cp: the copy on the host holds 2 of 2 request(s)
+savings report page           PASS  a page of 11,878 characters was made inside the container from the copy and the policies file
 runs as uid 10001             PASS  id -u printed '10001'
 read-only except /data, /tmp  PASS  writable: /app=False /config=False /var/tmp=False /data=True /tmp=True
 image holds only the package  PASS  /app holds pyproject.toml, requirements-dev.lock, requirements.txt, tine
 policy edit, then restart     PASS  /health routing policy; status 200, served by selftest-cheap, route stage-0, ledger recorded
 ledger kept over a restart    PASS  3 request(s) in the ledger after the restart, 2 before it
-stop with a stream open       PASS  stream status 200; stopped in 3.2 s (Docker kills at 30), exit code 143
+stop with a stream open       PASS  stream status 200; stopped in 3.3 s (Docker kills at 30), exit code 143
 ledger whole after the stop   PASS  4 request(s) in the ledger after the stop and start
 clean up                      PASS  containers, network and test ledger volume removed
 ```
@@ -494,40 +515,56 @@ Do not paste `docker compose config` output anywhere: it prints the provider key
 ### 6. Make the savings report page
 
 The image holds only the `tine` package, not `scripts/`. So the page is made on the Mac, from a copy of
-the container's ledger. The copy is taken with SQLite's online backup, which is safe while the proxy
-runs (see Back up the ledger):
+the container's ledger. Do not copy `/data/ledger.sqlite3` itself: the ledger is in write-ahead mode,
+and that file, copied out alone from a container of an earlier build of the image, had no tables
+([REPORT.md](REPORT.md)). The copy is taken with `python -m tine backup-ledger`, which is safe while
+the proxy runs (see Back up the ledger):
 
 ```bash
 mkdir -p artifacts
-docker compose exec tine python -c "import os, sqlite3; os.umask(0o077); s = sqlite3.connect('/data/ledger.sqlite3'); d = sqlite3.connect('/data/ledger.backup.sqlite3'); s.backup(d); d.close(); s.close()"
-docker compose cp tine:/data/ledger.backup.sqlite3 artifacts/container-ledger.sqlite3
-docker compose exec tine python -c "import os; os.remove('/data/ledger.backup.sqlite3')"
+docker compose exec tine python -m tine backup-ledger --output /data/ledger-copy.sqlite3
+docker compose cp tine:/data/ledger-copy.sqlite3 artifacts/container-ledger.sqlite3
+docker compose exec tine rm /data/ledger-copy.sqlite3
 .tine-dev/venv/bin/python scripts/savings_report.py \
   --ledger artifacts/container-ledger.sqlite3 --tenant local-test \
   --output artifacts/container-savings.html
 open artifacts/container-savings.html
 ```
 
+When the container runs a policy, give the report the file the container reads, as it is, with the
+tenant whose policy to take from it:
+
+```bash
+.tine-dev/venv/bin/python scripts/savings_report.py \
+  --ledger artifacts/container-ledger.sqlite3 --tenant local-test \
+  --policy deploy/config/route-policies.json \
+  --output artifacts/container-savings.html
+```
+
 - Use the tenant name `container_env.py` printed, if it was not `local-test`.
-- Add `--policy FILE` to describe the policy on the page and to check shadowed answers against its
-  quality limit. `FILE` is the policy you gave `container_env.py`, or the file the container reads
-  (`deploy/config/shadow-policies.json` or `route-policies.json`): the tenant's policy is taken from it.
-  Add `--provider anthropic` or `--provider openai` only when the tenant has a policy for both.
+- `--policy` describes the policy on the page and checks shadowed answers against its quality limit.
+  The file is `deploy/config/route-policies.json` or `deploy/config/shadow-policies.json`, whichever
+  the container was given: tenant, then provider, then policy. One frozen policy file works too. Add
+  `--provider anthropic` or `--provider openai` only when the tenant has a policy for both.
+- The copy is written to `/data`, not `/tmp`: `/tmp` in the container is a tmpfs, and `docker cp` cannot
+  read a file from one.
 - `savings_report.py` needs the development environment's Python. It opens the copy read-only.
 - On a machine with Docker and no development environment, make the page inside the container. The
-  image has no `scripts/` folder, so the script goes in on standard input:
-  `docker compose exec -T tine python - --ledger /data/ledger.sqlite3 --tenant local-test --output /tmp/report.html < scripts/savings_report.py`,
-  then `docker compose exec -T tine cat /tmp/report.html > artifacts/container-savings.html`. It reads
-  the live ledger without changing it. The script was run this way outside Docker; the two
-  `docker compose exec` commands are what the one-command check runs, and were not run by a daemon.
+  image has no `scripts/` folder, so the script goes in on standard input. Run the first command
+  above, then
+  `docker compose exec -T tine python - --ledger /data/ledger-copy.sqlite3 --tenant local-test --policy /config/route-policies.json --output /tmp/report.html < scripts/savings_report.py`,
+  then `docker compose exec -T tine cat /tmp/report.html > artifacts/container-savings.html`, then the
+  `rm` line. The script was run this way outside Docker; these `docker compose exec` commands are what
+  the one-command check runs, and were not run by a daemon.
 - Do not open the ledger for a report from a volume mounted read-only (`:ro`) in a second container.
   SQLite needs to write beside a ledger in write-ahead mode even to read it, and the report fails with
   `attempt to write a readonly database`.
 - The copy holds every prompt and response the container saw. `artifacts/` is ignored by git. Delete the
   copy when you are done, and check that its mode is 600.
-- The backup line and `savings_report.py` were run here on a ledger written outside Docker. The
-  `docker compose exec` and `docker compose cp` around them were not. [REPORT.md](REPORT.md) explains
-  the page.
+- `backup-ledger` and `savings_report.py` with the container's policies file were run here outside
+  Docker, on a ledger a running proxy had open. The `docker compose exec` and `docker compose cp`
+  around them were not run. [REPORT.md](REPORT.md) says what was run in the first locally built image,
+  and explains the page.
 
 ### 7. Stop and remove
 
@@ -752,18 +789,24 @@ shorter. Raise it to cover the test run when a stage's check runs tests.
 ## Back up the ledger
 
 The ledger is `/data/ledger.sqlite3` on the `tine-ledger` volume. It uses SQLite's write-ahead log, so
-recent writes can sit in `ledger.sqlite3-wal`. Copying only the main file from a running container can
-give an incomplete or broken backup. Use SQLite's online backup, which is safe while the proxy runs:
+recent writes can sit in `ledger.sqlite3-wal`. Copying only the main file from a running container
+gives an incomplete or broken backup: taken from a container of an earlier build of the image, such a
+copy had no tables at all.
+Use the package's backup command, which is safe while the proxy runs:
 
 ```bash
-docker compose exec tine python -c "import os, sqlite3; os.umask(0o077); s = sqlite3.connect('/data/ledger.sqlite3'); d = sqlite3.connect('/data/ledger.backup.sqlite3'); s.backup(d); d.close(); s.close()"
-docker compose cp tine:/data/ledger.backup.sqlite3 ./ledger-$(date +%Y%m%d).sqlite3
-docker compose exec tine python -c "import os; os.remove('/data/ledger.backup.sqlite3')"
+docker compose exec tine python -m tine backup-ledger --output /data/ledger-copy.sqlite3
+docker compose cp tine:/data/ledger-copy.sqlite3 ./ledger-$(date +%Y%m%d).sqlite3
+docker compose exec tine rm /data/ledger-copy.sqlite3
 ```
 
-The Python one-liner was run here against a ledger file outside Docker. The `docker compose` commands
-around it were not run. The `umask` makes the backup readable by its owner only, like the ledger
-itself. Check the mode of the copy on the host as well.
+`backup-ledger` reads the ledger at `TINE_LEDGER_PATH` through a read-only connection with SQLite's
+online backup, and writes one file with mode 600 and no `-wal` or `-shm` beside it. It prints the row
+counts of the copy. It refuses to replace an existing file without `--force`. Write the copy to
+`/data`: `/tmp` is a tmpfs, and `docker cp` cannot read a file from one. Check the mode of the copy on
+the host as well. [REPORT.md](REPORT.md), Getting the ledger out of a running container, has the
+details and what was run: `docker exec` and `docker cp` in the first locally built image, beside a
+stand-in writer. The `docker compose` forms above were not run.
 
 Or stop the container and copy the whole volume:
 
@@ -908,8 +951,14 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
   left; the config folder empty; `TINE_ROUTE_POLICIES` uncommented with no file. With the three
   switches set to `1` it started.
 - **One-command check.** `scripts/container_selftest.py`, run with the Mac's `python3` (3.9) against
-  the stand-in `docker` command: all 17 lines passed, and the stop with a stream open took 3.2 seconds
+  the stand-in `docker` command: all 18 lines passed, and the stop with a stream open took 3.3 seconds
   at `--shutdown-seconds 3`.
+- **Slow replies.** `python -m tine serve`, started from the env file `scripts/container_env.py` wrote,
+  with a stand-in provider that waits 45 seconds before its first byte: a request and a streamed
+  request both came back 200 and whole after 45.0 seconds. The request's ledger row has a latency of
+  45,013 ms; a streamed request's row has none. The env file sets no `TINE_TIMEOUT_SECONDS`. With
+  `TINE_TIMEOUT_SECONDS=5` both got 502 after 5.0 seconds, and the log had
+  `no reply from the anthropic upstream at 127.0.0.1:18945 for model 'slow-frontier': ReadTimeout`.
 
 - **Env script with plain `python3`.** `scripts/container_env.py`, run with the Mac's `python3` (3.9)
   and a made-up key: without a policy it wrote the env file and the token file, both mode 600, and

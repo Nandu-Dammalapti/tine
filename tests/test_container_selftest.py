@@ -161,10 +161,20 @@ elif arguments[:1] == ["compose"]:
     elif command[0] == "exec":
         if command[3:] == ["id", "-u"]:
             print("10001")
+        elif command[3:7] == ["python", "-m", "tine", "backup-ledger"]:
+            # Run for real against the ledger the proxy has open, /data mapped to this fake's folder.
+            mapped = [f"{STATE}/{value.split('/', 2)[2]}" if value.startswith("/data/") else value
+                      for value in command[7:]]
+            sys.exit(subprocess.run([sys.executable, "-m", "tine", "backup-ledger", *mapped],
+                                    env={**os.environ, "PYTHONPATH": ROOT,
+                                         "TINE_LEDGER_PATH": str(STATE / "ledger.sqlite3")}, cwd=STATE).returncode)
+        elif command[3:5] == ["rm", "-f"]:
+            (STATE / Path(command[5]).name).unlink(missing_ok=True)
         elif command[3:5] == ["python", "-"]:
             # The report script arrives on standard input and is run for real, with the
             # container's /data and /tmp mapped to this fake's folder.
-            mapped = [f"{STATE}/{value.split('/', 2)[2]}" if value.startswith(("/data/", "/tmp/")) else value
+            mapped = [f"{STATE}/{value.split('/', 2)[2]}" if value.startswith(("/data/", "/tmp/"))
+                      else str(WORK / value[1:]) if value.startswith("/config/") else value
                       for value in command[5:]]
             sys.exit(subprocess.run([sys.executable, "-", *mapped], env={**os.environ, "PYTHONPATH": ROOT},
                                     cwd=STATE).returncode)
@@ -174,6 +184,11 @@ elif arguments[:1] == ["compose"]:
             # What a container with a read-only root prints. The fake cannot be one.
             print("/app=False /config=False /var/tmp=False /data=True /tmp=True")
             print("app:pyproject.toml,requirements-dev.lock,requirements.txt,tine")
+    elif command[0] == "cp":
+        # Only what docker cp can read: a file on the /data volume, not the /tmp tmpfs.
+        assert command[1].startswith("tine:/data/"), command
+        import shutil
+        shutil.copyfile(STATE / Path(command[1]).name, command[2])
     elif command[0] == "restart":
         stop("tine")
         start_tine()
@@ -241,7 +256,8 @@ def test_the_whole_selftest_passes_against_the_real_proxy_and_cleans_up(fake_doc
     assert "All checks passed. No model was called" in output
     rows = dict(re.findall(r"^(\S.*?)\s{2,}(PASS|FAIL)\s", output, flags=re.MULTILINE))
     assert list(rows) == ["image builds", "containers start", "container healthy", "health", "token needed",
-                          "request", "streamed request", "savings", "savings report page", "runs as uid 10001",
+                          "request", "streamed request", "savings", "ledger copy", "savings report page",
+                          "runs as uid 10001",
                           "read-only except /data, /tmp", "image holds only the package",
                           "policy edit, then restart", "ledger kept over a restart", "stop with a stream open",
                           "ledger whole after the stop", "clean up"]
@@ -252,7 +268,20 @@ def test_the_whole_selftest_passes_against_the_real_proxy_and_cleans_up(fake_doc
     # fake starts the proxy with --shutdown-seconds 3, so it must be gone well inside 15.
     took = float(re.search(r"stopped in ([0-9.]+) s", output).group(1))
     assert 2.0 < took < 15.0, output
+    # The ledger leaves the container the documented way: the backup command, one file
+    # copied out of /data, and the page made from that copy and the proxy's policies file.
+    assert "the copy on the host holds 2 of 2 request(s)" in output
     sent = commands(fake_docker)
+    backup = ["exec", "-T", "tine", "python", "-m", "tine", "backup-ledger", "--output", "/data/ledger-copy.sqlite3",
+              "--force"]
+    copy_out = ["cp", "tine:/data/ledger-copy.sqlite3", str(tmp_path / "work" / "ledger-copy.sqlite3")]
+    assert sent.index(backup) < sent.index(copy_out)
+    report = next(line for line in sent if line[:5] == ["exec", "-T", "tine", "python", "-"])
+    assert report[5:] == ["--ledger", "/data/ledger-copy.sqlite3", "--tenant", "selftest", "--policy",
+                          "/config/route-policies.json", "--output", "/tmp/selftest-report.html"]
+    assert sent.index(copy_out) < sent.index(report) < sent.index(["exec", "-T", "tine", "rm", "-f",
+                                                                 "/data/ledger-copy.sqlite3"])
+    assert not (fake_docker / "ledger-copy.sqlite3").exists()
     assert sent[0][0] == "version" and sent[1] == ["build", "tine"]
     assert sent[2] == ["up", "-d", "--wait", "--wait-timeout", "40"]
     assert ["restart", "tine"] in sent and ["stop", "tine"] in sent and ["start", "tine"] in sent

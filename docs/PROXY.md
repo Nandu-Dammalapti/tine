@@ -38,7 +38,16 @@ means its default.
 On SIGTERM or Ctrl-C the proxy lets requests in flight finish for 20 seconds, then cuts what is still
 open, streams included, and closes the ledger. `--shutdown-seconds N` changes the 20. Measured with a
 stand-in stream that never ends: the process was gone 20.1 seconds after the signal, with the ledger
-closed to a single file.
+closed to a single file. The 20 seconds are well under `TINE_TIMEOUT_SECONDS` (default 600), so a stop
+can cut a request whose reply the proxy would otherwise have waited for.
+
+The two commands a deployment uses, both in the container image and neither loading the offline
+toolkit (numpy, pandas, scikit-learn, matplotlib):
+
+| Command | Options |
+| --- | --- |
+| `python -m tine serve` | `--host` (default `127.0.0.1`), `--port` (default 8000), `--shutdown-seconds` (default 20) |
+| `python -m tine backup-ledger` | `--output FILE` (required), `--ledger FILE` (default `TINE_LEDGER_PATH`), `--force` to replace an existing copy. See [REPORT.md](REPORT.md) |
 
 When a provider cannot be reached the caller gets 502 `Upstream request failed`, and the log has one
 WARNING line with the provider, the host and port of its base URL, the model and the kind of failure
