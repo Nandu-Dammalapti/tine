@@ -1,0 +1,7 @@
+block,requests,losses,loss_rate,gains,answered_by_cheaper_share,policy_accuracy,frontier_accuracy,projected_saving,accepted_differing_from_frontier,drift_share,drift_check,refused_429,other_provider_errors,skipped_rate_limited,shadow_coverage,caller_latency_p50_s,spent_usd,loss_upper_95_one_sided,loss_lower_95_one_sided
+1,300,8,0.0267,0,0.91,0.9,0.9267,0.4986,9,0.03,within limit,0,0,0,1.0,4.49,4.3586,,
+2,300,10,0.0333,4,0.9433,0.8967,0.9167,0.5445,17,0.0567,warning,0,0,0,1.0,4.48,4.4141,,
+3,300,6,0.02,1,0.9233,0.9,0.9167,0.5039,11,0.0367,within limit,0,1,0,1.0,4.6,4.6066,,
+4,300,9,0.03,4,0.9367,0.9033,0.92,0.5066,14,0.0467,warning,0,0,0,1.0,4.46,4.3674,,
+5,300,4,0.0133,1,0.92,0.9567,0.9667,0.4877,7,0.0233,within limit,0,0,0,1.0,4.22,4.4171,,
+all,1500,37,0.0247,10,0.9267,0.9113,0.9293,0.5082,58,0.0387,,0,1,0,1.0,,22.1638,0.0323,0.0184

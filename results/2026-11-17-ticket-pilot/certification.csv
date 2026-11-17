@@ -1,0 +1,7 @@
+epsilon,chain,choose_tasks,choose_loss,tested_on_certify_part,certify_tasks,certify_losses,certify_loss,bound,passed,chosen,test_tasks,test_loss,test_saving,test_frontier_call_rate,history_tasks,history_loss,history_gain,history_accuracy,history_answered_by_cheaper_share,history_saving
+0.04,claude-haiku-5-5+claude-sonnet-5-5,308,0.013,True,495,5,0.0101,0.0211,True,False,197,0.0203,0.32,0.1269,1000,0.013,0.009,0.816,0.928,0.383
+0.04,claude-sonnet-5-5,308,0.0325,True,495,9,0.0182,0.0315,True,True,197,0.0508,0.4899,0.0,1000,0.029,0.012,0.803,1.0,0.4923
+0.04,claude-haiku-5-5,308,0.0519,False,495,15,0.0303,,,False,197,0.0711,0.9728,0.0,1000,0.045,0.021,0.796,1.0,0.9729
+0.02,claude-haiku-5-5+claude-sonnet-5-5,308,0.013,True,495,5,0.0101,0.0211,False,False,197,0.0203,0.32,0.1269,1000,0.013,0.009,0.816,0.928,0.383
+0.02,claude-sonnet-5-5,308,0.0325,False,495,9,0.0182,,,False,197,0.0508,0.4899,0.0,1000,0.029,0.012,0.803,1.0,0.4923
+0.02,claude-haiku-5-5,308,0.0519,False,495,15,0.0303,,,False,197,0.0711,0.9728,0.0,1000,0.045,0.021,0.796,1.0,0.9729

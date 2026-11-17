@@ -1,0 +1,4 @@
+tickets,requests,losses,loss_rate,loss_upper_95_one_sided,loss_lower_95_one_sided,gains,gain_rate,policy_accuracy,frontier_accuracy,answered_by_cheaper_share,projected_saving,shadow_coverage,accepted_differing_from_frontier,drift_share,drift_check,reader_min,provider_errors,caller_latency_p50_s,spent_usd
+all,300,12,0.04,0.064,0.0232,7,0.0233,0.7467,0.7633,1.0,0.4987,1.0,32,0.1067,warning,1.0,0,2.03,4.7254
+"text repeats one of the 1,200 tickets set aside for the history, or a prompt example",97,2,0.0206,0.0635,0.0037,0,0.0,0.9175,0.9381,1.0,,,,,,,,,
+new text,203,10,0.0493,0.0821,0.027,7,0.0345,0.665,0.6798,1.0,,,,,,,,,
