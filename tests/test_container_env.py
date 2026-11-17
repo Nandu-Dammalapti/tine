@@ -11,11 +11,13 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tine.policy import BUILT_IN_CHECKS
 from tine.proxy import ProxyConfig
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -219,7 +221,9 @@ def test_shadow_sampling_needs_a_price_for_every_stage_model(folder, capsys):
     ({"tenant": None}, [], "names no tenant"),
     ({}, ["--tenant", "someone-else"], "frozen for tenant 'acme'"),
     ({"stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}, [], "--answer-pattern"),
-    ({"stages": [{"models": ["small-a"], "check": "tests+judge:unconfigured"}]}, [], "would refuse to start"),
+    ({"stages": [{"models": ["small-a"], "check": "tests+judge:unconfigured"}]}, [],
+     "names the check(s) ['tests+judge:unconfigured']"),
+    ({"stages": [{"models": ["small-a"], "check": 7}]}, [], "would refuse to start"),
     ({"guarantee": {"certified": True, "statement": "no numbers"}}, [], "would refuse to start"),
 ])
 def test_a_policy_the_proxy_would_refuse_changes_nothing(folder, capsys, changes, arguments, expected):
@@ -262,13 +266,98 @@ def test_prices_may_come_from_a_file(folder, monkeypatch):
 
 
 def test_says_so_when_the_package_cannot_be_imported(folder, capsys, monkeypatch):
-    """With a Python that lacks the proxy's dependencies the files are still written,
-    and the output says the start-up check was not made."""
+    """With a Python that lacks the proxy's dependencies and no policy, the files are
+    still written, and the output says the start-up check was not made."""
     monkeypatch.setitem(sys.modules, "tine.proxy", None)  # makes "from tine.proxy import ..." raise ImportError
-    assert run(folder) == 0
+    assert run(folder, "--answer-pattern", r"Answer: ([A-D])") == 0
     printed = "".join(capsys.readouterr())
     assert "NOT checked" in printed and "pass the proxy's start-up validation" not in printed
     assert mode(folder / "deploy" / "tine.env") == 0o600
+    # Without a policy the script made or checked every value itself: the proxy takes them.
+    assert load(folder, monkeypatch).answer_pattern == r"Answer: ([A-D])"
+
+
+def written(folder) -> list[str]:
+    deploy = folder / "deploy"
+    return sorted(path.name for path in deploy.rglob("*") if path.is_file()) if deploy.exists() else []
+
+
+def test_the_built_in_checks_are_the_proxys():
+    """The script cannot import the package, so it carries its own copy of the names."""
+    assert kit.BUILT_IN_CHECKS == BUILT_IN_CHECKS
+
+
+@pytest.mark.parametrize("kind", ["route", "shadow"])
+@pytest.mark.parametrize("check", ["judge:x", "tests", "tests+judge:x"])
+@pytest.mark.parametrize("importable", [True, False])
+def test_a_policy_that_names_a_judge_or_webhook_check_is_refused_by_any_python(folder, capsys, monkeypatch, kind,
+                                                                             check, importable):
+    """The script writes no checks file, so the proxy would refuse such a policy at
+    start-up and the container would restart in a loop. A plain python3 once wrote it."""
+    if not importable:
+        monkeypatch.setitem(sys.modules, "tine.proxy", None)
+    (folder / "policy.json").write_text(json.dumps(policy(stages=[{"models": ["small-a"], "check": check}])),
+                                        encoding="utf-8")
+    assert run(folder, f"--{kind}-policy", str(folder / "policy.json")) == 1
+    printed = "".join(capsys.readouterr())
+    assert f"names the check(s) ['{check}']" in printed and "TINE_CHECKS" in printed and "docs/DEPLOY.md" in printed
+    assert "Next:" not in printed and FAKE_KEY not in printed
+    assert written(folder) == []
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--route-policy"],
+    ["--shadow-policy"],
+])
+def test_a_policy_is_not_written_when_the_proxy_cannot_check_it(folder, capsys, monkeypatch, arguments):
+    """A policy has rules only the proxy's code knows (its guarantee, for one). With a
+    Python that cannot import the package the script refuses, and tells no one to build."""
+    (folder / "policy.json").write_text(json.dumps(policy()), encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "tine.proxy", None)
+        assert run(folder, *arguments, str(folder / "policy.json")) == 1
+    printed = "".join(capsys.readouterr())
+    assert "cannot import the tine package" in printed and ".tine-dev/venv/bin/python" in printed
+    assert "Next:" not in printed and "Wrote" not in printed and FAKE_KEY not in printed
+    assert written(folder) == []
+    # What an earlier good run wrote is left as it was, with --force as well.
+    assert run(folder) == 0
+    before = {name: (folder / "deploy" / name).read_bytes() for name in written(folder)}
+    monkeypatch.setitem(sys.modules, "tine.proxy", None)
+    assert run(folder, *arguments, str(folder / "policy.json"), "--force") == 1
+    assert {name: (folder / "deploy" / name).read_bytes() for name in written(folder)} == before
+    assert sorted(before) == ["client-token.txt", "tine.env"]
+
+
+def bare_python() -> list[str]:
+    """This interpreter without its installed packages, as a plain python3 would be."""
+    command = [sys.executable, "-S", "-I"]
+    found = subprocess.run([*command, "-c", "import httpx"], capture_output=True, text=True, timeout=60)
+    if found.returncode == 0:
+        pytest.skip("this interpreter imports the proxy's dependencies without its site-packages")
+    return command
+
+
+def test_as_a_script_under_a_python_without_the_packages(folder):
+    """The whole script, run the way the page shows, by a Python that cannot import the
+    package: a frontier-only file is written unchecked, and a policy is refused."""
+    command = [*bare_python(), str(ROOT / "scripts" / "container_env.py"), "--key-file", str(folder / "key.txt"),
+               "--frontier", FRONTIER, "--prices", json.dumps(PRICES), "--deploy-dir", str(folder / "deploy")]
+    (folder / "none.json").write_text(json.dumps(policy()), encoding="utf-8")
+    (folder / "judge.json").write_text(json.dumps(policy(stages=[{"models": ["small-a"], "check": "judge:x"}])),
+                                       encoding="utf-8")
+    for name, expected in (("judge.json", "names the check(s) ['judge:x']"),
+                           ("none.json", "cannot import the tine package")):
+        for kind in ("route", "shadow"):
+            refused = subprocess.run([*command, f"--{kind}-policy", str(folder / name)], capture_output=True,
+                                     text=True, timeout=60)
+            assert refused.returncode == 1, refused.stdout + refused.stderr
+            assert expected in refused.stderr and "Next:" not in refused.stdout and FAKE_KEY not in refused.stderr
+            assert written(folder) == []
+    plain = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert plain.returncode == 0, plain.stderr
+    assert "NOT checked" in plain.stdout and "Next:" in plain.stdout and FAKE_KEY not in plain.stdout + plain.stderr
+    assert written(folder) == ["client-token.txt", "tine.env"]
 
 
 def test_the_check_leaves_the_environment_as_it_was(folder, monkeypatch):

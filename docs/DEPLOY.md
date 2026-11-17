@@ -1,13 +1,19 @@
 # Deploying the proxy in a container
 
 **No Docker daemon has built or run the image yet.** The `Dockerfile` and `docker-compose.yml` were
-written on a machine without Docker. On 2026-11-17 each step of the Dockerfile was run by hand outside
-Docker on a Mac: the dependency step, the image's command from a read-only copy of the package against
-a stand-in provider, the health check, requests and a stop. `docker compose config`, which needs no
-daemon, accepted the compose files. [Checked without Docker](#checked-without-docker) lists what that
-covered. It does not cover the build itself, Linux, the non-root user, the read-only root filesystem
-or the ledger volume. Expect to fix something on the first real build, and treat every `docker`
-command below as untested.
+written on a machine without Docker, and not every step of the Dockerfile has been run.
+
+- Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a
+  `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on
+  `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop.
+- Not run: the base image, the `pip install` itself, the two `COPY` steps, the user-creation step
+  (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME`.
+
+The image's command was run from a read-only copy of the package against a stand-in provider.
+`docker compose config`, which needs no daemon, accepted the compose files.
+[Checked without Docker](#checked-without-docker) lists what that covered. It does not cover the build
+itself, Linux, the non-root user, the read-only root filesystem or the ledger volume. Expect to fix
+something on the first real build, and treat every `docker` command below as untested.
 
 The quickest first run needs no key and costs nothing: `python3 scripts/container_selftest.py` builds
 the image and tests a running container against a stand-in provider. See
@@ -313,7 +319,8 @@ provider, a gateway or load. For those, go on to the next section.
 For a Mac with Docker Desktop running. Two scripts do the work around the `docker` commands:
 `scripts/container_env.py` writes the env file and a tenant token, and `scripts/container_smoke.py`
 checks the running container. Both use only the Python standard library, so the Mac's own `python3`
-runs them. Run every command from the repository root.
+runs them. The first one needs the development environment's Python once you give it a policy
+(step 2). Run every command from the repository root.
 
 What has been run and what has not, as of 2026-11-17:
 
@@ -367,8 +374,13 @@ token, so recreate the container afterwards (step 3).
 Before anything is put in place, the script loads the files into the proxy's own configuration and runs
 its start-up validation. A configuration the proxy would refuse is reported and nothing is changed.
 That check needs the development environment's Python (`.tine-dev/venv/bin/python`, made by
-`bash scripts/setup.sh`). With plain `python3` the same files are written and the output says
-`NOT checked`.
+`bash scripts/setup.sh`). Plain `python3` cannot make it:
+
+- Without a policy, plain `python3` writes the same files and the output says `NOT checked`. Every
+  value in them is one the script made or checked itself.
+- With `--route-policy` or `--shadow-policy`, plain `python3` writes no file and exits with status 1.
+  Only the proxy's own code can say whether it would run a policy. Use the development environment's
+  Python.
 
 Options for more than a frontier-only test:
 
@@ -380,8 +392,9 @@ Options for more than a frontier-only test:
 - `--answer-pattern REGEX` is for a policy with agreement stages that carries no pattern of its own.
 
 `FILE` is a policy as `python -m tine freeze-policy --tenant NAME` writes it. Give every stage model a
-price in `--prices`. A policy that names a judge or webhook check is refused: the script does not write
-a checks file. Add `TINE_CHECKS` by hand as in Run it.
+price in `--prices`. A policy that names a judge or webhook check is refused, by either Python, and no
+file is written: the script does not write a checks file. For such a policy, write the env file and
+`TINE_CHECKS` by hand as in Run it.
 
 ### 3. Build and start
 
@@ -833,11 +846,15 @@ earlier outcome updates are not in `outcome_events`, and shadow coverage counts 
 - when the `docker` client is installed, `docker compose config` reads the env example to the same
   values as these tests do;
 - git ignores `deploy/client-token.txt`, and this page gives the steps of Test the container on your own
-  machine in order, with only options the scripts have.
+  machine in order, with only options the scripts have;
+- this page, the Dockerfile and [PROXY.md](PROXY.md) say in the same words which Dockerfile steps were
+  run by hand and which were not, and the steps named as not run are the ones the Dockerfile has.
 
 `tests/test_container_env.py` runs `scripts/container_env.py` on a made-up key file in a temporary
 folder: the key and the token never reach its output, both files are mode 600, an existing env file is
-kept without `--force`, and what it writes loads into `ProxyConfig` and validates.
+kept without `--force`, and what it writes loads into `ProxyConfig` and validates. It also runs the
+script with a Python that cannot import the package: a policy that names a judge or webhook check is
+refused, any other policy is refused as unchecked, and without a policy the files are written.
 `tests/test_container_smoke.py` runs `scripts/container_smoke.py` against the real proxy app served on
 a local port, with a stand-in provider on a second local port.
 `tests/test_container_selftest.py` runs `scripts/container_selftest.py` against a stand-in for the
@@ -856,6 +873,10 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
   the eight dependency lines. `pip install --dry-run` of those lines with `requirements-dev.lock` as
   constraints, from wheels alone, for Python 3.12 on 64-bit Arm and x86 Linux (glibc up to 2.36, as in
   the base image) resolved 35 packages, each at the lock's version. Nothing was installed for Linux.
+  A second dry run later that day gave the same 35 packages for both. The dry run has to name every
+  glibc tag from `manylinux_2_17` to `manylinux_2_36` with `--platform`: given `manylinux_2_36` alone
+  it found no numpy wheel and stopped with `ResolutionImpossible`. `pip` inside the image works out
+  its own tags, so this is about repeating the dry run, not about the build.
   Without the constraints, the same lines resolved four packages newer than the lock that day
   (fastapi 0.163.1 against 0.162.0, numpy 2.5.5 against 2.5.4, click and annotated-doc).
 - **Start.** The image's command was run from a read-only copy of what `/app` will hold (24 files,
@@ -890,9 +911,16 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
   the stand-in `docker` command: all 17 lines passed, and the stop with a stream open took 3.2 seconds
   at `--shutdown-seconds 3`.
 
-Not checked by anything: that the image builds, that the packages install and import on the base
-image, that the container starts as uid 10001 under a read-only root filesystem, that the health check
-passes in a container and when `healthy` first shows, that volume ownership works as described, what
-`docker compose up -d` does after a file-only edit, the exit code Docker reports after a stop, whether
-macOS asks Docker Desktop for access to this folder on the first bind mount, and every `docker` command
-on this page that needs the daemon.
+- **Env script with plain `python3`.** `scripts/container_env.py`, run with the Mac's `python3` (3.9)
+  and a made-up key: without a policy it wrote the env file and the token file, both mode 600, and
+  said `NOT checked`. With a route or a shadow policy it wrote no file and exited with status 1. With a
+  policy that names `judge:x`, `tests` or `tests+judge:x` it exited with status 1 and named the check,
+  as it did with the development environment's Python.
+
+Not checked by anything: that the base image pulls, that the image builds, that the packages install
+and import on the base image, that the two `COPY` steps and the user-creation step (`groupadd`,
+`useradd`, `chown`, `chmod`) run, that the container starts as uid 10001 under a read-only root
+filesystem, that the health check passes in a container and when `healthy` first shows, that volume
+ownership works as described, what `docker compose up -d` does after a file-only edit, the exit code
+Docker reports after a stop, whether macOS asks Docker Desktop for access to this folder on the first
+bind mount, and every `docker` command on this page that needs the daemon.

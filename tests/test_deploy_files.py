@@ -656,6 +656,47 @@ def test_deploy_doc_states_what_was_not_done():
         assert name in text, name
 
 
+# Which Dockerfile steps were run by hand outside Docker, and which were not. The three
+# files that say it use these words. Both sentences go when a daemon has built the image.
+RUN_BY_HAND = ("Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes requirements.txt, "
+               "a pip dry-run resolve of its lines for Linux (nothing was installed), the image's command "
+               "(on 127.0.0.1, not 0.0.0.0), the health check command, requests and a stop.")
+NOT_RUN = ("Not run: the base image, the pip install itself, the two COPY steps, the user-creation step "
+           "(groupadd, useradd, chown, chmod), USER and VOLUME.")
+
+
+def plain_words(text: str) -> str:
+    """``text`` without comment marks, code marks and line breaks."""
+    return " ".join(re.sub(r"(?m)^#+ ?", "", text).replace("`", "").split())
+
+
+@pytest.mark.parametrize("name", ["Dockerfile", "docs/DEPLOY.md", "docs/PROXY.md"])
+def test_the_steps_run_by_hand_are_stated_the_same_everywhere(name):
+    """These files once said that each step of the Dockerfile was run by hand. The
+    dependency step was a dry run, and the COPY, user, USER and VOLUME steps need a
+    daemon: nothing ran them."""
+    words = plain_words((ROOT / name).read_text(encoding="utf-8"))
+    assert RUN_BY_HAND in words and NOT_RUN in words
+    assert words.index(RUN_BY_HAND) < words.index(NOT_RUN)
+    for claim in (r"each step[^.]*\brun by hand", r"its steps were run by hand", r"every step[^.]*\bwas run\b"):
+        assert not re.search(claim, words, flags=re.IGNORECASE), claim
+    assert re.search(r"not every step [^.]* has been run", words)
+
+
+def test_the_steps_named_as_not_run_are_the_dockerfiles():
+    """The sentence names steps of the Dockerfile. It must change when they do."""
+    steps = dockerfile_instructions()
+    assert sum(name == "COPY" for name, _ in steps) == 2
+    assert sum(name == "USER" for name, _ in steps) == 1 and sum(name == "VOLUME" for name, _ in steps) == 1
+    creating = [arguments for name, arguments in steps if name == "RUN" and "useradd" in arguments]
+    assert len(creating) == 1
+    named = re.search(r"user-creation step \(([^)]*)\)", NOT_RUN).group(1).split(", ")
+    assert all(re.search(rf"\b{command}\b", creating[0]) for command in named), named
+    # Every RUN is one of the two the sentences speak of: the install and the user step.
+    runs = [arguments for name, arguments in steps if name == "RUN"]
+    assert len(runs) == 2 and "pip install" in runs[0] and runs[1] == creating[0]
+
+
 def test_deploy_doc_restarts_with_force_recreate_after_a_file_edit():
     """Compose does not recreate a container because a mounted file changed. A plain
     "up -d" given as the restart step after a policy edit would leave routing on."""

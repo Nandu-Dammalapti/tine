@@ -14,9 +14,14 @@ Writes, under ``deploy/``:
 The provider key is never printed. An existing ``deploy/tine.env`` is left alone unless
 ``--force`` is given. Nothing is put in place until every file has passed: the env file
 is read back the way compose reads it and loaded into ``ProxyConfig``, as the proxy
-does at start-up. That last step needs the ``tine`` package and its dependencies; with
-a Python that cannot import them the files are still written and the output says the
-check was skipped.
+does at start-up. That last step needs the ``tine`` package and its dependencies. With
+a Python that cannot import them and no policy, the files are still written and the
+output says the check was skipped. With a policy, no file is written: only the proxy's
+own code can say whether it would run that policy.
+
+A policy that names a check other than ``agreement`` or ``none`` (a judge, a webhook) is
+refused by any Python. The proxy runs such a check only from a checks file, and this
+script writes none.
 
 Standard library only. No request is sent anywhere.
 """
@@ -37,6 +42,8 @@ ROOT = Path(__file__).resolve().parents[1]
 KEY_NAMES = ("TINE_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
 RATE_NAMES = {"input_per_million", "output_per_million", "cached_input_per_million", "cache_write_per_million"}
 PROVIDER = "anthropic"
+# The checks the proxy runs without a checks file: BUILT_IN_CHECKS in tine/policy.py.
+BUILT_IN_CHECKS = ("agreement", "none")
 
 
 class KitError(Exception):
@@ -149,6 +156,13 @@ def has_agreement(policy: dict) -> bool:
     return any(isinstance(stage, dict) and stage.get("check") == "agreement" for stage in stages)
 
 
+def named_checks(policy: dict) -> list[str]:
+    """The checks ``policy`` names that the proxy runs only from a checks file."""
+    stages = policy.get("stages") if isinstance(policy.get("stages"), list) else []
+    return sorted({stage["check"] for stage in stages if isinstance(stage, dict)
+                   and isinstance(stage.get("check"), str) and stage["check"] not in BUILT_IN_CHECKS})
+
+
 def rate(value: str) -> float:
     number = float(value)
     if not math.isfinite(number) or not 0 <= number <= 1:
@@ -255,6 +269,13 @@ def build(args) -> tuple[list[tuple[Path, str, int]], str, list[str], list[str]]
     files: list[tuple[Path, str, int]] = []
     sampling = False
     if kind:
+        # Refused here, with no import of the package, so that a plain python3 refuses it
+        # as well. The container would otherwise refuse to start, and restart in a loop.
+        if named_checks(policy):
+            raise KitError(f"{policy_path} names the check(s) {named_checks(policy)}. The proxy runs those only "
+                           "from a checks file (TINE_CHECKS). This script does not write one, so the proxy "
+                           "would refuse to start. Write the env file and the checks file by hand: "
+                           "docs/DEPLOY.md, Run it")
         inside = f"/config/{kind}-policies.json"
         lines.append(f"TINE_{kind.upper()}_POLICIES={inside}")
         files.append((deploy / "config" / f"{kind}-policies.json",
@@ -364,6 +385,13 @@ def main(argv=None) -> int:
             staged.append((temporary, path))
         inside = {f"/config/{path.name}": temporary for temporary, path in staged if path.parent.name == "config"}
         skipped = check_like_the_proxy(staged[0][0].read_text(encoding="utf-8"), inside)
+        if skipped is not None and inside:
+            # Without a policy, every value written is one this script made or checked
+            # itself. A policy has rules that only the proxy's own code knows.
+            raise KitError("a policy is put in place only after the proxy's own start-up validation has passed, "
+                           f"and this Python cannot import the tine package ({skipped}). No file was written. "
+                           "Run this script with the development environment's Python: "
+                           ".tine-dev/venv/bin/python scripts/container_env.py ...")
         for temporary, path in staged:
             os.replace(temporary, path)
     except KitError as error:
