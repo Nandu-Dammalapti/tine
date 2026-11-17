@@ -91,9 +91,13 @@ None of this has run on real traffic. The code path was tested with stand-ins on
 with recorded SWE-bench data. Not built: nightly retraining per customer, distillation, a
 production datastore and streaming under a policy. A random frontier holdout to measure
 the saving under live routing is now built and was used once with real models (below).
-Paid model calls so far total $131.38: $47.73 for judge measurements ($12.69 in
+Paid model calls so far total $172.55: $47.73 for judge measurements ($12.69 in
 `2026-11-14-api-judge/README.md`, $31.02 in `2026-11-16-judge-probes/README.md` and $4.02
-in `2026-11-17-judge-prompt/README.md`) and $23.65 and $60.00 for the two live pilots below.
+in `2026-11-17-judge-prompt/README.md`), $23.65 and $60.00 for the two live pilots below,
+$26.43 for the rate-limit tests and a 1,500-question shadow run
+(`2026-11-17-concurrency-and-long-shadow/README.md`) and $14.74 for a pilot on a public
+set of one company's support tickets (`2026-11-17-ticket-pilot/README.md`). Spend that is
+in no results file is not counted.
 
 **A live pilot with real models** (`2026-11-17-live-pilot/README.md`). Three current
 Claude models answered MMLU-Pro questions, as stand-in exact-answer traffic, through

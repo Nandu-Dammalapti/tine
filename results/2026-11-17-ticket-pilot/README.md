@@ -16,8 +16,11 @@ Tine's proxy. The run used the team's separate credits key.
 
 ## Bottom line
 
-- **This is the first run on one company's real traffic with its own labels.**
-  Every earlier live result is on benchmark questions.
+- **This is the first run on real tickets, written by one company's users and
+  labelled by its staff.** The data is public and was labelled in 2020. The requests
+  are ours: we wrote the triage prompt and replayed the tickets through it. No
+  company sent these requests to a model. Every earlier live result is on benchmark
+  questions.
 - **A policy certified at 4%: Sonnet alone, with no check.** The bound is 3.15%.
   Nothing certified at 2%.
 - **The 4% result held with no margin.** Read the bound beside what was measured
@@ -43,12 +46,13 @@ Tine's proxy. The run used the team's separate credits key.
   1.3% over the history and also passed at 4%, with a bound of 2.1%. It saved 38%
   over the history against Sonnet's 49%, so the search preferred Sonnet alone.
 
-## The customer and the setup
+## The stand-in customer and the setup
 
-The company's triage step sends every new ticket to `claude-opus-5-5` to pick a
-category. The prompt lists the 7 categories as options A-G, shows 35 past tickets
-with their category, then the new ticket, and asks for one line, `Answer: X`
-(`scripts/ticket_pilot_prep.py`). The 35 examples are used nowhere else.
+We imagine a triage step that sends every new ticket to `claude-opus-5-5` to pick a
+category. No company runs this step. Our script, `scripts/ticket_pilot_prep.py`,
+wrote the prompt and drew its 35 examples at random. The prompt lists the 7
+categories as options A-G, shows 35 past tickets with their category, then the new
+ticket, and asks for one line, `Answer: X`. The 35 examples are used nowhere else.
 
 - **Prompts are long and replies short.** A prompt is about 2,300 input tokens
   (2,246 to 2,848). The mean reply is 49 to 92 tokens.

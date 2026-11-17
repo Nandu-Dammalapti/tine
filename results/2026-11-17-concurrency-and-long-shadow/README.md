@@ -15,10 +15,11 @@ credits key.
 
 - **This key allows 25 requests in flight.** That is the limit that binds. A
   refusal comes back in about half a second and names no wait.
-- **The planned pause test showed nothing.** A background load left only a few
-  slots free, but no real request was refused with either code version. The plan's
-  pass mark, fewer refused real requests with the pause than without, is not shown
-  by the test the plan describes.
+- **The planned pause test did not meet the plan's pass marks.** A background load
+  left only a few slots free, but no real request was refused and no shadow run was
+  skipped with either code version, so the test did not exercise the pause. The
+  marks asked for fewer refused real requests with the pause than without, and for
+  shadow coverage below 100%. It was 0 of 30 against 0 of 30, and 100% with both.
 - **A test added after the plan showed the pause working.** It is not a
   pre-registered result. The proxy's own calls filled the account: the same 60
   questions were sent 24 at a time through each code version.
@@ -117,13 +118,14 @@ alone fit under the limit of 25. The shadow calls do not.
   down. The harness now counts shadowed requests only.
 
 **The plan's pass marks.** They were written for the first test, and on it they
-give no verdict: neither version had a refused real request or a skipped run.
+were not met: neither version had a refused real request or a skipped run, so the
+test did not exercise the pause. The plan states the last two rows as one mark.
 
 | pass mark | first test, as planned | |
 | --- | --- | --- |
-| after has fewer refused real requests than before, and under 10% | 0 of 30 against 0 of 30 | not shown |
-| the report counts the skipped shadow runs | none were skipped | not shown |
-| coverage is below 100% and says why | 100% with both versions | not shown |
+| after has fewer refused real requests than before, and under 10% | 0 of 30 against 0 of 30 | not met |
+| the report counts the skipped shadow runs | none were skipped | not met |
+| coverage is below 100% and says why | 100% with both versions | not met |
 
 **The same marks on the added test.** That test was designed after the first one
 had been seen, so read this as a description of what happened, not as a
@@ -268,7 +270,7 @@ these means, and warns about a draw like this one before any money is spent.
 3. **A second pause test was added,** because the first one produced no refused
    real request. It has no background load and puts 24 real requests in flight, with
    the same 60 questions for both code versions. The pass marks were written for the
-   first design. On the first test they give no verdict. What the second test shows
+   first design. On the first test they were not met. What the second test shows
    is reported apart from them, as an addition made after the plan.
 4. **Two more additions:** the batch validation, and the ramp repeated while
    batches were pending ($0.15 together).

@@ -453,9 +453,9 @@ Status: built and tested with stand-in providers that answer 429 and 529, with a
 `retry-after`, on a test clock. It met a real provider's limit once
 (`results/2026-11-17-concurrency-and-long-shadow`): in a test added after that run's plan, the provider
 refused 9 of 69 real requests without the pause and none of 60 with it, and 55 of those 60 were not
-shadowed. The planned test showed nothing. The pause was not seen to end, and a `retry-after` header and
-a 529 were not met. It lowers the load shadow mode adds; it cannot stop real traffic alone from reaching
-the limit.
+shadowed. The planned test did not meet its pass marks: no real request was refused in it, so it did
+not exercise the pause. The pause was not seen to end, and a `retry-after` header and a 529 were not met.
+It lowers the load shadow mode adds; it cannot stop real traffic alone from reaching the limit.
 
 The same report as a page to send to a customer:
 `python scripts/savings_report.py --ledger LEDGER --tenant TENANT --policy POLICY.json --output report.html`
