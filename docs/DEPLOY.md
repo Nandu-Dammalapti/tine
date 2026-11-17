@@ -160,7 +160,10 @@ Do not treat this as a production service.
 - **Never run on real traffic.** Shadow mode, routing through a policy and named checks have been
   tested with stand-in providers and recorded answers only. See PROXY.md for the limits of each.
 - **Streaming requests are passed through** to the frontier (or to a model you allowed by name in
-  `TINE_ALLOWED_MODELS`) and are never shadowed or routed by a policy.
+  `TINE_ALLOWED_MODELS`) and are never shadowed or routed by a policy. Their answer cost is recorded
+  from the usage the stream carries; OpenAI streams carry it only when the caller sends
+  `"stream_options": {"include_usage": true}`, which the proxy does not add. Without usage the cost
+  stays unknown. Tested with stand-in streams only.
 
 ## Start in shadow mode with a spending cap
 

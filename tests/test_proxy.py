@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from tine.ledger import Ledger
-from tine.proxy import ProxyConfig, _cost, _usage, create_app
+from tine.proxy import ProxyConfig, _cost, _StreamUsage, _usage, create_app
 
 
 def config(**changes):
@@ -282,6 +282,184 @@ def test_anthropic_sse_native_headers_and_bytes_pass_through():
                 assert record["response_body"] is None
 
     run(scenario())
+
+
+STREAM_PRICES = {
+    "openai:frontier": {"input_per_million": 1.0, "output_per_million": 2.0},
+    "anthropic:claude-frontier": {"input_per_million": 3.0, "output_per_million": 15.0,
+                                  "cached_input_per_million": 0.3},
+}
+ANTHROPIC_STREAM = (
+    b'event: message_start\r\ndata: {"type":"message_start","message":{"id":"m","usage":'
+    b'{"input_tokens":1000,"cache_read_input_tokens":2000,"output_tokens":1}}}\r\n\r\n'
+    b'event: content_block_delta\r\ndata: {"type":"content_block_delta","delta":{"text":"hi \\"usage\\""}}\r\n\r\n'
+    b'event: message_delta\r\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+    b'"usage":{"output_tokens":400}}\r\n\r\n'
+    b'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+)
+OPENAI_STREAM = (
+    b'data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}\n\n'
+    b'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":500}}\n\n'
+    b'data: [DONE]\n\n'
+)
+
+
+class PiecewiseStream(httpx.AsyncByteStream):
+    """Upstream bytes in pieces of a given size, optionally breaking off after some of them."""
+
+    def __init__(self, data, size, cut_after=None):
+        self.data, self.size, self.cut_after = data, size, cut_after
+
+    async def __aiter__(self):
+        end = len(self.data) if self.cut_after is None else self.cut_after
+        for start in range(0, end, self.size):
+            yield self.data[start:min(start + self.size, end)]
+        if self.cut_after is not None:
+            raise httpx.ReadError("connection reset")
+
+    async def aclose(self):
+        pass
+
+
+def stream_through(provider_name, stream, body=None, **changes):
+    """Send one streamed request through the proxy; return what the caller got, the
+    ledger row, the body the provider saw and the tenant's savings report."""
+    sent = []
+
+    def provider(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
+
+    path, auth = (("/v1/chat/completions", {"authorization": "Bearer tenant-token-a"}) if provider_name == "openai"
+                  else ("/v1/messages", {"x-api-key": "tenant-token-a"}))
+
+    async def scenario():
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(prices=STREAM_PRICES, **changes), ledger=ledger, client=upstream)
+            transport = httpx.ASGITransport(app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://tine") as client:
+                response = await client.post(path, json=body or {"messages": [], "stream": True}, headers=auth)
+                assert response.status_code == 200
+                record = ledger.get("a", response.headers["x-tine-request-id"])
+                savings = (await client.get("/v1/savings", headers=auth)).json()
+                return response.content, record, sent[0], savings
+
+    return run(scenario())
+
+
+@pytest.mark.parametrize("size", [1, 7, len(ANTHROPIC_STREAM)])
+def test_an_anthropic_stream_is_relayed_unchanged_and_its_usage_is_priced(size):
+    content, record, _, savings = stream_through("anthropic", PiecewiseStream(ANTHROPIC_STREAM, size))
+    assert content == ANTHROPIC_STREAM
+    # Input counts include cache reads; the output is message_delta's, not message_start's 1.
+    assert (record["input_tokens"], record["output_tokens"], record["cached_tokens"]) == (3000, 400, 2000)
+    assert record["cost_usd"] == pytest.approx((1000 * 3.0 + 2000 * 0.3 + 400 * 15.0) / 1e6)
+    assert record["baseline_cost_usd"] is None and record["routing_cost_usd"] is None
+    assert record["stream"] == 1 and record["response_body"] is None
+    assert savings["unknown_answer_cost_requests"] == 0 and savings["known_answer_cost_total_usd"] == record["cost_usd"]
+
+
+@pytest.mark.parametrize("size", [1, len(OPENAI_STREAM)])
+def test_an_openai_stream_with_usage_is_priced_and_the_request_is_not_changed(size):
+    body = {"messages": [], "stream": True, "stream_options": {"include_usage": True}}
+    content, record, sent, _ = stream_through("openai", PiecewiseStream(OPENAI_STREAM, size), body)
+    assert content == OPENAI_STREAM
+    assert sent["stream_options"] == {"include_usage": True}
+    assert (record["input_tokens"], record["output_tokens"], record["cached_tokens"]) == (1000, 500, 0)
+    assert record["cost_usd"] == pytest.approx((1000 * 1.0 + 500 * 2.0) / 1e6)
+
+
+def test_a_stream_without_usage_keeps_its_cost_unknown_and_no_option_is_added():
+    data = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    content, record, sent, savings = stream_through("openai", PiecewiseStream(data, 5))
+    assert content == data
+    assert "stream_options" not in sent
+    assert record["cost_usd"] is record["input_tokens"] is record["output_tokens"] is record["cached_tokens"] is None
+    assert savings["unknown_answer_cost_requests"] == 1
+
+
+@pytest.mark.parametrize("provider_name,data,marker", [
+    ("anthropic", ANTHROPIC_STREAM, b"event: message_delta"),
+    ("openai", OPENAI_STREAM, b'data: {"choices":[],"usage"'),
+])
+def test_a_stream_cut_off_before_its_final_usage_keeps_its_cost_unknown(provider_name, data, marker):
+    cut = data.index(marker)
+    content, record, _, _ = stream_through(provider_name, PiecewiseStream(data, 9, cut_after=cut))
+    assert content == data[:cut]
+    assert record["cost_usd"] is None and record["output_tokens"] is None
+    # Anthropic's input count arrived before the break and is kept.
+    assert record["input_tokens"] == (3000 if provider_name == "anthropic" else None)
+
+
+def test_a_stream_cut_off_after_its_usage_is_priced():
+    cut = ANTHROPIC_STREAM.index(b"event: message_stop")
+    _, record, _, _ = stream_through("anthropic", PiecewiseStream(ANTHROPIC_STREAM, 50, cut_after=cut))
+    assert record["output_tokens"] == 400 and record["cost_usd"] is not None
+
+
+def test_a_streamed_cost_is_not_a_measured_baseline_and_the_caller_can_still_supply_one():
+    stream = PiecewiseStream(OPENAI_STREAM, 16)
+    sent = []
+
+    def provider(request):
+        sent.append(request)
+        return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
+
+    async def scenario():
+        ledger = Ledger()
+        auth = {"authorization": "Bearer tenant-token-a"}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(prices=STREAM_PRICES), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post("/v1/chat/completions", json={"messages": [], "stream": True},
+                                             headers=auth)
+                request_id = response.headers["x-tine-request-id"]
+                updated = await client.patch(f"/v1/outcomes/{request_id}", headers=auth,
+                                             json={"success": True, "routing_cost_usd": 0.0})
+                assert updated.status_code == 200
+                # Streams are never compared against a measured frontier baseline.
+                assert (await client.get("/v1/savings", headers=auth)).json()["comparable_verified_requests"] == 0
+                updated = await client.patch(f"/v1/outcomes/{request_id}", headers=auth,
+                                             json={"success": True, "baseline_cost_usd": 0.01})
+                assert updated.status_code == 200
+                savings = (await client.get("/v1/savings", headers=auth)).json()
+                assert savings["caller_baseline_requests"] == 1
+                assert savings["caller_baseline_savings_usd"] == pytest.approx(0.01 - 0.002)
+
+    run(scenario())
+
+
+def test_a_fallback_stream_records_its_tokens_but_not_a_cost():
+    def provider(request):
+        if json.loads(request.content)["model"] == "cheap":
+            return httpx.Response(503, json={"error": "busy"})
+        return httpx.Response(200, stream=PiecewiseStream(OPENAI_STREAM, 32),
+                              headers={"content-type": "text/event-stream"})
+
+    async def scenario():
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(prices=STREAM_PRICES, allowed_models={"openai": ["cheap"]}), ledger=ledger,
+                             client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post("/v1/chat/completions", json={"model": "cheap", "messages": [],
+                                                                         "stream": True},
+                                             headers={"authorization": "Bearer tenant-token-a"})
+                record = ledger.get("a", response.headers["x-tine-request-id"])
+                assert record["fallback_used"] == 1 and record["input_tokens"] == 1000
+                assert record["cost_usd"] is None
+
+    run(scenario())
+
+
+def test_stream_usage_reader_skips_overlong_lines_and_reads_the_last_event_without_a_blank_line():
+    reader = _StreamUsage("openai")
+    reader.feed(b"data: " + b"x" * (_StreamUsage.MAX_LINE + 10) + b"\n\n")
+    reader.feed(b'data: {"usage": {"prompt_tokens": 3, "completion_tokens": 4}}')
+    reader.close()
+    assert reader.tokens()["input_tokens"] == 3 and reader.tokens()["output_tokens"] == 4
+    assert _StreamUsage("anthropic").tokens() is None
 
 
 def test_late_verified_outcome_enables_exact_cache_only_within_tenant():

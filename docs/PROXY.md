@@ -38,6 +38,25 @@ Net savings require known answer, routing, and baseline costs for a verified suc
 
 Unknown outcomes and costs remain unknown. Cached responses are scoped by tenant, provider, upstream endpoint, model, exact request contents, and forwarded Anthropic version/beta headers. With a route policy the cached answer may be a cheaper model's: a routed answer is stored under the request as it arrived (see Routing through a policy). They become eligible after success is explicitly confirmed. After upgrading, responses recorded with the older cache keys require a fresh upstream request and successful outcome before cache reuse, because those keys lack upstream context. Streaming responses are not cached. The ledger stores prompts/responses; use only data you intend to retain in the configured local database.
 
+Streamed replies are relayed byte for byte. The proxy writes the ledger row before the first byte, then
+reads token usage from the events as they pass, without changing them. When the stream ends it fills in
+the row's token counts and answer cost (`cost_usd`) from that usage and `TINE_MODEL_PRICES`:
+
+- Anthropic: input tokens (with cache reads and writes) from `message_start`, output tokens from
+  `message_delta`.
+- OpenAI: the chunk that carries `usage`. OpenAI sends it only when the caller asked for it with
+  `"stream_options": {"include_usage": true}`. The proxy does not add that option to a request.
+- No usage, or a stream that broke off before the final count: the cost stays unknown, as before. What
+  arrived is kept (an Anthropic stream cut off mid-reply keeps its input tokens).
+- A stream served after a fallback gets token counts and no cost, as a buffered reply does.
+- Only empty fields are filled. A cost the caller sent through the outcome endpoint first is kept.
+
+A streamed row has no baseline: `baseline_cost_usd` and routing cost stay unknown, so streams never
+count in `verified_savings_usd`. The caller may still supply both, as for any request the proxy did not
+measure. Streams are still never cached, shadowed or routed; `streamed_not_shadowed` counts them as
+before. Built and tested with stand-in streams for both providers; never used by a real customer or run
+against a real provider's stream.
+
 For OpenAI-compatible usage, omitted optional cache details retain the zero-cache default. Explicitly null or malformed `prompt_tokens_details` instead leave cached tokens, estimated cost, and the automatic frontier baseline unknown, even if input/output totals are valid. The provider response still passes through unchanged; a later measured cost can be supplied through the outcome endpoint.
 
 Late outcome reversals or newer resolved failures invalidate prior cached successes. Resolved outcomes use a transactionally assigned database sequence, so equal or backward-moving wall-clock timestamps cannot revive stale success evidence. Existing ledgers are upgraded automatically; legacy entries retain their prior timestamp order until new sequenced evidence arrives. Restart all proxy writers together when upgrading so every writer uses this ordering. If local ledger recording fails, a successful provider response is still returned with `x-tine-ledger: unavailable`, unless `TINE_LEDGER_REQUIRED` is on (see Audit trail). Net savings reports cover comparable, verified successful requests only; they are not billing amounts or proof of end-to-end savings. Failed and pending requests with known costs contribute to total spend, including routing costs, and to the cost-per-verified-success metric.
@@ -316,7 +335,9 @@ Limits to state with any number from it:
   compared with the frontier's, because two right patches rarely match word for word.
 - Projected savings use only requests whose costs are all known, so every stage model needs a price in
   `TINE_MODEL_PRICES`. Streaming requests are never shadowed; sampled ones are counted in
-  `streamed_not_shadowed`. The streamed share of traffic caps any saving.
+  `streamed_not_shadowed`. The streamed share of traffic caps any saving. A streamed request's own
+  cost is recorded in the ledger when its stream carries usage (see above); that does not change these
+  counts.
 - Shadow results store no prompt or response text; the request record already holds the tenant's request
   and the frontier's response.
 

@@ -52,6 +52,7 @@ python scripts/savings_report.py --report-json saved.json --tenant TENANT --note
 - The ledger report does not say which requests escalated. The page infers the escalation story from counts: when estimated baselines exist, routing is certain; otherwise the explanation is worded "if the proxy routes through a policy".
 - An estimated baseline is the returned answer's token counts at the frontier's prices; a frontier answer could have been longer or shorter. The ledger report gives no estimated baseline total, so the estimated saving has no percentage.
 - Shadow spend sums only known costs and is a lower limit while any call or check has unknown cost.
+- A streamed request's answer cost counts in known spend when its stream carried usage ([PROXY.md](PROXY.md)). Its frontier cost is never measured, so it is never in the measured saving.
 - Shadow comparisons are equality of answers, not correctness.
 - The reports do not name the policy behind each figure; the digest check that catches a mismatch runs only with `--ledger`.
 - The page does not show `caller_baseline_*` from `GET /v1/savings` or `check_rejection_reasons` from `GET /v1/shadow` yet.
