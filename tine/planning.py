@@ -90,6 +90,7 @@ def tasks_needed(epsilon: float, delta: float, failures: int = 0, *,
     epsilon = _probability(epsilon, "epsilon")
     delta = _probability(delta, "delta", open_interval=True)
     failures = _integer(failures, "failures")
+    max_tasks = _integer(max_tasks, "max_tasks")
     return _tasks_needed_from(max(1, failures), failures, epsilon, delta, max_tasks)
 
 
@@ -182,6 +183,7 @@ def tasks_for_power(epsilon: float, delta: float, true_rate: float, power: float
     delta = _probability(delta, "delta", open_interval=True)
     true_rate = _probability(true_rate, "true_rate")
     power = _probability(power, "power", open_interval=True)
+    max_tasks = _integer(max_tasks, "max_tasks")
     if true_rate >= epsilon:
         return None
     if true_rate == 0:
@@ -339,6 +341,9 @@ def total_tasks_for_power(certify_fraction: float, epsilon: float, delta: float,
     """Inverse of ``plan``: graded tasks needed in total for a pass probability >= ``power``.
 
     None when ``true_rate >= epsilon`` or the answer exceeds ``max_tasks``.
+    With ``stable=True``, also None when the search limit prevents establishing
+    that the power stays above the target. A first-crossing search does not need
+    that additional evidence and includes ``max_tasks`` itself.
 
     For a fixed split this is the smallest total whose certify part reaches
     ``tasks_for_power`` (``stable`` is passed through; the default True means no
@@ -351,6 +356,7 @@ def total_tasks_for_power(certify_fraction: float, epsilon: float, delta: float,
     """
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}")
+    max_tasks = _integer(max_tasks, "max_tasks")
     certify_fraction = _probability(certify_fraction, "certify_fraction")
     if certify_fraction == 0:
         return None
@@ -373,8 +379,23 @@ def _random_total_for_power(certify_fraction: float, epsilon: float, delta: floa
                             max_tasks: int) -> int | None:
     """``total_tasks_for_power`` for a random split, by exact scan over totals."""
     first = tasks_for_power(epsilon, delta, true_rate, power, max_tasks=max_tasks)
+    if first is None:
+        return None
+    if not stable:
+        # The first crossing does not require a stable-power horizon. Scan in
+        # growing batches so a large limit does not force us to build millions
+        # of unused failure steps before finding a small answer.
+        start, end = first, min(max_tasks, first * 2)
+        while True:
+            steps = failure_steps(epsilon, delta, end)
+            for total in range(start, end + 1):
+                if _random_split_pass(total, certify_fraction, true_rate, steps) >= power:
+                    return total
+            if end == max_tasks:
+                return None
+            start, end = end + 1, min(max_tasks, end * 2)
     settled = tasks_for_power(epsilon, delta, true_rate, power, stable=True, max_tasks=max_tasks)
-    if first is None or settled is None:
+    if settled is None:
         return None
     # Past this total the certify part is below ``settled`` with chance under 1e-9,
     # so the average cannot dip below ``power`` again by more than that.
@@ -390,7 +411,5 @@ def _random_total_for_power(certify_fraction: float, epsilon: float, delta: floa
         if _random_split_pass(total, certify_fraction, true_rate, steps) < power:
             answer = None
         elif answer is None:
-            if not stable:
-                return total
             answer = total
     return answer
