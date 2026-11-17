@@ -68,6 +68,8 @@ DATASETS = {
               "sets": {"calibrate": 800, "shadow": 200, "live": 140}},
     "math500": {"folder": "math500/test", "pattern": BOXED_PATTERN, "grade": "math",
                 "sets": {"calibrate": 330, "shadow": 100, "live": 70}},
+    # Real IT support tickets (Zenodo record 7648117); its sets come from scripts/ticket_pilot_prep.py.
+    "tickets": {"folder": None, "pattern": ANSWER_PATTERN, "grade": "exact", "sets": {}},
 }
 
 
@@ -122,6 +124,8 @@ def _records(folder: Path) -> list[dict]:
 def sample_dataset(bench: Path, output: Path, dataset: str, *, seed: int = 0) -> dict:
     """Disjoint calibrate / shadow / live sets from one more benchmark."""
     config = DATASETS[dataset]
+    if config["folder"] is None:
+        raise SystemExit(f"{dataset} is not in the benchmark archive; see scripts/ticket_pilot_prep.py")
     folder = bench / config["folder"]
     if not list(folder.glob("*.json")):
         folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
@@ -673,6 +677,7 @@ def main(argv=None) -> None:
     run.add_argument("--models", nargs="+", required=True)
     run.add_argument("--max-cost-usd", type=float, required=True)
     run.add_argument("--effort", default="medium")
+    run.add_argument("--max-tokens", type=int, default=4096)
     run.add_argument("--workers", type=int, default=8)
     run.add_argument("--ca-bundle")
     run.add_argument("--batch", action="store_true",
@@ -696,6 +701,7 @@ def main(argv=None) -> None:
     serve.add_argument("--output", type=Path, required=True, help="full result JSON (local only)")
     serve.add_argument("--summary", type=Path, help="summary JSON (safe to publish)")
     serve.add_argument("--concurrency", type=int, default=6)
+    serve.add_argument("--max-tokens", type=int, default=4096)
     serve.add_argument("--audit-rate", type=float, default=0.0,
                        help="route mode: share of requests held out and served by the frontier (TINE_AUDIT_RATE)")
     serve.add_argument("--ca-bundle")
@@ -713,7 +719,8 @@ def main(argv=None) -> None:
         policy = json.loads(args.policy.read_text())
         result = asyncio.run(through_proxy(policy, questions, mode=args.mode, max_cost_usd=args.max_cost_usd,
                                            ledger_path=args.ledger, concurrency=args.concurrency,
-                                           ca_bundle=args.ca_bundle, audit_rate=args.audit_rate))
+                                           ca_bundle=args.ca_bundle, audit_rate=args.audit_rate,
+                                           max_tokens=args.max_tokens))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, default=str))
         scored = score_proxy(result, questions, policy["frontier"])
@@ -736,10 +743,11 @@ def main(argv=None) -> None:
             print(json.dumps(ask_batch(args.questions, args.output, models=args.models,
                                        max_cost_usd=args.max_cost_usd, effort=args.effort, ca_bundle=args.ca_bundle,
                                        poll_seconds=args.batch_poll_seconds,
-                                       timeout_minutes=args.batch_timeout_minutes)))
+                                       timeout_minutes=args.batch_timeout_minutes, max_tokens=args.max_tokens)))
             return
         print(json.dumps(ask(args.questions, args.output, models=args.models, max_cost_usd=args.max_cost_usd,
-                             effort=args.effort, workers=args.workers, ca_bundle=args.ca_bundle)))
+                             effort=args.effort, workers=args.workers, ca_bundle=args.ca_bundle,
+                             max_tokens=args.max_tokens)))
     elif args.command == "export":
         print(json.dumps(export(args.asked, args.outcomes, args.answers)))
     else:
