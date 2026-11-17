@@ -116,3 +116,16 @@ def test_recording_transport_refuses_calls_past_the_cap():
                 "model": "claude-opus-5-5", "messages": [{"role": "user", "content": "Question 0?"}]})
         return response.status_code, recorder.refused
     assert asyncio.run(go()) == (529, 1)
+
+
+def test_boxed_answers_are_read_and_graded_like_the_benchmarks():
+    text = r"so \boxed{\frac{1}{\sqrt{2}}} and finally \boxed{\left( 3, \frac{\pi}{2} \right)}."
+    assert [m.group(1) for m in re.finditer(live_pilot.BOXED_PATTERN, text)][-1] == r"\left( 3, \frac{\pi}{2} \right)"
+    grade = live_pilot.grade
+    assert grade("math500", r"\dfrac{14}{3}", r"\frac{14}{3}")
+    assert grade("math500", r"\left( 3, \frac{\pi}{2} \right)", r"(3,\frac{\pi}{2})")
+    assert not grade("math500", "9", "10")
+    # FinQA counts a number that rounds to the key at the key's precision, as the benchmark does.
+    assert grade("finqa", r"14.5\%", "14%") and grade("finqa", "1.74", "2%") and grade("finqa", "Yes", "yes")
+    assert not grade("finqa", "14.6", "14.0%") and not grade("finqa", "0.099", "9.9%")
+    assert grade("medqa", "B", "B") and not grade("medqa", None, "B") and grade("medqa", "B", None) is None

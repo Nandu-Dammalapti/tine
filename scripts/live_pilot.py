@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import random
+import re
 import sys
 import threading
 import time
@@ -32,9 +33,69 @@ from tine.judge import ANTHROPIC_PRICES  # noqa: E402
 from tine.shadow import extract_answer  # noqa: E402
 
 ANSWER_PATTERN = r"Answer:\s*\**\s*\$?\(?([A-J])\b"
+# The content of the last \boxed{...}, with up to two levels of braces inside it.
+BOXED_PATTERN = r"\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}"
 TASK_TYPE = "mmlupro-live"
 TENANT = "live-pilot"
 SETS = {"calibrate": 1000, "shadow": 300, "live": 200}
+# Each benchmark: where its records are, how the proxy reads an answer, how an answer
+# is graded against the key ("exact" letters; "math": equal after normalising the
+# LaTeX, or as numbers; "finance": as the benchmark grades FinQA, a number counts when
+# it rounds to the key at the key's precision, and words ignore case), and the set sizes. Results files give every model's records
+# with the same prompts and keys, so any one model's file will do.
+DATASETS = {
+    "mmlupro": {"folder": "mmlupro/test_3000/claude-sonnet-4", "pattern": ANSWER_PATTERN, "grade": "exact",
+                "sets": SETS},
+    "medqa": {"folder": "medqa/test", "pattern": ANSWER_PATTERN, "grade": "exact",
+              "sets": {"calibrate": 800, "shadow": 200, "live": 150}},
+    "arcc": {"folder": "arcc/test", "pattern": r"Answer:\s*\**\s*\$?\(?([A-J1-9])\b", "grade": "exact",
+             "sets": {"calibrate": 800, "shadow": 200, "live": 150}},
+    "finqa": {"folder": "finqa/test", "pattern": BOXED_PATTERN, "grade": "finance",
+              "sets": {"calibrate": 800, "shadow": 200, "live": 140}},
+    "math500": {"folder": "math500/test", "pattern": BOXED_PATTERN, "grade": "math",
+                "sets": {"calibrate": 330, "shadow": 100, "live": 70}},
+}
+
+
+def _dataset(row: dict) -> str:
+    return row.get("dataset", "mmlupro")
+
+
+def normalise(answer: str) -> str:
+    """A LaTeX or numeric answer in one canonical spelling, for grading only."""
+    text = answer.strip().strip("$").strip()
+    text = re.sub(r"\\text\{([^{}]*)\}", r"\1", text)
+    for old, new in (("\\left", ""), ("\\right", ""), ("\\!", ""), ("\\,", ""), ("\\;", ""), ("\\ ", ""),
+                     ("dfrac", "frac"), ("tfrac", "frac"), ("^\\circ", ""), ("^{\\circ}", ""), ("\\%", ""),
+                     ("%", ""), ("\\$", ""), (",\\!", "")):
+        text = text.replace(old, new)
+    text = "".join(text.split()).rstrip(".")
+    return text
+
+
+def _number(text: str) -> float | None:
+    found = re.fullmatch(r"-?\d+(?:\.\d+)?|-?\.\d+", text.replace(",", ""))
+    return float(found.group(0)) if found else None
+
+
+def grade(dataset: str, answer: str | None, truth: str | None) -> bool | None:
+    """Whether an answer matches the key. None when the question has no key."""
+    if truth is None:
+        return None
+    if answer is None:
+        return False
+    if DATASETS[dataset]["grade"] == "exact":
+        return answer == truth
+    mine, key = normalise(answer), normalise(truth)
+    if mine == key:
+        return True
+    a, b = _number(mine), _number(key)
+    if DATASETS[dataset]["grade"] == "finance":
+        if a is None or b is None:
+            return mine.lower() == key.lower()
+        decimals = len(key.replace(",", "").partition(".")[2])
+        return abs(a - b) <= 0.5 * 10 ** -decimals + 1e-9
+    return a is not None and b is not None and abs(a - b) <= max(1e-6, 1e-4 * abs(b))
 
 
 def _records(folder: Path) -> list[dict]:
@@ -42,6 +103,26 @@ def _records(folder: Path) -> list[dict]:
     if not files:
         raise SystemExit(f"no result JSON under {folder}")
     return json.loads(files[0].read_text())["records"]
+
+
+def sample_dataset(bench: Path, output: Path, dataset: str, *, seed: int = 0) -> dict:
+    """Disjoint calibrate / shadow / live sets from one more benchmark."""
+    config = DATASETS[dataset]
+    folder = bench / config["folder"]
+    if not list(folder.glob("*.json")):
+        folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
+    questions = [{"task_id": f"{dataset}:{r['index']}", "prompt": r["prompt"], "ground_truth": str(r["ground_truth"]),
+                  "dataset": dataset}
+                 for r in _records(folder) if str(r.get("ground_truth") or "").strip()]
+    random.Random(seed).shuffle(questions)
+    output.mkdir(parents=True, exist_ok=True)
+    counts, start = {}, 0
+    for name, size in config["sets"].items():
+        chosen = questions[start:start + size]
+        start += size
+        (output / f"{dataset}-{name}.jsonl").write_text("".join(json.dumps(q) + "\n" for q in chosen))
+        counts[name] = len(chosen)
+    return counts
 
 
 def sample(bench: Path, output: Path, *, freetext: int = 60, seed: int = 0) -> dict:
@@ -118,10 +199,11 @@ def ask(questions: Path, output: Path, *, models: list[str], max_cost_usd: float
         payload = response.model_dump()
         usage = payload["usage"]
         cost = (usage["input_tokens"] * price_in + usage["output_tokens"] * price_out) / 1e6
-        answer = extract_answer("anthropic", payload, ANSWER_PATTERN)
+        dataset = _dataset(row)
+        answer = extract_answer("anthropic", payload, DATASETS[dataset]["pattern"])
         truth = row.get("ground_truth")
-        record = {"tenant": TENANT, "task_id": row["task_id"], "prompt": row["prompt"], "task_type": TASK_TYPE,
-                  "model": model, "success": None if truth is None else answer == truth,
+        record = {"tenant": TENANT, "task_id": row["task_id"], "prompt": row["prompt"],
+                  "task_type": f"{dataset}-live", "model": model, "success": grade(dataset, answer, truth),
                   "cost_usd": round(cost, 8), "input_tokens": usage["input_tokens"],
                   "output_tokens": usage["output_tokens"], "cached_tokens": None,
                   "latency_ms": round((time.time() - started) * 1000),
@@ -162,8 +244,8 @@ class RecordingTransport(httpx.AsyncBaseTransport):
     the model, prompt, reply and token counts of each, so every model's answer to
     every request can be graded afterwards. Also stops new calls past a spending cap."""
 
-    def __init__(self, inner, max_cost_usd: float) -> None:
-        self.inner, self.max_cost_usd = inner, max_cost_usd
+    def __init__(self, inner, max_cost_usd: float, pattern: str = ANSWER_PATTERN) -> None:
+        self.inner, self.max_cost_usd, self.pattern = inner, max_cost_usd, pattern
         self.calls: list[dict] = []
         self.spent = 0.0
         self.refused = 0
@@ -191,7 +273,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             usage = payload.get("usage") or {}
             cost = (usage.get("input_tokens", 0) * price_in + usage.get("output_tokens", 0) * price_out) / 1e6
             self.spent += cost
-            record.update(answer=extract_answer("anthropic", payload, ANSWER_PATTERN), cost_usd=round(cost, 8),
+            record.update(answer=extract_answer("anthropic", payload, self.pattern), cost_usd=round(cost, 8),
                           stop_reason=payload.get("stop_reason"),
                           reply=extract_answer("anthropic", payload, None))
         self.calls.append(record)
@@ -231,7 +313,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
     # A bare transport ignores HTTPS_PROXY, which httpx clients and the SDK honour.
     network_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     recorder = RecordingTransport(inner or httpx.AsyncHTTPTransport(verify=verify, retries=2, proxy=network_proxy),
-                                  max_cost_usd)
+                                  max_cost_usd, policy.get("answer_pattern") or ANSWER_PATTERN)
     ledger = Ledger(ledger_path)
     sent: dict[str, dict] = {}
     gate = asyncio.Semaphore(concurrency)
@@ -252,7 +334,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                         "task_id": question["task_id"], "status": response.status_code,
                         "served_model": response.headers.get("x-tine-model"),
                         "route": response.headers.get("x-tine-route"),
-                        "answer": extract_answer("anthropic", response.json(), ANSWER_PATTERN)
+                        "answer": extract_answer("anthropic", response.json(), recorder.pattern)
                         if response.status_code < 400 else None,
                         "client_seconds_including_shadow": round(time.time() - started, 2)}
 
@@ -277,6 +359,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
 def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
     """Grade what the proxy did against the known answers."""
     truth = {q["task_id"]: q.get("ground_truth") for q in questions}
+    dataset_of = {q["task_id"]: _dataset(q) for q in questions}
     prompt_of = {q["task_id"]: q["prompt"] for q in questions}
     answers = {(c["prompt"], c["model"]): c.get("answer") for c in result["calls"] if c["status"] < 400}
     rows = []
@@ -290,8 +373,10 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
             policy_answer = r["answer"]
         rows.append({"task_id": r["task_id"], "freetext": gold is None, "accepted": bool(r.get("accepted"))
                      if result["mode"] == "shadow" else r.get("ledger_model") != frontier,
-                     "frontier_right": None if gold is None or front is None else front == gold,
-                     "policy_right": None if gold is None else policy_answer == gold,
+                     # A frontier call with no readable answer is wrong; no frontier call is unknown.
+                     "frontier_right": None if gold is None or (prompt, frontier) not in answers
+                     else grade(dataset_of[r["task_id"]], front, gold),
+                     "policy_right": grade(dataset_of[r["task_id"]], policy_answer, gold),
                      "latency_ms": r.get("latency_ms"), "cost_usd": r.get("cost_usd"),
                      "routing_cost_usd": r.get("routing_cost_usd"), "shadow_cost_usd": r.get("shadow_cost_usd")})
     import numpy as np
@@ -357,6 +442,8 @@ def main(argv=None) -> None:
     pick = commands.add_parser("sample")
     pick.add_argument("--bench-dir", type=Path, required=True, help="extracted bench-release folder")
     pick.add_argument("--output", type=Path, required=True)
+    pick.add_argument("--dataset", choices=sorted(DATASETS),
+                      help="sample one more benchmark instead of the original MMLU-Pro and free-text sets")
     run = commands.add_parser("ask")
     run.add_argument("--questions", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
@@ -407,7 +494,8 @@ def main(argv=None) -> None:
         print(json.dumps(published, indent=2, default=str))
         return
     if args.command == "sample":
-        print(json.dumps(sample(args.bench_dir, args.output)))
+        print(json.dumps(sample_dataset(args.bench_dir, args.output, args.dataset) if args.dataset
+                         else sample(args.bench_dir, args.output)))
     elif args.command == "ask":
         import os
 
