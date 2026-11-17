@@ -62,8 +62,12 @@ It does not mean:
 
 - every answer is right, or that no single task gets worse;
 - the limit holds on traffic unlike the certify tasks. The proxy does not check this.
-  Shadow mode warns when cheaper answers differ from the frontier's more often than the
-  limit, which is a reason to grade, not a measured loss (`../docs/PROXY.md`);
+  Shadow mode's drift check counts accepted cheaper answers that differ from the
+  frontier's. It warns when their share is clearly above what the certification allows
+  for: the limit plus the share that differed without a loss on the graded tasks, recorded
+  in the policy file when it is frozen. A warning is a reason to grade a sample, not a
+  measured loss. On the recorded runs a steady loss of twice the limit seldom warned
+  within 1,000 requests (`../docs/PROXY.md`, `2026-11-17-drift-check/README.md`);
 - certainty. One certification in 20 can be wrong by design.
 
 Small samples certify little. With about 80 certify tasks, zero losses still gives a
