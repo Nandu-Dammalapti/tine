@@ -993,8 +993,9 @@ def test_a_held_out_request_skips_the_policy_and_is_served_and_measured_by_the_f
     assert row["holdout"] == 1 and row["model"] == "frontier"
     assert row["cost_usd"] == pytest.approx(0.2) and row["routing_cost_usd"] == 0.0
     assert row["baseline_cost_usd"] == pytest.approx(0.2) and row["baseline_source"] == "proxy_measured"
-    # It names the policy it was held out from; no stage ran, so it has none.
+    # It names the policy it was held out from; no stage ran, so it has none, and no checks.
     assert len(row["policy_sha256"]) == 64 and row["route_stage"] is None and row["route_skip_reason"] is None
+    assert row["checks"] is None
     # A request with tools is held out like any other, so both groups see the same traffic.
     tools = {**QUESTION, "tools": [{"type": "function", "function": {"name": "lookup"}}]}
     _, row = ask(config(route_policies={"a": {"openai": AGREE}}, audit_rate=1.0), world(AGREEING, []), body=tools)

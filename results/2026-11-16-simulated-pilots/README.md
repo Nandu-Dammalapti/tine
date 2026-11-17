@@ -143,7 +143,7 @@ Teams are named H (Helpwise), P (Patchwork), N (Northbridge), Q (Quill) and B (B
 | 7 | Partly fixed: a drift warning against epsilon, in `/v1/shadow` and the page headline. It also fires on the healthy replay (5.28% differing against 2%). Comparing with the certification-time rate is not built. |
 | 8 | Fixed: freeze digest, `--tenant`, stricter guarantee validation, "Tenant named in the policy file", "not confirmed" for an edited file. A digest is not a signature. |
 | 9 | Documented: POLICY.md "Certify on your own graded tasks"; AGENTS.md counts now say certify tasks and give totals. |
-| 10 | Documented only: PROXY.md and the `savings_scope` text say the saving cannot be measured under live routing. The holdout is not built. |
+| 10 | Partly fixed: an opt-in random frontier holdout (`TINE_AUDIT_RATE`) gives `holdout_estimate` in `/v1/savings` and on the report page, with a 95% interval. Tested with stand-ins only; never run on real traffic. What is billable is not written down. |
 | 11 | Partly fixed: a streamed row's tokens and answer cost are read from the relayed stream and written when it ends, tested with stand-in streams. Streams are still not routed, and their baseline stays unknown. |
 | 12 | Fixed: `baseline_source`; only proxy-measured baselines count as verified; caller-supplied ones are reported apart and cannot overwrite a measured one. |
 | 13 | Fixed: `/health` checks the stages, load errors name the variable and path, and DEPLOY.md has "Turn routing off". Policies are still read only at startup. |

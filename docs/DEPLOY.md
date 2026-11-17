@@ -325,7 +325,7 @@ Run one container at a time: PROXY.md asks that all writers restart together on 
 one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
-`policy_sha256`, `route_stage`, `route_skip_reason` and `checks_json` columns to `requests`,
+`policy_sha256`, `route_stage`, `route_skip_reason`, `checks_json` and `holdout` columns to `requests`,
 `skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
@@ -335,7 +335,7 @@ by this rule:
   it.
 
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
-have no `policy_sha256`, `route_stage` or `checks_json`, older shadow runs have no check steps,
+have no `policy_sha256`, `route_stage`, `checks_json` or `holdout`, older shadow runs have no check steps,
 earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
 
 ## Checked without Docker
