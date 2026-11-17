@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
-from .ledger import MAX_TOKEN_COUNT, Ledger, MeasuredBaselineError, MeasuredCostError
+from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineError, MeasuredCostError
 from .policy import FREEZE_EDITED, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
@@ -120,6 +120,11 @@ class ProxyConfig:
     # every row a route policy ran for. None for a configuration built in code: the
     # proxy then hashes the policies' canonical JSON.
     route_policies_sha256: str | None = None
+    # The share of requests a route policy could serve that skip it and go to the
+    # frontier instead, chosen from the request id. Their costs against the routed
+    # requests' give the saving under live routing (``holdout_estimate`` in the ledger
+    # report). 0 turns the holdout off.
+    audit_rate: float = 0.0
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -163,6 +168,7 @@ class ProxyConfig:
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
             ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
+            audit_rate=float(os.environ.get("TINE_AUDIT_RATE", "0")),
         )
 
     def checks_for(self, tenant: str) -> dict[str, list]:
@@ -210,6 +216,8 @@ class ProxyConfig:
         if (not _finite_number(self.shadow_sample_rate) or isinstance(self.shadow_sample_rate, bool)
                 or not 0 <= self.shadow_sample_rate <= 1):
             raise ValueError("shadow_sample_rate must be between 0 and 1")
+        if not _finite_number(self.audit_rate) or not 0 <= self.audit_rate <= 1:
+            raise ValueError("audit_rate must be between 0 and 1")
         if self.shadow_max_cost_usd is not None and (
                 not _finite_number(self.shadow_max_cost_usd) or self.shadow_max_cost_usd < 0):
             raise ValueError("shadow_max_cost_usd must be a finite nonnegative amount")
@@ -544,6 +552,10 @@ def create_app(
         except MeasuredCostError:
             raise HTTPException(status_code=409, detail="The proxy measured this request's baseline cost and "
                                                         "recorded its costs; a recorded cost cannot be replaced") from None
+        except HoldoutCostError:
+            raise HTTPException(status_code=409, detail="This request is in the frontier holdout comparison, which "
+                                                        "rests on the costs the proxy recorded; its costs cannot be "
+                                                        "set") from None
         if not found:
             raise HTTPException(status_code=404, detail="Request not found")
         return {"request_id": request_id, "success": success}
@@ -761,14 +773,20 @@ def create_app(
         routing_spent: float | None = None
         route = config.route_policies.get(identity, {}).get(provider)
         routable = route is not None and bool(route["stages"]) and not stream and selected == frontier
+        # The frontier holdout: with an audit rate, every request the policy could serve
+        # is in one of two groups. A held-out one skips the policy and goes to the
+        # frontier with nothing spent on routing. The salt keeps this choice apart from
+        # the shadow sample, which reads the same request id.
+        holdout = (sampled(f"holdout:{request_id}", config.audit_rate)
+                   if routable and config.audit_rate > 0 else None)
         # A request with tool definitions goes straight to the frontier when the policy
         # has an agreement stage: cheaper models cannot agree on tool calls. Nothing is
         # spent on the way, and the ledger row says why.
-        route_skip = TOOLS_SKIP_REASON if routable and skips_for_tools(route, body) else None
-        if route_skip is not None:
+        route_skip = TOOLS_SKIP_REASON if routable and not holdout and skips_for_tools(route, body) else None
+        if route_skip is not None or holdout:
             routing_spent = 0.0
         # Only a policy whose stages were tried traces its row to the policy file.
-        routing_ran = routable and route_skip is None
+        routing_ran = routable and route_skip is None and not holdout
         if routing_ran:
             try:
                 call, named_checks = stage_tools(identity, provider, route, body, url, headers)
@@ -798,7 +816,7 @@ def create_app(
                         cached_tokens=tokens["cached_tokens"], cost_usd=answer_cost,
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
                         baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
-                        policy_sha256=policy_sha256, route_stage=routed["stage"],
+                        policy_sha256=policy_sha256, route_stage=routed["stage"], holdout=holdout,
                         latency_ms=(time.monotonic() - started) * 1000)
                     if not recorded and config.ledger_required:
                         return unrecorded(request_id)
@@ -837,8 +855,11 @@ def create_app(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
             stream=stream, fallback_used=fallback, cache_context=cache_context, route_skip_reason=route_skip,
+            holdout=holdout,
             # A route policy ran and sent the request on to the frontier.
             **({"policy_sha256": policy_sha256, "route_stage": "frontier"} if routing_ran else {}),
+            # A held-out request names the policy it was held out from; no stage ran.
+            **({"policy_sha256": policy_sha256} if holdout else {}),
         )
         if response is None:
             # What a route policy spent before the frontier failed is still known. No
@@ -912,7 +933,7 @@ def create_app(
         if not recorded and config.ledger_required:
             return unrecorded(request_id)
         if route is not None and route["stages"] and not stream:
-            result_headers["x-tine-route"] = "frontier"
+            result_headers["x-tine-route"] = "holdout" if holdout else "frontier"
         if route_skip is not None:
             result_headers["x-tine-route-skipped"] = "tools"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"

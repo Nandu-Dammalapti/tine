@@ -1,6 +1,6 @@
 # Local proxy and ledger
 
-The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
+The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
 
 To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). The image has not been built or run yet.
 
@@ -87,9 +87,60 @@ only escalated requests and cannot come out positive for the policy as a whole. 
 is the answer's token counts at the frontier's prices; in the simulated pilots it came to about 0.45
 times the frontier's recorded cost, because cheap answers were shorter. Neither figure is the policy's
 saving. Measuring that needs a random share of requests always sent to the frontier (a holdout), with a
-confidence interval. **That holdout is not built** (it is designed as `TINE_AUDIT_RATE` in
-[LEARNING_LOOP.md](LEARNING_LOOP.md)). Until it exists, the saving of live routing is a projection from
-shadow mode or an estimate, never a measurement, and no fee should rest on it.
+confidence interval. `TINE_AUDIT_RATE` sets that share. It is off by default (0), and without it the
+saving of live routing is a projection from shadow mode or an estimate, never a measurement.
+
+**The frontier holdout.** With `TINE_AUDIT_RATE` between 0 and 1, every request a route policy could
+serve (the tenant and provider have a policy with stages, the request does not stream and asks for the
+frontier model) falls in one of two groups:
+
+- **Held out**, a share equal to the rate, chosen from the request id as shadow sampling is
+  (`sampled("holdout:" + request_id, rate)`; the prefix keeps it apart from the shadow sample). The
+  policy is skipped and the frontier answers, tools or not. The response carries `x-tine-route:
+  holdout`. The ledger row has `holdout` 1, `routing_cost_usd` 0.0, the frontier's cost as both
+  `cost_usd` and a `proxy_measured` baseline, and `policy_sha256` naming the policy it was held out
+  from, with `route_stage` NULL.
+- **Routed**, the rest: handled exactly as without a holdout (a stage, the frontier, or skipped for
+  tools). The row has `holdout` 0.
+
+Rows outside the comparison have `holdout` NULL: no policy, a streamed request, a request for an
+allowlisted model, and cache hits (the cache is looked up before the choice is made). Older ledgers
+gain the column, NULL on every existing row. Nothing else changes for a held-out request. A tenant's
+provider cannot have a shadow policy as well as a route policy, so a held-out request is never shadowed.
+
+`GET /v1/savings` then carries `holdout_estimate` (null while no row is in the comparison):
+
+- `routed_requests` and `holdout_requests`: requests in each group whose answer and routing costs are
+  both known. `routed_unknown_cost_requests` and `holdout_unknown_cost_requests` count those left out,
+  for example a 502 or a model with no price.
+- `routed_mean_cost_usd` (answer plus routing cost, escalations included) and `holdout_mean_cost_usd`.
+- `saving_fraction` = 1 - mean(routed) / mean(holdout), with `saving_fraction_low` and
+  `saving_fraction_high` at `confidence` 0.95. The interval is a normal approximation on the ratio
+  (delta method, the groups independent): the standard error is
+  sqrt(var(routed)/n_routed + R^2 var(holdout)/n_holdout) / mean(holdout), with R the ratio, and the
+  interval is the saving plus or minus 1.96 of them. `method` says so in words.
+- No mean, saving or interval is given until each group has `min_requests_per_group` (30) requests with
+  known costs, or while the held-out mean is 0.
+- `scope` says what the figure is: an estimate from a random sample, not a billing amount. It assumes
+  the two groups are alike, and the random choice is what makes them so. It does not measure quality.
+
+On a request in the comparison (`holdout` 0 or 1), a PATCH that sets `cost_usd` or `routing_cost_usd`
+returns 409 ("This request is in the frontier holdout comparison, which rests on the costs the proxy
+recorded; its costs cannot be set") and changes nothing. The outcome and a baseline the proxy did not
+measure can still be set.
+
+Limits:
+
+- The estimate pools every row in the ledger with `holdout` set, whatever its policy digest or the rate
+  at the time. Changing the policy or the rate mixes periods in different proportions in the two
+  groups. Start a new ledger, or filter by `policy_sha256` in SQL, after a change.
+- At a rate of 5% and 30 held-out requests needed, the first figure needs about 600 eligible requests.
+  The interval is wide until both groups are much larger, and it is only approximate for small groups
+  or very skewed costs.
+- Held-out requests cost the frontier's price. That is part of the price of measuring, and it lowers
+  the saving the tenant gets by about the rate times the saving.
+- It says nothing about quality. A routed answer that was wrong costs the same here as a right one.
+- Built and tested with stand-in providers. Never run on real traffic or used by a real customer.
 
 ### Audit trail
 
@@ -103,7 +154,11 @@ shadow mode or an estimate, never a measurement, and no fee should rest on it.
     frontier. That includes a policy error and a frontier failure (a 502).
   - Both are NULL when no route policy ran: no policy for that tenant and provider, a policy with
     `stages: []`, a streamed request, a request for an allowlisted model, a request skipped for tools,
-    and cache hits. A cache hit is traced through `cached_from` to the row that served it.
+    and cache hits. A cache hit is traced through `cached_from` to the row that served it. A request
+    held out for the frontier (`holdout` 1) has `policy_sha256` and a NULL `route_stage`.
+- `requests.holdout` (integer, nullable): 1 for a request held out for the frontier, 0 for one routed
+  through the policy, NULL outside the holdout comparison (see Measuring the saving under live
+  routing).
   - The policy file is read only at startup. A changed file shows up as a new digest only after a
     restart.
 - `requests.route_skip_reason` (text, nullable) says why a request went past its route policy
@@ -335,6 +390,8 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
 - `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
   `TINE_TIMEOUT_SECONDS`. When it runs out the request goes to the frontier.
+- `TINE_AUDIT_RATE`: the share of requests held out for the frontier, between 0 and 1. Default 0, off
+  (see Measuring the saving under live routing).
 
 For a non-streaming request that would have gone to the frontier, the proxy tries the policy's stages in
 order, with the same request and the model swapped. A stage's models are called together. If the
@@ -406,8 +463,8 @@ What the ledger records for a routed request:
 The quality limit of a route policy is the one certified when it was frozen, on the tasks it was
 frozen from. The proxy does not check that live traffic resembles those tasks; shadow mode's drift
 warning is the only signal. Outcomes still have to be reported through the outcome endpoint for
-savings to count as verified. Under live routing the saving itself cannot be measured (see Measuring
-the saving under live routing).
+savings to count as verified. Under live routing the saving itself is measured only with a frontier
+holdout (`TINE_AUDIT_RATE`; see Measuring the saving under live routing).
 
 Limits of routing and shadow mode that are not fixed in code:
 

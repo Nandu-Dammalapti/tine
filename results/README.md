@@ -171,8 +171,10 @@ Whether either becomes the default is still a team decision.
   are not signed: whoever edits a file can write a new digest. `task_type` is logged
   at startup and not read per request; the docs ask for one tenant token per task
   type. Stated in [docs/PROXY.md](../docs/PROXY.md) and [docs/POLICY.md](../docs/POLICY.md).
-- Under live routing the saving cannot be measured without a random frontier holdout,
-  which is not built ([docs/PROXY.md](../docs/PROXY.md)).
+- Under live routing the saving is measured only with the random frontier holdout
+  (`TINE_AUDIT_RATE`, off by default), which gives an estimate with a 95% interval from a
+  random sample and says nothing about quality. It is built and tested with stand-ins and
+  has never run on real traffic ([docs/PROXY.md](../docs/PROXY.md)).
 - The certification planning figures in [docs/PLANNING.md](../docs/PLANNING.md) are
   for one chain tested alone. Nothing yet models the many-chain sequence that
   `tine cascade` and `tine freeze-policy` run today.

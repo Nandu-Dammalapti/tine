@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import patch
 
-from tine.ledger import Ledger, request_fingerprint
+from tine.ledger import HOLDOUT_MIN_REQUESTS, HoldoutCostError, Ledger, holdout_estimate, request_fingerprint
 
 
 def row(ledger, tenant="a", **overrides):
@@ -139,7 +139,7 @@ def test_savings_scope_says_live_routing_saving_needs_a_frontier_holdout():
     report = Ledger().report("a")
     assert "Under live routing" in report["savings_scope"]
     assert "not the policy's saving" in report["savings_scope"]
-    assert "always sent to the frontier, which is not built" in report["savings_scope"]
+    assert "always sent to the frontier: with TINE_AUDIT_RATE set, holdout_estimate" in report["savings_scope"]
 
 
 def test_routing_costs_can_exceed_apparent_answer_savings():
@@ -493,3 +493,83 @@ def test_a_ledger_from_before_baseline_sources_and_policy_traces_is_upgraded(tmp
     assert upgraded.report("a") == before
     assert upgraded.update_outcome("a", updated, False) and len(upgraded.outcome_events("a", updated)) == 1
     upgraded.close()
+
+
+def test_holdout_estimate_shows_no_figure_below_the_minimum_count():
+    estimate = holdout_estimate([0.5] * HOLDOUT_MIN_REQUESTS, [1.0] * (HOLDOUT_MIN_REQUESTS - 1), routed_unknown=2)
+    assert estimate["routed_requests"] == HOLDOUT_MIN_REQUESTS and estimate["holdout_requests"] == HOLDOUT_MIN_REQUESTS - 1
+    assert estimate["routed_unknown_cost_requests"] == 2
+    for name in ("routed_mean_cost_usd", "holdout_mean_cost_usd", "saving_fraction", "saving_fraction_low",
+                 "saving_fraction_high"):
+        assert estimate[name] is None
+    # A held-out group that cost nothing gives no ratio either.
+    assert holdout_estimate([0.5] * 40, [0.0] * 40)["saving_fraction"] is None
+
+
+def test_holdout_estimate_is_one_minus_the_ratio_of_means_with_a_delta_method_interval():
+    import statistics
+
+    routed = [0.1, 0.3] * 30 + [1.0] * 10      # mean 0.3, escalations included
+    holdout = [0.8, 1.2] * 20                   # mean 1.0
+    estimate = holdout_estimate(routed, holdout)
+    ratio = statistics.fmean(routed) / statistics.fmean(holdout)
+    error = (statistics.variance(routed) / len(routed) + ratio**2 * statistics.variance(holdout) / len(holdout)) ** 0.5
+    assert estimate["routed_mean_cost_usd"] == pytest.approx(statistics.fmean(routed))
+    assert estimate["holdout_mean_cost_usd"] == pytest.approx(1.0)
+    assert estimate["saving_fraction"] == pytest.approx(1 - ratio)
+    assert estimate["saving_fraction_low"] == pytest.approx(1 - ratio - 1.959964 * error, abs=1e-6)
+    assert estimate["saving_fraction_high"] == pytest.approx(1 - ratio + 1.959964 * error, abs=1e-6)
+    assert estimate["confidence"] == 0.95 and "delta method" in estimate["method"]
+    for words in ("estimate from a random sample", "assumes the two groups are alike", "does not measure quality"):
+        assert words in estimate["scope"]
+    # Routing that costs more than the frontier is a negative saving, not hidden.
+    assert holdout_estimate([2.0, 2.2] * 20, [1.0, 1.2] * 20)["saving_fraction"] < 0
+
+
+def test_report_compares_the_routed_and_held_out_groups_and_counts_unknown_costs():
+    ledger = Ledger()
+    assert ledger.report("a")["holdout_estimate"] is None
+    for _ in range(HOLDOUT_MIN_REQUESTS):
+        row(ledger, model="small", cost_usd=0.1, routing_cost_usd=0.1, holdout=False)
+        row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0, holdout=True)
+    row(ledger, cost_usd=None, routing_cost_usd=0.05, holdout=False)   # an upstream failure: cost not known
+    row(ledger, cost_usd=5.0, routing_cost_usd=0.0)                    # not in the comparison
+    row(ledger, tenant="b", cost_usd=9.0, routing_cost_usd=0.0, holdout=False)
+    estimate = ledger.report("a")["holdout_estimate"]
+    assert estimate["routed_requests"] == HOLDOUT_MIN_REQUESTS == estimate["holdout_requests"]
+    assert estimate["routed_unknown_cost_requests"] == 1 and estimate["holdout_unknown_cost_requests"] == 0
+    assert estimate["routed_mean_cost_usd"] == pytest.approx(0.2)
+    assert estimate["saving_fraction"] == pytest.approx(0.8)
+    assert estimate["saving_fraction_low"] == pytest.approx(0.8) == estimate["saving_fraction_high"]
+    with pytest.raises(ValueError, match="holdout"):
+        row(ledger, holdout=1)
+
+
+def test_costs_of_a_request_in_the_holdout_comparison_cannot_be_set_by_the_caller():
+    ledger = Ledger()
+    routed = row(ledger, model="small", cost_usd=0.1, routing_cost_usd=None, holdout=False)
+    held = row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0, holdout=True)
+    for request_id in (routed, held):
+        for name in ("cost_usd", "routing_cost_usd"):
+            with pytest.raises(HoldoutCostError):
+                ledger.update_outcome("a", request_id, True, **{name: 0.0})
+        assert ledger.outcome_events("a", request_id) == []
+    # The outcome itself, and a baseline the proxy did not measure, can still be set.
+    assert ledger.update_outcome("a", routed, True, baseline_cost_usd=1.0)
+    assert ledger.get("a", routed)["success"] is True and ledger.get("a", routed)["routing_cost_usd"] is None
+
+
+def test_holdout_column_is_added_to_an_older_ledger(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger, cost_usd=0.25, routing_cost_usd=0.0)
+    ledger.close()
+    with sqlite3.connect(path) as database:
+        database.execute("ALTER TABLE requests DROP COLUMN holdout")
+    migrated = Ledger(path)
+    assert migrated.get("a", request_id)["holdout"] is None
+    assert migrated.report("a")["holdout_estimate"] is None
+    assert migrated.get("a", row(migrated, holdout=True))["holdout"] == 1
+    migrated.close()

@@ -64,9 +64,12 @@ wrong. Outcomes reported for served answers (`requests.success`) never enter a
 certificate: people accept what they are shown, and the frontier's answer is
 missing. They feed the tripwire only.
 
-Grades come from an **audit slice**: a share of requests (`TINE_AUDIT_RATE`, new),
+Grades come from an **audit slice**: a share of requests (`TINE_AUDIT_RATE`),
 chosen by `sampled(request_id, rate)`, always answered by the frontier, with the
-policy run in the background. It continues after routing starts; today a tenant has
+policy run in the background. The first half is built: the proxy holds that share out
+for the frontier and `GET /v1/savings` compares its cost with the routed requests'
+(`holdout_estimate`, [PROXY.md](PROXY.md)). Running the policy in the background on
+held-out requests is not built (new). It continues after routing starts; today a tenant has
 a shadow policy or a route policy, never both. Grades arrive through
 `PATCH /v1/evidence/{request_id}` (new).
 
