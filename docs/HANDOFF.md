@@ -16,7 +16,7 @@ public benchmarks, and the one 2% certificate did not hold up
 ledger, frozen policies, shadow mode, live routing, a frontier holdout and a drift check
 are built at development quality on SQLite (`docs/PROXY.md`). All evidence is public
 data, the pilot work spans two days (2026-11-16 and 2026-11-17), and every paid call,
-$172.55 in all, went to one provider (`results/README.md`). No customer has used any of
+$179.00 in all, went to one provider (`results/README.md`). No customer has used any of
 it.
 
 ## 2. What is built
@@ -39,8 +39,8 @@ Status is quoted from `AGENTS.md` section 12 unless another file is named.
 | Shadow pause on provider rate limits | `tine/shadow.py`, `tine/proxy.py` | Met a real provider's limit once, in a test added after the plan |
 | Cost of streamed requests | `tine/proxy.py`, `tine/ledger.py` | Tested with stand-in streams. Streams are not shadowed, routed or cached |
 | Live pilot harness | `scripts/live_pilot.py` | Run with paid calls on five public benchmarks and one public ticket set |
-| Container packaging | `Dockerfile`, `docker-compose.yml`, `deploy/`, `docs/DEPLOY.md` | The current files have not been built or run by a daemon (section 5) |
-| Load test tool | `scripts/load_test.py`, `tests/test_load_test.py` | In the branch; no results folder yet (section 5) |
+| Container packaging | `Dockerfile`, `docker-compose.yml`, `deploy/`, `docs/DEPLOY.md` | Built and self-tested once on 2026-11-17 (18 of 18 checks, a stand-in provider). Never deployed or used by a customer (section 5) |
+| Load test tool | `scripts/load_test.py`, `tests/test_load_test.py` | Run once on one laptop against a stand-in provider: `results/2026-11-17-proxy-load-test` (section 5) |
 | Learning loop: certify a tenant's policy from its own traffic | `docs/LEARNING_LOOP.md` | A design. Not built |
 
 Not built: nightly per-tenant retraining, distillation, a production datastore, streaming
@@ -66,12 +66,14 @@ frontier, through the real proxy.
 | ARC-Challenge | Haiku alone, no check (3.6%) | 2.5% of 200 | same |
 | FinQA, exact | Haiku and Sonnet agree (2.6%) | 1.0% of 200 | same |
 | MATH-500, exact | Haiku and Sonnet agree (2.8%) | 1.0% of 100 | same |
-| IT support tickets | Sonnet alone, no check (3.15%) | 4.0% of 300 (12), upper bound 6.4% | `2026-11-17-ticket-pilot` |
+| IT support tickets, first run | Sonnet alone, no check (3.15%) | 4.0% of 300 (12), upper bound 6.4%. Flattered by tickets that repeat a prompt example | `2026-11-17-ticket-pilot` |
+| IT support tickets, repeats removed | Haiku and Sonnet agree, else Opus (3.46%) | 0.7% of 280 fresh tickets (2), upper bound 2.2% | `2026-11-17-ticket-pilot-clean` |
 
 - The MMLU-Pro certify part was 495 questions. The four other benchmarks had certify
   sets of about 400, or 165 for MATH-500.
 - ARC's held-out loss was 3.25%, close to the limit.
-- The ticket row is at its limit. See below.
+- The first ticket row is at its limit, and tickets that repeat a prompt example
+  flattered it. The clean rerun supports the pair policy instead. See below.
 
 ### The 2% pass was not confirmed
 
@@ -96,7 +98,8 @@ cost only and says nothing about quality.
 | ARC-Challenge | 104 / 46 | 97.3% (97.0-97.6%) | same |
 | FinQA, exact | 96 / 37 | 18.3% (4.9-31.6%) | same |
 | MATH-500, exact | 56 / 14 | Not shown: fewer than 30 held out | same |
-| IT support tickets | 216 / 84 | 49.4% (47.9-50.9%) | `2026-11-17-ticket-pilot/live-routing.csv` |
+| IT support tickets, Sonnet alone | 216 / 84 | 49.4% (47.9-50.9%). Do not quote: tickets that repeat a prompt example flattered it | `2026-11-17-ticket-pilot/live-routing.csv` |
+| IT support tickets, pair policy, repeats removed | 175 / 75 | 34.7% (29.0-40.5%) | `2026-11-17-ticket-pilot-clean/results.csv` |
 
 - MMLU-Pro has no holdout figure. Its routed run of 200 questions cost about 52% less
   than Opus, at 91.5% accuracy against 91.7-92.2%, before the holdout existed.
@@ -114,8 +117,15 @@ cost only and says nothing about quality.
 - A safer policy exists on paper. Haiku and Sonnet agreeing, else Opus, passed at 4%
   with a bound of 2.11%. On the 197 held-out tickets it lost 2.0% and saved 32.0%
   (`certification.csv`). The search preferred Sonnet alone because it saved more.
-- That pair policy was never run in shadow mode or live. No results file says it was
-  written to a policy file.
+- **Tickets that repeat a prompt example flattered the Sonnet-alone figures, the 49%
+  saving included.** 31 of the 300 shadow tickets and 34 of the 300 routed ones repeat
+  the text of one of the prompt's examples. Without the 31, Sonnet alone lost 12 of 269
+  (4.5%), over the limit. Do not quote the 49% saving.
+- **The clean rerun supports the pair policy instead**
+  (`2026-11-17-ticket-pilot-clean`, $6.45). With the repeats removed from the history,
+  the pair certified at 4%. On 280 fresh tickets in shadow mode it lost 0.7% against
+  Opus (2 of 280, upper bound 2.2%). Under live routing with a random 30% holdout the
+  measured saving was 35% (95% interval 29-40%).
 - Opus matches the staff label on only 76-82% of tickets, so the labels are noisy.
 
 ### Offline results on recorded answers
@@ -151,7 +161,7 @@ cost only and says nothing about quality.
 | Drift check: old policy files | A file frozen before the change has no baseline and gets a default allowance of 10 points. Freeze it again | same |
 | The 30-second first shadow pause | The provider's refusal carried no `retry-after`, so the proxy paused for its own 30 seconds. With the pause, 4 of 60 requests were shadowed. The pause was never seen to end | `2026-11-17-concurrency-and-long-shadow/README.md` |
 | Shadow needs spare capacity | The test key allows 25 requests in flight across all models. While real traffic nearly fills the account, shadow mode measures almost nothing | same, Limits |
-| Ticket prompt examples repeat | 30 of the 300 shadow tickets (10%) repeat one of the 35 examples in the prompt. 97 of the 300 repeat some earlier text; on new text the loss was 4.9% | `2026-11-17-ticket-pilot/README.md`, Step 3 |
+| Ticket prompt examples repeat | 30 of the 300 shadow tickets (10%) repeat one of the 35 examples in the prompt. 97 of the 300 repeat some earlier text; on new text the loss was 4.9%. The clean rerun removed the repeats and supports the pair policy, not Sonnet alone | `2026-11-17-ticket-pilot/README.md`, Step 3; `2026-11-17-ticket-pilot-clean/README.md` |
 | Streams | Passed through to the frontier. Never shadowed, routed or cached. The streamed share of traffic caps any saving | `docs/PROXY.md`, `docs/DEPLOY.md` |
 | SQLite | One file on one volume, one process, no replication. Prompts and responses are stored in plain text | `docs/DEPLOY.md`, What is development quality today |
 | Spend caps | Shadow spend has a per-tenant cap (`TINE_SHADOW_MAX_COST_USD`). It counts known costs only. The docs describe no cap on a tenant's real spend and no rate limit | `docs/PROXY.md`, The spending cap |
@@ -161,26 +171,31 @@ cost only and says nothing about quality.
 | Tokens and policies | Tenant tokens are static. Policies are not signed. `task_type` is not read per request, so use one token per task type | `docs/DEPLOY.md`, `results/README.md` |
 | Router rule and net-loss guarantee | Both exist as opt-in options. Whether either becomes the default is a team decision | `results/README.md`, Open decisions |
 
-Three docs lag the results. `docs/EVIDENCE.md` still opens with "The only live model
+Two docs lag the results. `docs/EVIDENCE.md` still opens with "The only live model
 calls were the judge's", though its section 4 reports the pilots. `README.md`'s Current
-state gives $131.38 and says nothing has served real traffic. `docs/DEPLOY.md` says
-"There is no load test" while `scripts/load_test.py` is in the branch.
+state gives $131.38 and says nothing has served real traffic.
 
 ## 5. Not yet run
 
-- **The container files as they now stand have not been built by a Docker daemon.** An
-  earlier Dockerfile was built once on 2026-11-17 and its container served 40 paid
-  requests through a route policy. The `Dockerfile` and `docker-compose.yml` were changed
-  afterwards. `docs/DEPLOY.md` says to expect to fix something on the first build.
-- **The one command to run is `python3 scripts/container_selftest.py`.** It needs Docker
-  running and nothing else. No model is called and nothing is paid for. It builds the
-  image, tests a running container against a stand-in provider, and prints PASS or FAIL
-  per check. The script itself has only run against a stand-in `docker` command.
-- **The load test has no results in the repository.** `python scripts/load_test.py matrix
-  --output FOLDER` runs the named scenarios against a stand-in provider on the same
-  machine. A run was in progress when this note was written, and its results are not in
-  the repo yet. Until they are, capacity is unknown. A run on a busy laptop sets
-  `busy_machine` and is not to be reported as a measurement (`scripts/load_test.py`).
+- **The container image was built and self-tested once, on 2026-11-17.**
+  `python3 scripts/container_selftest.py` ran against a real Docker daemon (Docker
+  29.9.3, macOS arm64) on the files of commit `2cb41a2`. The image built (861 MB) and
+  all 18 checks passed against a stand-in provider. No model was called
+  (`results/2026-11-17-container-selftest`).
+- **It has never been deployed or used by a customer.** One build, one machine. The
+  image of these files has served no paid request: an earlier Dockerfile's image served
+  40 the same day. The steps of `docs/DEPLOY.md`, Test the container on your own machine,
+  with a real key, have not been run by a daemon.
+- **The load test was run once, on one laptop** (`results/2026-11-17-proxy-load-test`,
+  24 scenarios, a stand-in provider on the same machine, no model called). The proxy
+  added about 0.7 ms at one request in flight and about 6 ms at 10 in flight with 2 s
+  replies. One process reached about 1,100 requests a second. Over 100 requests in
+  flight queue on the upstream pool: at 250 each waited about 3 s more.
+- **That is not a capacity promise.** Same machine, loopback, no real provider. Three
+  rows are flagged `busy_machine`. Nothing was measured in the container or over a
+  network.
+- **Still not run:** a deployment, a real provider's stream through the proxy, the
+  named checks with real services, and anything on a customer's traffic.
 
 ## 6. What to build next, in order
 

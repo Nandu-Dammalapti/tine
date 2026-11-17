@@ -1,0 +1,19 @@
+image builds                  PASS  docker compose build tine
+containers start              PASS  docker compose up -d --wait
+container healthy             PASS  status running, health healthy
+health                        PASS  status 200, routing frontier-default, shadow off
+token needed                  PASS  401 with no token, 401 with a wrong one
+request                       PASS  status 200, served by selftest-frontier, route -, ledger recorded
+streamed request              PASS  status 200, served by selftest-frontier, route -, ledger recorded
+savings                       PASS  tenant 'selftest', 2 new request(s), answer cost unknown for 0, known answer cost $0.000270
+ledger copy                   PASS  backup-ledger and docker compose cp: the copy on the host holds 2 of 2 request(s)
+savings report page           PASS  a page of 11,878 characters was made inside the container from the copy and the policies file
+runs as uid 10001             PASS  id -u printed '10001'
+read-only except /data, /tmp  PASS  writable: /app=False /config=False /var/tmp=False /data=True /tmp=True
+image holds only the package  PASS  /app holds pyproject.toml, requirements-dev.lock, requirements.txt, tine
+policy edit, then restart     PASS  /health routing policy; status 200, served by selftest-cheap, route stage-0, ledger recorded
+ledger kept over a restart    PASS  3 request(s) in the ledger after the restart, 2 before it
+stop with a stream open       PASS  stream status 200; stopped in 20.6 s (Docker kills at 30), exit code 143
+ledger whole after the stop   PASS  4 request(s) in the ledger after the stop and start
+clean up                      PASS  containers, network and test ledger volume removed
+All checks passed. No model was called and nothing was paid for.

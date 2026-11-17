@@ -33,9 +33,10 @@ server exists beyond the proxy.
   - to answer real requests through the proxy in the two live pilots, $23.65 and
     $60.00. That is $131.38 with the judge runs (`README.md`);
   - on 2026-11-17, $26.43 for the rate-limit tests and a 1,500-question shadow run
-    (`results/2026-11-17-concurrency-and-long-shadow`) and $14.74 for the ticket pilot
-    (`results/2026-11-17-ticket-pilot`). With these the results files add up to
-    $172.55. Spend that is in no results file is not counted here.
+    (`results/2026-11-17-concurrency-and-long-shadow`), $14.74 for the ticket pilot
+    (`results/2026-11-17-ticket-pilot`) and $6.45 for the ticket pilot again without
+    tickets that repeat a prompt example (`results/2026-11-17-ticket-pilot-clean`). With
+    these the results files add up to $179.00. Spend that is in no results file is not counted here.
 
   Open models of 14B and 32B were run locally and on Colab
   (`results/2026-11-11-judge-pilot`). The proxy has run with a real Anthropic key in
@@ -96,7 +97,7 @@ and task splitting, are in the design and have not been built or tested.
 | Savings report page fields: freeze digest state, drift warning, shadow coverage, caller-supplied baselines, the holdout estimate | Built and tested with stand-in data (`docs/REPORT.md`). Never seen by a customer |
 | Ledger backup while the proxy runs (`python -m tine backup-ledger`) | Built and tested; run in the image of the earlier Dockerfile beside a stand-in writer, not beside a real proxy |
 | Live pilot harness (`scripts/live_pilot.py`) | Built, tested with a fake provider, and run with paid calls. A test tool, not part of the product |
-| Docker deployment in the customer's cloud | Packaging written (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`). An earlier Dockerfile was built and run once (40 paid requests, 2026-11-17); the current files have not been built |
+| Docker deployment in the customer's cloud | Packaging written (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`). An earlier Dockerfile was built and run once (40 paid requests, 2026-11-17); the current files were built and self-tested once the same day (18 of 18 checks, a stand-in provider; `results/2026-11-17-container-selftest`) and have never been deployed or used by a customer |
 
 ## How the work is being done
 

@@ -1,15 +1,15 @@
 # Tine development proxy.
-# NOT YET BUILT BY A DOCKER DAEMON IN THIS FORM. An earlier version, without the
-# lock-file constraints, was built and run once on 2026-11-17 (docs/DEPLOY.md). Not
-# every step below has been run.
+# BUILT AND SELF-TESTED ONCE BY A DOCKER DAEMON IN THIS FORM, on 2026-11-17: 18 of 18
+# checks against a stand-in provider (results/2026-11-17-container-selftest). Never
+# deployed or used by a customer. An earlier version, without the lock-file
+# constraints, was built and run once the same day (docs/DEPLOY.md).
 # Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes
 # requirements.txt, a pip dry-run resolve of its lines for Linux (nothing was
 # installed), the image's command (on 127.0.0.1, not 0.0.0.0), the health check
 # command, requests and a stop.
-# Not run in their present form: the COPY that now brings requirements-dev.lock, and
-# the pip install with that lock as constraints. The base image, the COPY of tine/, the
-# user-creation step (groupadd, useradd, chown, chmod), USER and VOLUME are unchanged
-# from the image that was built once.
+# Run by a Docker daemon on 2026-11-17, in one build and self-test of these files: every
+# step, the COPY that brings requirements-dev.lock, the pip install with that lock as
+# constraints and the user-creation step (groupadd, useradd, chown, chmod) included.
 # docs/DEPLOY.md, "Checked without Docker", says what that covers and what it does not.
 #
 # The base image is pinned by tag. For a real deployment pin it by digest as well
