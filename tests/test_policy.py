@@ -473,3 +473,161 @@ def test_freeze_policy_writes_the_answer_comparison_only_when_asked(tmp_path, ca
     with pytest.raises(SystemExit):
         main([*common, "--output", str(tmp_path / "bad.json"), "--answer-compare", "numeric"])
     assert "--answer-compare" in capsys.readouterr().err and not (tmp_path / "bad.json").exists()
+
+
+def recorded_with_matches(tasks=600, seed=0):
+    """``recorded``, with a pair that is sometimes wrong when it agrees and checks that
+    also say whether the pair's answer equals the frontier's. When both are right the
+    answers are equal one time in twenty less than always (the same value written two
+    ways); when exactly one is right they differ; when both are wrong they differ half
+    the time."""
+    rng = np.random.default_rng(seed)
+    rows, checks = [], []
+    for index in range(tasks):
+        task_id = f"t{index}"
+        agree, right, frontier_right = rng.random() < 0.7, rng.random() < 0.99, rng.random() < 0.9
+        if right and frontier_right:
+            matches = rng.random() < 0.95
+        else:
+            matches = not right and not frontier_right and rng.random() < 0.5
+        base = {"tenant": "acme", "task_id": task_id, "prompt": f"question {index}", "task_type": "quiz"}
+        rows.append({**base, "model": "frontier", "success": bool(frontier_right), "cost_usd": 10.0})
+        rows.append({**base, "model": "a+b", "success": bool(right), "cost_usd": 1.0})
+        checks.append({"task_id": task_id, "model": "a+b", "passed": bool(agree), "matches_frontier": bool(matches)})
+    return pd.DataFrame(rows), pd.DataFrame(checks)
+
+
+def test_freeze_policy_records_how_often_accepted_answers_differed_from_the_frontier_without_a_loss():
+    frame, checks = recorded_with_matches()
+    policy = freeze_policy(frame, "frontier", checks, epsilon=0.04)
+    assert policy["stages"] == [{"models": ["a", "b"], "check": "agreement"}]
+    block = policy["drift_baseline"]
+    assert list(policy)[-2:] == ["drift_baseline", "provenance"]
+    assert block["parts"] == ["certify", "test"] and block["answer_compare"] == "exact"
+    assert set(block["by_part"]) == {"choose", "certify", "test"}
+    # Counted here from the same rows, without the split: the three parts hold every task once.
+    table = checks.merge(frame.pivot(index="task_id", columns="model", values="success"), on="task_id")
+    accepted = table[table.passed]
+    differing = accepted[~accepted.matches_frontier]
+    lost = differing[differing.frontier & ~differing["a+b"]]
+    parts = block["by_part"].values()
+    assert sum(part["tasks"] for part in parts) == len(table) == 600
+    assert sum(part["compared"] for part in parts) == len(accepted)
+    assert sum(part["differing"] for part in parts) == len(differing) > len(lost) > 0
+    assert sum(part["differing_not_lost"] for part in parts) == len(differing) - len(lost)
+    # The drift check uses the certify and test parts together; the choose part picked the chain.
+    for name in ("tasks", "compared", "differing", "differing_not_lost"):
+        assert block[name] == block["by_part"]["certify"][name] + block["by_part"]["test"][name]
+    assert block["by_part"]["certify"]["tasks"] == policy["guarantee"]["certify_tasks"]
+    assert block["by_part"]["test"]["tasks"] == policy["estimate"]["test_tasks"]
+    assert block["accepted"] == block["compared"] and block["tasks"] > block["compared"]
+    assert block["differing"] == block["differing_lost"] + block["differing_not_lost"]
+    # A loss is a differing answer, so the test part's loss is counted among them.
+    test_part = block["by_part"]["test"]
+    assert (test_part["differing"] - test_part["differing_not_lost"]) / test_part["tasks"] == pytest.approx(
+        policy["estimate"]["degradation_rate"])
+    # The block is covered by the freeze digest, and a policy that carries it loads.
+    written = json.loads(dumps(policy))
+    assert freeze_state(written) == FREEZE_UNCHANGED and validate_policy(written) is written
+    edited = {**written, "drift_baseline": {**block, "differing_not_lost": block["differing"]}}
+    assert validate_policy(edited) is edited and freeze_state(edited) == FREEZE_EDITED
+    # The comparison named in the block is the policy's own.
+    by_value = freeze_policy(frame, "frontier", checks, epsilon=0.04, answer_compare="math")
+    assert by_value["drift_baseline"] == {**block, "answer_compare": "math"}
+
+
+def test_checks_that_do_not_say_whether_answers_match_freeze_the_policy_as_before():
+    frame, checks = recorded_with_matches()
+    with_block = freeze_policy(frame, "frontier", checks, epsilon=0.04)
+    without = freeze_policy(frame, "frontier", checks.drop(columns="matches_frontier"), epsilon=0.04)
+    assert "drift_baseline" not in without and list(without) == [key for key in with_block if key != "drift_baseline"]
+    for key in without:
+        if key != "provenance":
+            assert without[key] == with_block[key], key
+    assert {key: value for key, value in without["provenance"].items() if key not in ("created", DIGEST_FIELD)} == {
+        key: value for key, value in with_block["provenance"].items() if key not in ("created", DIGEST_FIELD)}
+    # One accepted answer whose match is not known: no baseline is better than a wrong one.
+    unknown = checks.astype({"matches_frontier": object})
+    unknown.loc[unknown.index[unknown.passed][0], "matches_frontier"] = None
+    assert "drift_baseline" not in freeze_policy(frame, "frontier", unknown, epsilon=0.04)
+    # An unknown match on a task the pair did not accept does not matter.
+    unknown = checks.astype({"matches_frontier": object})
+    unknown.loc[~unknown.passed, "matches_frontier"] = None
+    assert freeze_policy(frame, "frontier", unknown, epsilon=0.04)["drift_baseline"] == with_block["drift_baseline"]
+    # Nothing certified: no stage, so nothing to compare live.
+    frame.loc[frame.model == "a+b", "success"] = False
+    assert "drift_baseline" not in freeze_policy(frame, "frontier", checks, epsilon=0.04)
+
+
+def test_the_drift_baseline_walks_the_chain_and_leaves_out_answers_a_named_check_accepted():
+    from tine.policy import _drift_baseline
+
+    # Columns: the pair a+b, the single model c, the frontier. Eight tasks.
+    outcomes = np.array([[1, 1, 1], [0, 1, 1], [1, 1, 0], [0, 0, 0], [0, 1, 1], [0, 1, 1], [1, 1, 1], [0, 0, 1]], bool)
+    passes = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1], [0, 1, 1], [0, 1, 1], [1, 1, 1], [0, 1, 1]], bool)
+    matches = np.array([[True, None, None], [False, None, None], [False, None, None], [False, None, None],
+                        [None, False, None], [None, True, None], [False, None, None], [None, False, None]], object)
+    parts = {"choose": np.array([1, 1, 0, 0, 0, 0, 0, 0], bool), "certify": np.array([0, 0, 1, 1, 1, 1, 0, 0], bool),
+             "test": np.array([0, 0, 0, 0, 0, 0, 1, 1], bool)}
+    stages = [{"models": ["a", "b"], "check": "agreement"}, {"models": ["c"], "check": "none"}]
+    block = _drift_baseline([0, 1], stages, outcomes, passes, matches, 2, parts, "exact")
+    # Task 1 is a loss in the choose part. In the other two parts tasks 2 (the frontier is wrong), 3 (both wrong),
+    # 4 and 6 (both right, written differently) differ without a loss, and task 7 is a loss.
+    assert block == {
+        "parts": ["certify", "test"], "answer_compare": "exact", "tasks": 6, "accepted": 6, "compared": 6,
+        "differing": 5, "differing_lost": 1, "differing_not_lost": 4,
+        "by_part": {"choose": {"tasks": 2, "compared": 2, "differing": 1, "differing_not_lost": 0},
+                    "certify": {"tasks": 4, "compared": 4, "differing": 3, "differing_not_lost": 3},
+                    "test": {"tasks": 2, "compared": 2, "differing": 2, "differing_not_lost": 1}}}
+    # With a named check on the single model its accepted answers are not compared, live or here.
+    judged = [stages[0], {"models": ["c"], "check": "tests+judge"}]
+    block = _drift_baseline([0, 1], judged, outcomes, passes, matches, 2, parts, "math")
+    assert (block["tasks"], block["accepted"], block["compared"], block["differing"]) == (3, 6, 3, 3)
+    assert block["differing_not_lost"] == 3 and block["by_part"]["test"] == {
+        "tasks": 1, "compared": 1, "differing": 1, "differing_not_lost": 1}
+    # No block: no stage, no column, no compared stage, or a compared accepted answer of unknown match.
+    assert _drift_baseline([], [], outcomes, passes, matches, 2, parts, "exact") is None
+    assert _drift_baseline([0, 1], stages, outcomes, passes, None, 2, parts, "exact") is None
+    assert _drift_baseline([1], judged[1:], outcomes, passes, matches, 2, parts, "exact") is None
+    matches[5, 1] = None
+    assert _drift_baseline([0, 1], stages, outcomes, passes, matches, 2, parts, "exact") is None
+    assert _drift_baseline([0, 1], judged, outcomes, passes, matches, 2, parts, "exact") is not None
+
+
+@pytest.mark.parametrize("block", [
+    None, [], "7 of 692", {}, {"tasks": 692}, {"tasks": 692, "differing": 16},
+    {"tasks": 0, "differing": 0, "differing_not_lost": 0}, {"tasks": 692, "differing": 16, "differing_not_lost": 17},
+    {"tasks": 10, "differing": 11, "differing_not_lost": 7}, {"tasks": 692, "differing": 16, "differing_not_lost": -1},
+    {"tasks": 692.0, "differing": 16, "differing_not_lost": 7}, {"tasks": True, "differing": 1, "differing_not_lost": 1},
+    {"tasks": "692", "differing": "16", "differing_not_lost": "7"}])
+def test_a_malformed_drift_baseline_is_refused(block):
+    with pytest.raises(ValueError, match="drift_baseline"):
+        validate_policy({**POLICY, "drift_baseline": block})
+
+
+def test_a_policy_loads_with_a_drift_baseline_and_without_one():
+    assert validate_policy(POLICY) is POLICY and "drift_baseline" not in POLICY
+    for block in ({"tasks": 692, "differing": 16, "differing_not_lost": 7},
+                  {"tasks": 1, "differing": 0, "differing_not_lost": 0}, {"tasks": 3, "differing": 3, "differing_not_lost": 3}):
+        validate_policy({**POLICY, "drift_baseline": block})
+
+
+def test_freeze_policy_command_reads_the_match_column_and_blank_values(tmp_path):
+    frame, checks = recorded_with_matches()
+    write_outcomes(frame, tmp_path / "outcomes.csv")
+    checks.to_csv(tmp_path / "checks.csv", index=False)
+    blank = checks.astype({"matches_frontier": object})
+    blank.loc[~blank.passed, "matches_frontier"] = None  # written as an empty field
+    blank.to_csv(tmp_path / "blank.csv", index=False)
+    checks.drop(columns="matches_frontier").to_csv(tmp_path / "plain.csv", index=False)
+    written = {}
+    for name in ("checks", "blank", "plain"):
+        main(["freeze-policy", "--input", str(tmp_path / "outcomes.csv"), "--frontier", "frontier",
+              "--checks", str(tmp_path / f"{name}.csv"), "--epsilon", "0.04", "--output", str(tmp_path / f"{name}.json")])
+        written[name] = json.loads((tmp_path / f"{name}.json").read_text(encoding="utf-8"))
+        assert freeze_state(written[name]) == FREEZE_UNCHANGED
+    assert written["checks"]["stages"] and written["checks"]["drift_baseline"]["differing"] > 0
+    assert written["blank"]["drift_baseline"] == written["checks"]["drift_baseline"]
+    assert "drift_baseline" not in written["plain"]
+    assert {key: written["plain"][key] for key in ("stages", "guarantee", "estimate")} == {
+        key: written["checks"][key] for key in ("stages", "guarantee", "estimate")}

@@ -384,33 +384,106 @@ More fields of `GET /v1/shadow`:
     earlier rows look fully covered. A read-only copy of a ledger without the table gives null for all
     nine fields. Other traffic that is never eligible (cache hits, an allowlisted cheaper model, frontier
     errors, non-JSON frontier replies) is not counted.
-- Drift:
+- Drift (see The drift check, below):
   - `accepted_differing_from_frontier` and `accepted_differing_from_frontier_share`: accepted cheaper
     answers whose answer differs from the frontier's, as a count and as a share of the answers
     compared. Answers accepted by a named check (code) are not compared and are left out.
   - `drift_requests` and `drift_share`: the shadowed requests whose answer was compared with the
     frontier's or sent to the frontier (all shadowed requests minus accepted answers that were not
     compared), and the differing answers as a share of them. Epsilon bounds the loss over all tasks,
-    and a request sent to the frontier loses nothing, so this is the share checked against epsilon.
+    and a request sent to the frontier loses nothing, so this is the share the check looks at.
     The share among accepted answers alone is larger by about one over the acceptance rate.
-  - `drift_epsilon`: the strictest `guarantee.epsilon` among the tenant's shadow policies that have
-    stages. `drift_min_compared`: 30.
-  - `drift_check`: `warning`; `within the limit: ...`; `not checked yet: N accepted answers compared
-    with the frontier's, 30 needed`; or `not checked: the policy's quality limit was not given`.
-  - `drift_warning`: null unless `drift_share` is above epsilon on at least 30 compared answers. It
-    then reads: "Cannot confirm the certification on this traffic: D of C accepted cheaper answers
-    differ from the frontier model's answer, S% of the R shadowed requests whose answer was compared
-    with the frontier's or sent to the frontier, more than the policy's quality limit of E%. A
+  - `drift_policy`: the policy these fields describe, named by its provider. Each of the tenant's
+    shadow policies that has stages is checked apart, on the requests that were run with that policy
+    file. A policy with a warning is shown first, otherwise the one with the most requests.
+    `drift_policies` holds the same fields for every checked policy, by provider, when there is more
+    than one; otherwise it is null.
+  - `drift_other_policy_requests`: shadowed requests that were run with a policy file the proxy does
+    not hold now, such as an earlier version of the file. They are in no drift check. They are still
+    in every other figure of the report.
+  - `drift_epsilon`: that policy's own `guarantee.epsilon`. `drift_min_compared`: 30.
+  - `drift_allowance`: the share of differing answers the check allows for. `drift_basis` says where
+    it comes from. With `baseline` it is epsilon plus `drift_baseline.upper`: the 95% upper bound on
+    the share of the policy's graded tasks (`drift_baseline.tasks`) on which an accepted answer
+    differed from the frontier's without being a loss (`drift_baseline.differing_not_lost`), from the
+    policy file's `drift_baseline` ([POLICY.md](POLICY.md)). With `default` the policy file records
+    none, `drift_baseline` is null and the allowance is epsilon plus 10 points.
+  - `drift_evidence` and `drift_evidence_needed`: how strongly the counts speak against "at most the
+    allowed share differs", and the level at which the check warns (20). The evidence is reported up
+    to 1e12. It is null until 30 accepted answers have been compared.
+  - `drift_scope`: the requests that speak most: `requests`, `compared`, `differing`, and `latest`,
+    which is true when they are the latest requests and false when they are all of them.
+  - `drift_check`: `warning`; `compatible with the certification: ...`; `rough check, no warning: ...`
+    for a policy file without a baseline; `not checked yet: N accepted answers compared with the
+    frontier's, 30 needed`; or `not checked: the policy's quality limit was not given`.
+  - `drift_warning`: null unless the check warns. It then reads: "Cannot confirm the certification on
+    this traffic: D of C accepted cheaper answers differ from the frontier model's answer, S% of the R
+    shadowed requests whose answer was compared with the frontier's or sent to the frontier. That is
+    clearly more than the A% the certification allows for: the quality limit of E% plus B% for answers
+    that differed without a loss on the N graded tasks the policy was certified and tested on. A
     different answer is not always a wrong one; grade a sample of these requests before relying on the
-    policy or its projected saving."
+    policy or its projected saving." For a policy file without a baseline the middle sentence is "That
+    is clearly more than A%: the quality limit of E% plus a default 10.00%, used because this policy
+    file records no baseline of its own." When the latest requests are the ones that speak, D, C, R
+    and S are theirs and the text says "of the latest R shadowed requests".
 
-The drift warning is a reason to grade, not a measured loss. A different answer can be the frontier's
-mistake. On the published benchmark replay 58 of 1,099 accepted answers (5.28%) differ from the
-frontier's, 4.10% of the 1,414 shadowed requests, against an epsilon of 2%, so the warning shows
-there too, although the graded loss was 0.99%. The
-planned next step is to record the differing rate at certification time and compare against that.
-The check uses the tenant's strictest epsilon across providers, not each policy's own, and counts rows
-from older policy files too.
+### The drift check
+
+The proxy cannot see right or wrong on live traffic. It can only see whether an accepted cheaper
+answer is the same as the frontier's. The drift check counts the accepted answers that differ, as a
+share of the shadowed requests. That share is not the loss. It also counts requests where the
+frontier was wrong and the cheaper answer right, requests where both were wrong in different ways,
+and answers that are the same value written differently (`14.5` and `14.53`). So a healthy policy
+differs more often than it loses, and a check that compared the share with epsilon alone warned on
+healthy traffic.
+
+The check compares the share with what the certification allows for:
+
+- **With a baseline.** When a policy is frozen from checks that say whether each answer equals the
+  frontier's, its file records how many accepted answers differed from the frontier's without being
+  a loss ([POLICY.md](POLICY.md), The drift baseline). The allowance is epsilon plus the 95% upper
+  bound on that share. The result reads `compatible with the certification` or `warning`.
+- **Without a baseline.** A policy file frozen before baselines were recorded, a hand-written one,
+  or one frozen from checks without the `matches_frontier` column gets epsilon plus a default 10
+  points. The result reads `rough check, no warning` or `warning`. Only a large change shows at this
+  level. Freeze the policy again from its recorded answers to record a baseline; no model is called.
+
+The check warns only when the differing share is clearly above the allowance. "Clearly" is a test
+that stays valid however often the report is read: if each request's accepted answer differs with
+probability at most the allowance, the chance that a warning ever shows is at most 5%. The evidence
+is weighed for all the requests together and again from every 1,000th request on, so a change late
+in a long history shows without the whole history having to move. The verdict is worked out afresh
+at each read. A warning goes away when later requests no longer support it.
+
+Some sizes, for the MMLU-Pro policy of the live pilot (7 of 692 graded tasks differed without a
+loss, so the allowance at a 4% limit is 5.89%): 13 differing among the first 30 accepted answers
+warns; so do 32 of 300 requests (10.7%) and 86 of 1,000 (8.6%); 31 of 300 and 85 of 1,000 do not.
+
+What the check does not show:
+
+- It does not measure the loss. A warning is a reason to grade a sample of the requests.
+- A loss between the limit and about twice the limit seldom shows at the size of a pilot. In the
+  sizes above, 7.0% differing over 1,000 requests gives no warning.
+- Where harmless differences are common, only a gross change shows. A quarter of the FinQA pilot
+  policy's accepted answers differ from the frontier's, mostly by rounding, so its allowance is
+  19.2% and 13 differing among the first 30 does not warn (14 does).
+- It assumes harmless differences stay as frequent as they were on the graded tasks. If they become
+  more frequent, the check can warn with the loss under the limit. If they become rarer while the
+  loss rises, it sees nothing.
+- A cheaper answer equal to a wrong frontier answer is never seen.
+- The baseline is the right allowance only if the graded tasks are a sample of the traffic and their
+  answers were read as the proxy reads replies: the same answer pattern and the same `answer_compare`.
+- Answers accepted by a named check are not compared, so a policy with only such stages is never
+  checked.
+
+On the recorded runs: 13 live shadow runs on public benchmark questions and IT support tickets
+(`results/2026-11-17-live-pilot`, `results/2026-11-17-live-pilot-more`) and the benchmark replay
+(`results/2026-11-16-shadow-replay`), all with a graded loss at or under the policy's limit. The
+earlier check, which compared the share with epsilon alone, warned on seven of them. This one warns
+on none, with each policy's baseline or with the default allowance, also when the report is read
+after every request. The default of 10 points, the level of 20 and the block of 1,000 were chosen
+with these runs in view, so that is not an independent test. It has never run on a customer's
+traffic.
 
 ### Rate limits
 

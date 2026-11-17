@@ -34,11 +34,17 @@ What the report can and cannot say:
   and the sampled requests that arrive meanwhile are skipped and counted. A run that
   was refused part way is stored apart and left out of the projection: it does not show
   what the policy would do.
-- When too many accepted cheaper answers differ from the frontier's answer (as a
-  share of the shadowed requests, more than the policy's quality limit, on at least
-  ``DRIFT_MIN_COMPARED`` compared answers), the report carries a warning: such
-  traffic cannot confirm the certification. A different answer is not always a wrong one, so this is a reason
-  to grade a sample, not a measured loss.
+- The proxy cannot see right or wrong, only whether two answers are the same. The
+  drift check (``drift``) counts the accepted cheaper answers that differ from the
+  frontier's, as a share of the shadowed requests, and compares that share with what
+  the policy's certification allows for: its quality limit plus the share of answers
+  that differed without a loss when it was frozen (the policy's ``drift_baseline``),
+  or plus ``DRIFT_DEFAULT_ALLOWANCE`` for a policy file that records none. When the
+  share is clearly above that, on at least ``DRIFT_MIN_COMPARED`` compared answers,
+  the report carries a warning: such traffic cannot confirm the certification. A
+  different answer is not always a wrong one, so this is a reason to grade a sample,
+  not a measured loss, and a cheaper answer equal to a wrong frontier answer is
+  never seen.
 - A stage with a named check (tests, a judge) is shadowed only when the proxy has
   been given a way to run that check (``tine.runtime_checks``). For such stages the
   answer is not compared with the frontier's: two right patches rarely match.
@@ -60,8 +66,10 @@ import sqlite3
 import time
 from collections import Counter, deque
 from datetime import datetime, timezone
+from itertools import accumulate
 from typing import Any
 
+from tine.calibration import clopper_pearson_upper
 from tine.policy import BUILT_IN_CHECKS, answer_mode, known_cost, run_stages_async, same_answer, validate_policy
 
 SHADOW_SCOPE = (
@@ -72,6 +80,20 @@ SHADOW_SCOPE = (
 # Below this many accepted answers compared with the frontier's, the share that differ
 # says too little to warn on.
 DRIFT_MIN_COMPARED = 30
+# The drift check (``drift``). The share of differing answers it allows for is the
+# policy's quality limit plus an upper bound, at this confidence, on the share that
+# differed without a loss when the policy was frozen; a policy file with no such
+# baseline gets a fixed number of points instead. The check warns when the evidence
+# against "at most that share differ" reaches the level needed; on traffic within the
+# allowance a warning then shows with a chance of at most one over that level
+# (``drift_evidence``). The evidence is also weighed afresh from each multiple of the
+# block, so that a change late in a long history shows.
+DRIFT_BASELINE_CONFIDENCE = 0.95
+DRIFT_DEFAULT_ALLOWANCE = 0.10
+DRIFT_EVIDENCE_NEEDED = 20.0
+DRIFT_BLOCK = 1000
+# Evidence is reported up to this; beyond it the figure says nothing more.
+DRIFT_EVIDENCE_CAP = 1e12
 # What became of a sampled request that has no shadow row, counted per tenant
 # (``ShadowStore.count``). A shadowed request is counted by its row.
 COUNTED = ("skipped_busy", "skipped_stopped", "failed", "streamed", "skipped_rate_limited", "skipped_rate_cap")
@@ -391,6 +413,13 @@ def _columns(ledger) -> set[str]:
     return {row["name"] for row in ledger._db.execute("PRAGMA table_info(shadow_runs)")}
 
 
+def policy_row_digest(policy: dict) -> str:
+    """What a shadow row keeps of the policy it was run with (``policy_sha256``): the
+    SHA-256 of the whole policy as loaded, provenance included. It is not the freeze
+    digest (``tine.policy.policy_digest``), which leaves its own field out."""
+    return hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
 class ShadowStore:
     """Shadow results beside the ledger's requests, in the same database."""
 
@@ -438,7 +467,7 @@ class ShadowStore:
             matches = int(frontier_answer is not None
                           and same_answer([outcome["answer"], frontier_answer], answer_mode(policy)))
         spent = shadow_entries(outcome)
-        digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        digest = policy_row_digest(policy)
         with self._ledger._lock, self._ledger._db:
             self._ledger._db.execute(
                 "INSERT INTO shadow_runs (request_id, tenant, provider, created_at, policy_sha256, accepted, stage, "
@@ -556,16 +585,28 @@ class ShadowStore:
         budget["largest"] = _largest([cost] if budget["largest"] is None else [budget["largest"], cost])
 
     def report(self, tenant: str, epsilon: float | None = None,
-               min_compared: int = DRIFT_MIN_COMPARED) -> dict[str, Any]:
-        """The tenant's shadow figures. ``epsilon`` is the quality limit of the policy
-        being shadowed; with it, the share of accepted answers that differ from the
-        frontier's is checked against that limit (``drift``)."""
+               min_compared: int = DRIFT_MIN_COMPARED, *, policies: dict[str, dict] | None = None) -> dict[str, Any]:
+        """The tenant's shadow figures, with the drift check (``drift``).
+
+        ``policies`` maps a label to a policy being shadowed: the proxy passes the
+        tenant's shadow policies by provider. Each one that has stages is checked on
+        the requests that were run with that very file (``policy_row_digest``),
+        against its own quality limit and its own drift baseline. The drift fields at
+        the top describe one of them, a policy with a warning first and otherwise the
+        one with the most requests; ``drift_policies`` holds every one when there are
+        several. Requests run with none of the given files are counted in
+        ``drift_other_policy_requests`` and are in no check.
+
+        Without ``policies``, ``epsilon`` is the quality limit to check against: all
+        the tenant's requests are then checked together, whatever policy they were run
+        with, at the default allowance. With neither, nothing is checked."""
         with self._ledger._lock:
             # A ledger opened read-only may predate the column: nothing in it was skipped.
             skipped = "skip_reason" if "skip_reason" in _columns(self._ledger) else "NULL AS skip_reason"
+            # In the order the runs were stored: the drift check weighs the latest ones apart.
             rows = self._ledger._db.execute(
-                f"SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json,{skipped} "
-                "FROM shadow_runs WHERE tenant=?", (tenant,)).fetchall()
+                "SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json,policy_sha256,"
+                f"{skipped} FROM shadow_runs WHERE tenant=? ORDER BY created_at, rowid", (tenant,)).fetchall()
         # What every run spent counts, but a run in which a provider refused a call does
         # not show what the policy would do, so it is left out of everything else.
         calls = [entry for row in rows for entry in json.loads(row["calls_json"])]
@@ -609,12 +650,49 @@ class ShadowStore:
             # check fails closed. Runs stored before steps were kept are not counted.
             "check_step_rejections": step_rejections(calls),
             **coverage(len(rows), self.counts(tenant), rate_limited_runs=limited),
-            # Requests the policy sends to the frontier lose nothing against it; accepted
-            # answers that were not compared cannot be told either way and are left out.
-            **drift(len(compared), len(compared) - matching, epsilon, min_compared,
-                    requests=len(rows) - (len(accepted) - len(compared))),
+            **_drift_fields(rows, epsilon, min_compared, policies),
             "scope": SHADOW_SCOPE,
         }
+
+
+def _drift_fields(rows, epsilon: float | None, min_compared: int, policies: dict[str, dict] | None) -> dict:
+    """The drift fields of a shadow report, from a tenant's rows in stored order
+    (``ShadowStore.report``)."""
+    if policies is None:
+        return {**_drift_of(rows, epsilon, min_compared, None),
+                "drift_policy": None, "drift_policies": None, "drift_other_policy_requests": None}
+    digests = {label: policy_row_digest(policy) for label, policy in policies.items()}
+    checks = {label: _drift_of([row for row in rows if row["policy_sha256"] == digests[label]],
+                               _quality_limit(policy), min_compared, policy.get("drift_baseline"))
+              for label, policy in policies.items() if policy.get("stages")}
+    given = set(digests.values())
+    other = sum(row["policy_sha256"] not in given for row in rows)
+    if not checks:  # no policy with stages, so no limit to check against
+        return {**_drift_of(rows, None, min_compared, None),
+                "drift_policy": None, "drift_policies": None, "drift_other_policy_requests": other}
+    # A policy with a warning is shown first, else the one with the most requests.
+    shown = max(checks, key=lambda label: (checks[label]["drift_check"] == "warning", checks[label]["drift_requests"]))
+    return {**checks[shown], "drift_policy": shown, "drift_policies": checks if len(checks) > 1 else None,
+            "drift_other_policy_requests": other}
+
+
+def _quality_limit(policy: dict) -> float | None:
+    """A policy's epsilon, or None when the file states no usable one."""
+    guarantee = policy.get("guarantee")
+    epsilon = guarantee.get("epsilon") if isinstance(guarantee, dict) else None
+    if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)):
+        return None
+    return float(epsilon) if 0 < epsilon < 1 else None
+
+
+def _drift_of(rows, epsilon: float | None, min_compared: int, baseline: dict | None) -> dict:
+    """``drift`` on shadow rows in stored order. Requests the policy sends to the
+    frontier lose nothing against it; accepted answers that were not compared (a named
+    check) cannot be told either way and are left out."""
+    flags = [(bool(row["accepted"]) and row["matches_frontier"] == 0, bool(row["accepted"]))
+             for row in rows if not (row["accepted"] and row["matches_frontier"] is None)]
+    return drift(sum(compared for _, compared in flags), sum(differs for differs, _ in flags), epsilon, min_compared,
+                 requests=len(flags), baseline=baseline, latest=drift_scopes(flags))
 
 
 def step_rejections(entries) -> dict[str, dict[str, int]]:
@@ -676,45 +754,190 @@ def coverage(shadowed: int, counts: dict[str, int] | None, rate_limited_runs: in
             "shadow_coverage": shadowed / sampled if sampled else None}
 
 
-def drift(compared: int, differing: int, epsilon: float | None, min_compared: int = DRIFT_MIN_COMPARED,
-          *, requests: int | None = None) -> dict:
-    """Whether so many accepted answers differ from the frontier's that this traffic
-    cannot confirm the policy's certification.
+def drift_allowance(epsilon: float, baseline: dict | None = None) -> dict:
+    """The share of differing answers the drift check allows for, and what it rests on.
 
-    The policy is certified to lose at most ``epsilon`` of all tasks against the
-    frontier. An accepted answer equal to the frontier's loses nothing against it,
-    and neither does a request the policy sends to the frontier. So the differing
-    answers are counted as a share of ``requests``: the shadowed requests whose
-    answer was compared with the frontier's or sent to the frontier (``compared``
-    when not given). A share at or below ``epsilon`` is consistent with the
-    certification, and one above it cannot confirm it. The share among accepted
-    answers alone is larger by about one over the acceptance rate, and is reported
-    beside it, not checked. Cheaper models that agree on wrong answers push the share
-    up while they push the projected saving up too. A different answer is not always
-    a wrong one (the frontier can be the one that is wrong), so the warning asks for
-    grading; it is not a measured loss.
+    ``baseline`` is a policy's ``drift_baseline`` block (``tine.policy.freeze_policy``):
+    of ``tasks`` graded tasks the policy was certified and tested on,
+    ``differing_not_lost`` had an accepted answer that differed from the frontier's
+    without being a loss. The allowance is then ``epsilon`` plus the exact
+    (Clopper-Pearson) upper bound on that share at ``DRIFT_BASELINE_CONFIDENCE``. It
+    covers the quality limit plus the harmless differences only if those tasks are a
+    sample of the traffic. Without a baseline it is ``epsilon`` plus
+    ``DRIFT_DEFAULT_ALLOWANCE``, a rough level that shows only a large change.
     """
+    if not isinstance(baseline, dict):
+        return {"drift_basis": "default", "drift_allowance": min(1.0, epsilon + DRIFT_DEFAULT_ALLOWANCE),
+                "drift_baseline": None}
+    tasks, harmless = baseline["tasks"], baseline["differing_not_lost"]
+    upper = clopper_pearson_upper(harmless, tasks, 1 - DRIFT_BASELINE_CONFIDENCE)
+    return {"drift_basis": "baseline", "drift_allowance": min(1.0, epsilon + upper),
+            "drift_baseline": {"tasks": tasks, "differing_not_lost": harmless, "upper": upper}}
+
+
+def drift_scopes(flags) -> list[dict]:
+    """The counts of the latest drift requests, for ``drift``'s ``latest``.
+
+    ``flags`` holds, per drift request in stored order, whether its accepted answer
+    differs from the frontier's and whether an accepted answer was compared. Entry
+    ``k - 1`` of the result counts the requests after the first ``DRIFT_BLOCK * k``.
+    """
+    flags = list(flags)
+    # Running totals, so that a long history is read once and not once per block.
+    differing = [0, *accumulate(int(bool(differs)) for differs, _ in flags)]
+    compared = [0, *accumulate(int(bool(compared)) for _, compared in flags)]
+    return [{"requests": len(flags) - start, "compared": compared[-1] - compared[start],
+             "differing": differing[-1] - differing[start]} for start in range(DRIFT_BLOCK, len(flags), DRIFT_BLOCK)]
+
+
+def _log_w(differing: int, requests: int, allowance: float, upper: float) -> float:
+    """Log of the likelihood of ``differing`` in ``requests`` averaged over differing
+    rates spread evenly between ``allowance`` and ``upper``, over its likelihood at
+    ``allowance``. The average is a difference of two incomplete beta integrals; it
+    is taken on the tails away from the mass, to keep the difference accurate."""
+    from scipy import special
+
+    a, b = differing + 1.0, requests - differing + 1.0
+    if a / (requests + 2.0) > upper:  # the mass sits right of the interval: use lower tails
+        mass = special.betainc(a, b, upper) - special.betainc(a, b, allowance)
+    else:
+        mass = special.betaincc(a, b, allowance) - (special.betaincc(a, b, upper) if upper < 1.0 else 0.0)
+    if not mass > 0.0:
+        return -math.inf
+    return float(special.betaln(a, b) + math.log(mass) - math.log(upper - allowance)
+                 - differing * math.log(allowance) - (requests - differing) * math.log1p(-allowance))
+
+
+def _log_m(differing: int, requests: int, allowance: float, epsilon: float) -> float:
+    """Log of the evidence one scope gives: half from differing rates anywhere above
+    the allowance, half from rates within twice the quality limit above it, where a
+    change is hardest to see. With no request it is 1 (log 0)."""
+    if allowance >= 1.0:  # nothing can be above it
+        return -math.inf
+    wide = _log_w(differing, requests, allowance, 1.0)
+    near = _log_w(differing, requests, allowance, min(1.0, allowance + 2 * epsilon))
+    top = max(wide, near)
+    if top == -math.inf:
+        return top
+    return top + math.log(math.exp(wide - top) + math.exp(near - top)) - math.log(2)
+
+
+def drift_evidence(scopes, allowance: float, epsilon: float,
+                   min_compared: int = DRIFT_MIN_COMPARED) -> tuple[float, dict | None]:
+    """How strongly the counts speak against "each request's accepted answer differs
+    with probability at most ``allowance``", and the scope that says most.
+
+    ``scopes[0]`` counts all the drift requests and ``scopes[k]`` those after the
+    first ``DRIFT_BLOCK * k`` (``requests``, ``compared``, ``differing``). Each scope
+    gives a likelihood ratio (``_log_m``); the evidence is their weighted sum, half
+    for all the requests and ``1 / (2k(k+1))`` for scope ``k``, weights that add up
+    to one. A scope counts only once it holds ``min_compared`` compared answers.
+
+    If each request's accepted answer differs with probability at most ``allowance``
+    given the requests before it, the sum is a nonnegative supermartingale that
+    starts at or below one, so the chance that it ever reaches
+    ``DRIFT_EVIDENCE_NEEDED`` is at most one over that (Ville's inequality), however
+    often the report is read.
+    """
+    total, largest = 0.0, None
+    for k, scope in enumerate(scopes):
+        if scope["compared"] < min_compared:
+            continue
+        weight = 0.5 if k == 0 else 0.5 / (k * (k + 1))
+        term = weight * math.exp(min(_log_m(scope["differing"], scope["requests"], allowance, epsilon), 700.0))
+        total += term
+        if largest is None or term > largest[0]:
+            largest = (term, {"requests": scope["requests"], "compared": scope["compared"],
+                              "differing": scope["differing"], "latest": k > 0})
+    return total, largest[1] if largest else None
+
+
+def drift(compared: int, differing: int, epsilon: float | None, min_compared: int = DRIFT_MIN_COMPARED,
+          *, requests: int | None = None, baseline: dict | None = None, latest=()) -> dict:
+    """Whether accepted answers differ from the frontier's clearly more often than the
+    policy's certification allows for, so that this traffic cannot confirm it.
+
+    The proxy cannot see right or wrong, only whether two answers are the same. The
+    policy is certified to lose at most ``epsilon`` of all tasks against the frontier.
+    An accepted answer equal to the frontier's loses nothing against it, and neither
+    does a request the policy sends to the frontier. So the differing answers are
+    counted as a share of ``requests``: the shadowed requests whose answer was
+    compared with the frontier's or sent to the frontier (``compared`` when not
+    given). The share among accepted answers alone is larger by about one over the
+    acceptance rate, and is reported beside it, not checked.
+
+    A differing answer is not a loss. The frontier can be the one that is wrong, both
+    can be wrong in different ways, and the same value can be written in two ways. A
+    healthy policy therefore differs more often than it loses, and the share is not
+    compared with ``epsilon`` alone but with ``drift_allowance``: ``epsilon`` plus the
+    share that differed without a loss when the policy was frozen (``baseline``, the
+    policy's ``drift_baseline``), or plus a default for a policy file without one.
+
+    The check warns only when the share is clearly above the allowance: when
+    ``drift_evidence`` reaches ``DRIFT_EVIDENCE_NEEDED``, on at least ``min_compared``
+    compared answers. ``latest`` holds the counts of the latest requests
+    (``drift_scopes``), which are weighed apart so that a change late in a long
+    history shows; without it only all the requests together are weighed. The verdict
+    is worked out afresh at each read: a warning goes away when later requests no
+    longer support it.
+
+    What the check cannot see: a loss between the limit and about twice the limit, at
+    the size of a pilot; anything but a large change where harmless differences are
+    common; a cheaper answer equal to a wrong frontier answer. If harmless differences
+    become more frequent than they were at freezing, it can warn with the loss under
+    the limit. Cheaper models that agree on wrong answers push the share up while they
+    push the projected saving up too, and that is the case it is for. The warning asks
+    for grading; it is not a measured loss.
+    """
+    if epsilon is not None and (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float))
+                                or not 0 < epsilon < 1):
+        raise ValueError("epsilon must be a number strictly between 0 and 1, or None")
     requests = compared if requests is None else requests
     share = differing / requests if requests else None
     result = {"accepted_differing_from_frontier": differing,
               "accepted_differing_from_frontier_share": differing / compared if compared else None,
               "drift_requests": requests, "drift_share": share,
-              "drift_epsilon": epsilon, "drift_min_compared": min_compared, "drift_warning": None}
-    counted = (f"{share:.2%} of the {requests:,} shadowed requests whose answer was compared with the frontier's "
-               "or sent to the frontier") if share is not None else None
+              "drift_epsilon": epsilon, "drift_min_compared": min_compared, "drift_warning": None,
+              "drift_basis": None, "drift_allowance": None, "drift_baseline": None,
+              "drift_evidence": None, "drift_evidence_needed": DRIFT_EVIDENCE_NEEDED, "drift_scope": None}
     if epsilon is None:
         result["drift_check"] = "not checked: the policy's quality limit was not given"
-    elif compared < min_compared:
+        return result
+    result.update(drift_allowance(epsilon, baseline))
+    if compared < min_compared or not requests:
         result["drift_check"] = (f"not checked yet: {compared:,} accepted answers compared with the frontier's, "
                                  f"{min_compared:,} needed")
-    elif share > epsilon:
+        return result
+    allowance, recorded = result["drift_allowance"], result["drift_baseline"]
+    evidence, scope = drift_evidence([{"requests": requests, "compared": compared, "differing": differing}, *latest],
+                                     allowance, epsilon, min_compared)
+    result["drift_evidence"], result["drift_scope"] = min(evidence, DRIFT_EVIDENCE_CAP), scope
+    whose = "the frontier's or sent to the frontier"
+    if recorded:
+        allowed = (f"the {allowance:.2%} the certification allows for: the quality limit of {epsilon:.2%} plus "
+                   f"{recorded['upper']:.2%} for answers that differed without a loss on the {recorded['tasks']:,} "
+                   "graded tasks the policy was certified and tested on")
+    else:
+        allowed = (f"{allowance:.2%}: the quality limit of {epsilon:.2%} plus a default "
+                   f"{DRIFT_DEFAULT_ALLOWANCE:.2%}, used because this policy file records no baseline of its own")
+    if evidence >= DRIFT_EVIDENCE_NEEDED:
+        # The scope that says most: all the requests, or the latest ones.
+        counted = (f"{scope['differing']:,} of {scope['compared']:,} accepted cheaper answers differ from the "
+                   f"frontier model's answer, {scope['differing'] / scope['requests']:.2%} of the "
+                   f"{'latest ' if scope['latest'] else ''}{scope['requests']:,} shadowed requests whose answer was "
+                   f"compared with {whose}")
         result["drift_check"] = "warning"
         result["drift_warning"] = (
-            f"Cannot confirm the certification on this traffic: {differing:,} of {compared:,} accepted cheaper "
-            f"answers differ from the frontier model's answer, {counted}, more than the policy's quality limit "
-            f"of {epsilon:.2%}. A different answer is not always a wrong one; grade a sample of these requests "
-            "before relying on the policy or its projected saving.")
+            f"Cannot confirm the certification on this traffic: {counted}. That is clearly more than {allowed}. "
+            "A different answer is not always a wrong one; grade a sample of these requests before relying on "
+            "the policy or its projected saving.")
+        return result
+    counted = (f"{differing:,} of {compared:,} accepted answers differ from the frontier's, {share:.2%} of the "
+               f"{requests:,} shadowed requests whose answer was compared with {whose}")
+    if recorded:
+        result["drift_check"] = f"compatible with the certification: {counted}. That is not clearly above {allowed}"
     else:
-        result["drift_check"] = (f"within the limit: {differing:,} of {compared:,} accepted answers differ from the "
-                                 f"frontier's, {counted}, at most the policy's quality limit of {epsilon:.2%}")
+        result["drift_check"] = (f"rough check, no warning: {counted}. That is not clearly above {allowed}. Only a "
+                                 "large change shows at this level; freeze the policy again from recorded answers "
+                                 "to record one")
     return result

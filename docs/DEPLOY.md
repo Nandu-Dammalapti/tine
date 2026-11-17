@@ -208,8 +208,10 @@ have done. Shadow calls are real calls on your provider account and cost real mo
    with a rate above 0, a policy and no cap.
 8. **Restart and read the report.** `docker compose up -d`, then `GET /v1/shadow` with the tenant
    token. `GET /health` shows `"shadow": "sampling"` when it is on. Read each token's acceptance share
-   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed` and `drift_warning`
-   before routing anything.
+   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed`, `drift_check` and
+   `drift_warning` before routing anything. A `drift_check` that starts with `rough check` means the
+   policy file records no drift baseline, so only a large change would show
+   ([PROXY.md](PROXY.md), The drift check).
 
 What the cap does and does not do:
 

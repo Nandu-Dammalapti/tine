@@ -9,7 +9,11 @@ into inputs for ``tine cascade --checks``:
 
 - an outcomes file with one row per task for every pair ``A+B`` and for the
   frontier. A pair costs both models' recorded cost, because both are always called;
-- a checks file saying, per task and pair, whether the two answers agree.
+- a checks file saying, per task and pair, whether the two answers agree, and
+  whether the pair's answer equals the frontier's (``matches_frontier``). The second
+  column changes no candidate and no check: ``tine freeze-policy`` reads it to record
+  how often an accepted answer differed from the frontier's without being a loss,
+  which shadow mode's drift check allows for.
 
 The cascade then treats a pair as one candidate whose check is agreement, so chains,
 certification and savings all include the cost of the second opinion. No model is
@@ -36,7 +40,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.data import _validate_csv_structure, read_outcomes, validate_outcomes, write_outcomes  # noqa: E402
-from tine.policy import ANSWER_COMPARE_MODES, same_answer  # noqa: E402
+from tine.policy import ANSWER_COMPARE_MODES, canonical_answer, same_answer  # noqa: E402
 
 
 def normalize(answer) -> str | None:
@@ -107,7 +111,15 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
     the compared answer is not what was graded (free-form answers extracted from a
     response, for example). ``grade_conflicts="error"`` refuses such data;
     ``"wrong"`` keeps it and counts the group as wrong on those tasks, the cautious
-    reading, and reports how many there were."""
+    reading, and reports how many there were.
+
+    Every check row also says whether the candidate's answer equals the frontier's
+    (``matches_frontier``; a group's answer is its first member's). ``tine
+    freeze-policy`` counts from it how often an accepted answer differed from the
+    frontier's without being a loss, which shadow mode's drift check allows for
+    (``tine.shadow.drift``). It decides nothing here: no candidate, cost or ``passed``
+    depends on it. The report's ``frontier_answers`` is the number of tasks with a
+    frontier answer to compare with; when there is none, every value is None."""
     if grade_conflicts not in ("error", "wrong"):
         raise ValueError("grade_conflicts must be 'error' or 'wrong'")
     if answer_compare not in ANSWER_COMPARE_MODES:
@@ -134,13 +146,26 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
         raise ValueError("Agreement group identifiers collide with existing models or another group")
     by_model = {model: rows.set_index("task_id") for model, rows in outcomes.groupby("model")}
     frames, checks, agreement, conflicts = [by_model[frontier].reset_index()], [], {}, 0
+    frontier_answers = sum(canonical_answer(answers.get((task_id, frontier)), answer_compare) is not None
+                           for task_id in by_model[frontier].index)
+
+    def matches_frontier(task_id, model) -> bool | None:
+        """Whether ``model``'s answer equals the frontier's, compared as shadow mode
+        compares an accepted answer with the frontier's (``ShadowStore.record``): a
+        frontier answer that is missing differs. None when the answers hold no
+        frontier answer at all, so nothing can be said."""
+        if not frontier_answers:
+            return None
+        return same_answer([answers.get((task_id, model)), answers.get((task_id, frontier))], answer_compare)
+
     if include_singles:
         # Each cheaper model alone with a check that always passes: "just use the cheaper
         # model", the alternative an agreement check has to beat.
         for model in candidates:
             if mean_cost[model] <= max_cost_share * mean_cost[frontier]:
                 frames.append(by_model[model].reset_index())
-                checks.extend({"tenant": tenant, "task_id": task_id, "model": model, "passed": True}
+                checks.extend({"tenant": tenant, "task_id": task_id, "model": model, "passed": True,
+                               "matches_frontier": matches_frontier(task_id, model)}
                               for task_id in by_model[model].index)
     for group in pairs:
         members = [by_model[model] for model in group]
@@ -170,7 +195,9 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
                                          "and grading provenance, or pass grade_conflicts='wrong'")
                     conflicted.append(task_id)
             agree.append(same)
-            checks.append({"tenant": tenant, "task_id": task_id, "model": name, "passed": same})
+            # A group's answer is its first member's, as when the policy runs.
+            checks.append({"tenant": tenant, "task_id": task_id, "model": name, "passed": same,
+                           "matches_frontier": matches_frontier(task_id, group[0])})
         # When the answers agree, every member is right or every member is wrong; when
         # they differ the group is not accepted, so its recorded success is never used.
         pair["success"] = members[0].success.to_numpy()
@@ -183,7 +210,8 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
     return frame, checks, {"frontier": frontier, "group_size": group_size, "pairs": len(pairs),
                            "models_in_pairs": candidates, "include_singles": include_singles,
                            "grade_conflicts_counted_wrong": conflicts, "answer_compare": answer_compare,
-                           "max_cost_share": max_cost_share, "agreement_rate": agreement}
+                           "max_cost_share": max_cost_share, "agreement_rate": agreement,
+                           "frontier_answers": frontier_answers}
 
 
 def main(argv=None) -> None:
@@ -226,7 +254,7 @@ def main(argv=None) -> None:
     write_outcomes(frame, args.output)
     args.checks.parent.mkdir(parents=True, exist_ok=True)
     with args.checks.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=["tenant", "task_id", "model", "passed"])
+        writer = csv.DictWriter(stream, fieldnames=["tenant", "task_id", "model", "passed", "matches_frontier"])
         writer.writeheader()
         writer.writerows(checks)
     print(json.dumps(report, indent=2))

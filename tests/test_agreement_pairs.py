@@ -311,3 +311,61 @@ def test_grade_conflicts_can_be_counted_as_wrong_instead_of_refused():
     assert report["grade_conflicts_counted_wrong"] >= 1
     row = pairs[(pairs.model == "cheap+small") & (pairs.task_id == "quiz:test:1")].iloc[0]
     assert not row.success and all("tenant" in check for check in checks)
+
+
+def test_check_rows_say_whether_the_candidates_answer_equals_the_frontiers(tmp_path):
+    """For the drift baseline: a group's answer is its first member's, and it is compared
+    with the frontier's as shadow mode compares an accepted answer."""
+    def matches(rows, model):
+        found = {row["task_id"]: row["matches_frontier"] for row in rows if row["model"] == model}
+        return [found[f"quiz:test:{index}"] for index in range(1, 6)]
+
+    frame, checks, report = agreement.build_pairs(outcomes_frame(), recorded(), "big", max_cost_share=0.3,
+                                                  include_singles=True)
+    assert report["frontier_answers"] == 5 and all(set(row) == {
+        "tenant", "task_id", "model", "passed", "matches_frontier"} for row in checks)
+    # cheap answers AABCA, small AABDB, tiny ABBD and nothing; the frontier AABCC.
+    assert matches(checks, "cheap+small") == matches(checks, "cheap+tiny") == [True, True, True, True, False]
+    assert matches(checks, "small+tiny") == matches(checks, "small") == [True, True, True, False, False]
+    assert matches(checks, "tiny") == [True, False, True, False, False]  # no answer is not the frontier's answer
+    # A frontier answer that could not be read differs, as it does in shadow mode.
+    unread = {**recorded(), ("quiz:test:1", "big"): None}
+    _, checks, report = agreement.build_pairs(outcomes_frame(), unread, "big")
+    assert report["frontier_answers"] == 4 and matches(checks, "cheap+small") == [False, True, True, True, False]
+    # With no frontier answer at all nothing can be said, and nothing is.
+    without = {key: answer for key, answer in recorded().items() if key[1] != "big"}
+    with_frame, with_checks, _ = agreement.build_pairs(outcomes_frame(), recorded(), "big")
+    without_frame, checks, report = agreement.build_pairs(outcomes_frame(), without, "big")
+    assert report["frontier_answers"] == 0 and {row["matches_frontier"] for row in checks} == {None}
+    # Whether the answers match decides nothing else: the groups and what passed are the same.
+    assert without_frame.equals(with_frame)
+    assert [row["passed"] for row in checks] == [row["passed"] for row in with_checks]
+    # By value, one value written two ways is the frontier's answer.
+    written = {"cheap": r"14.5\%", "small": "14.50", "big": "14.5"}
+    answers = {("quiz:test:1", model): answer for model, answer in written.items()}
+    one = outcomes_frame()
+    one = one[(one.task_id == "quiz:test:1") & (one.model != "tiny")]
+    assert agreement.build_pairs(one, answers, "big")[1][0]["matches_frontier"] is False
+    assert agreement.build_pairs(one, answers, "big", answer_compare="math")[1][0]["matches_frontier"] is True
+
+
+def test_the_checks_file_carries_the_match_column_and_leaves_unknown_blank(tmp_path):
+    source, answers = tmp_path / "outcomes.jsonl", tmp_path / "answers.csv"
+    outcomes_frame().to_json(source, orient="records", lines=True)
+    rows = [{"task_id": task_id, "model": model, "answer": answer or ""}
+            for (task_id, model), answer in recorded().items()]
+    pd.DataFrame(rows).to_csv(answers, index=False)
+    common = ["--input", str(source), "--frontier", "big", "--output", str(tmp_path / "pairs.jsonl")]
+    agreement.main([*common, "--answers", str(answers), "--checks", str(tmp_path / "checks.csv")])
+    text = (tmp_path / "checks.csv").read_text()
+    assert text.splitlines()[0] == "tenant,task_id,model,passed,matches_frontier"
+    assert "t,quiz:test:5,cheap+small,False,False" in text.splitlines()
+    table = read_checks(tmp_path / "checks.csv")
+    assert set(table.matches_frontier) == {"True", "False"}
+    # The columns that were always written are written as before.
+    kept = [",".join(line.split(",")[:4]) for line in text.splitlines()]
+    assert kept[0] == "tenant,task_id,model,passed" and kept[1] == "t,quiz:test:1,cheap+small,True"
+    pd.DataFrame([row for row in rows if row["model"] != "big"]).to_csv(answers, index=False)
+    agreement.main([*common, "--answers", str(answers), "--checks", str(tmp_path / "blank.csv")])
+    blank = read_checks(tmp_path / "blank.csv")
+    assert set(blank.matches_frontier) == {""} and blank.passed.tolist() == table.passed.tolist()

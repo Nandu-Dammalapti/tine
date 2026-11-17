@@ -30,6 +30,10 @@ certified experiment does. The file it writes holds:
   frontier.
 - `estimate`: savings and accuracy on the test part, which played no part in the
   choice. Savings include the cost of every call.
+- `drift_baseline`, only when the checks say whether each answer equals the
+  frontier's: how often the chain's accepted answer differed from the frontier's on
+  the graded tasks without being a loss (The drift baseline, below). Shadow mode's
+  drift check allows for that share on top of epsilon.
 - `provenance`: seed, split, task count, a digest of the task ids, and
   `content_sha256`, the freeze digest (below).
 - `answer_pattern`, only with `--answer-pattern REGEX`: the regular expression the
@@ -63,6 +67,67 @@ with that field left out. When a file is loaded its state is one of:
 **A digest is not a signature.** Anyone who can edit the file can write a new
 digest. It catches careless or casual edits only.
 
+### The drift baseline
+
+On live traffic the proxy cannot see whether an answer is right. It can only see
+whether an accepted cheaper answer is the same as the frontier's. A differing answer
+is not always a loss: the frontier can be the one that is wrong, both can be wrong
+in different ways, and one value can be written in two ways (`14.5` and `14.53`). So
+a healthy policy differs from the frontier more often than it loses, and how much
+more depends on the work. The policy file records it, so that shadow mode's drift
+check ([PROXY.md](PROXY.md), The drift check) has something to compare with.
+
+`scripts/agreement_pairs.py` writes a `matches_frontier` column in the checks file:
+per task and candidate, whether the candidate's answer (a group's first member's)
+equals the frontier's recorded answer, compared in the same `--answer-compare` mode.
+A missing frontier answer counts as differing, as it does in shadow mode. If the
+answers hold no frontier answer at all, the column is empty. The column changes no
+candidate, no cost and no `passed` value.
+
+`tine freeze-policy` reads the column, walks the chosen chain over the graded tasks
+as it would run, and writes:
+
+```json
+"drift_baseline": {
+  "parts": ["certify", "test"], "answer_compare": "exact",
+  "tasks": 692, "accepted": 612, "compared": 612,
+  "differing": 16, "differing_lost": 9, "differing_not_lost": 7,
+  "by_part": {"choose":  {"tasks": 308, "compared": 257, "differing": 8, "differing_not_lost": 4},
+              "certify": {"tasks": 495, "compared": 441, "differing": 9, "differing_not_lost": 5},
+              "test":    {"tasks": 197, "compared": 171, "differing": 7, "differing_not_lost": 2}}
+}
+```
+
+- The counts at the top are for the certify and test parts together. The choose
+  part is where the chain was picked, so it is only listed in `by_part`.
+- `differing` is accepted answers that differ from the frontier's. `differing_lost`
+  is those where the frontier was right and the accepted answer wrong;
+  `differing_not_lost` is the rest. The drift check uses `differing_not_lost` of
+  `tasks`.
+- An answer accepted by a named check (`tests+judge`) is not compared, as in shadow
+  mode, and its task is left out of `tasks`.
+- No block is written when nothing certified, when the checks have no
+  `matches_frontier` column, when no stage is compared, or when the match of an
+  accepted answer is unknown. Nothing else in the file changes: `stages`,
+  `guarantee` and `estimate` are the same with and without the column.
+- The block is covered by the freeze digest. No flag turns it on.
+
+The example is the MMLU-Pro policy of `results/2026-11-17-live-pilot`, frozen again
+from its recorded answers. Re-freezing the eight pilot policies this way reproduced
+the `stages`, `guarantee` and `estimate` of each stored file.
+
+**Policies frozen before this have no baseline.** They still load. The drift check
+then allows epsilon plus a default 10 points and says so (`rough check, no
+warning`); only a large change shows at that level. To record a baseline, run
+`scripts/agreement_pairs.py` and `tine freeze-policy` again on the same recorded
+outcomes and answers, with the same seed and flags. No model is called. The new
+file has a new `created` time and so a new digest; shadow rows are kept per policy
+file, so the drift check for the new file starts with the requests run with it.
+
+The baseline describes the graded tasks. It is the right allowance for live traffic
+only if those tasks are a sample of that traffic and the recorded answers were read
+as the proxy reads replies: the same answer pattern and the same `answer_compare`.
+
 Examples: `results/2026-11-14-xroutebench/policy-multiple-choice-triples-eps02.json`
 (agreement) and `results/2026-11-14-api-judge/policy-code-sonnet-judge-eps04.json`
 (code: three cheap models in turn, each behind the free checks and a judge).
@@ -94,7 +159,8 @@ The path for exact-answer tasks (labels, choices, numbers):
    comparable answer read from each reply with the same regular expression the proxy
    will use. This is the rule that matters most: the offline reader and the proxy's
    reader must be the same pattern, or the agreement that was certified is not the
-   agreement that runs.
+   agreement that runs. Include the frontier's answers, read the same way: step 4
+   compares each candidate's answer with them for the drift baseline (above).
 4. **Build the agreement candidates.**
 
    ```bash
@@ -209,7 +275,11 @@ request moves on. A frontier failure is raised: there is nothing left to fall ba
 - that says `certified: true` without numeric epsilon, delta and bound, with the
   bound at most epsilon;
 - whose `answer_pattern`, when present, is empty or not a valid regular expression;
-- whose `answer_compare`, when present, is not `exact` or `math`.
+- whose `answer_compare`, when present, is not `exact` or `math`;
+- whose `drift_baseline`, when present, is not an object with whole numbers `tasks`
+  (at least 1), `differing` and `differing_not_lost`, with
+  0 <= `differing_not_lost` <= `differing` <= `tasks`. A file without the block
+  loads as before.
 
 The proxy also requires `tenant` to be the tenant the policy is configured for. A
 file edited after freezing still loads, flagged by the freeze digest; a file with no

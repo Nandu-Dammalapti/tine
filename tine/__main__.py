@@ -68,7 +68,9 @@ def main(argv=None):
     freeze = commands.add_parser("freeze-policy", help="Choose and certify one chain and write it as a policy file")
     freeze.add_argument("--input", required=True, type=Path)
     freeze.add_argument("--frontier", required=True)
-    freeze.add_argument("--checks", required=True, type=Path, help="Measured check results CSV (task_id, model, passed)")
+    freeze.add_argument("--checks", required=True, type=Path,
+                        help="Measured check results CSV (task_id, model, passed). With a matches_frontier column, "
+                             "as scripts/agreement_pairs.py writes it, the policy also records its drift baseline")
     freeze.add_argument("--epsilon", required=True, type=float)
     freeze.add_argument("--delta", type=float, default=0.05)
     freeze.add_argument("--seed", type=int, default=42)

@@ -28,7 +28,7 @@ import numpy as np
 
 from tine.calibration import _probability
 from tine.cascade import candidate_chains, certify_chain, chain_metrics
-from tine.checks import prepare_checks
+from tine.checks import check_matches, prepare_checks
 from tine.pipeline import complete_tasks, matrix
 
 POLICY_VERSION = 1
@@ -103,6 +103,13 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     be the comparison ``checks`` were measured with (``scripts/agreement_pairs.py
     --answer-compare``). None writes nothing, which means ``exact``.
 
+    When ``checks`` also say whether each candidate's answer equals the frontier's
+    (the ``matches_frontier`` column ``scripts/agreement_pairs.py`` writes), the
+    policy records how often the chain's accepted answer differed from the frontier's
+    on the graded tasks without being a loss (``drift_baseline``, see
+    ``_drift_baseline``). Shadow mode's drift check allows for that share on top of
+    ``epsilon``. Checks without the column give a policy without the block.
+
     The digest of the policy's content is written to ``provenance`` last, so a file
     edited afterwards can be told apart (``freeze_state``). It is not a signature:
     anyone who edits the file can write a new one.
@@ -152,6 +159,9 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
                 "measured (--single-check, for example tests+judge:sonnet)")
     on_certify = chain_metrics(chain, *rows(certify)[:2], frontier_index, passes=passes[certify])
     on_test = chain_metrics(chain, *rows(test)[:2], frontier_index, passes=passes[test])
+    stages = [_stage(models[index], single_check) for index in chain]
+    baseline = _drift_baseline(chain, stages, outcomes, passes, check_matches(checks, tasks, models), frontier_index,
+                               {"choose": choose, "certify": certify, "test": test}, answer_compare or "exact")
     identity = hashlib.sha256()
     for task_id in sorted(tasks.task_id):
         identity.update(str(task_id).encode("utf-8") + b"\n")
@@ -159,7 +169,7 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     policy = {
         "version": POLICY_VERSION, "tenant": tenant if tenant is not None else source,
         "task_type": str(tasks.task_type.iloc[0]),
-        "frontier": frontier, "stages": [_stage(models[index], single_check) for index in chain],
+        "frontier": frontier, "stages": stages,
         **({"answer_pattern": answer_pattern} if answer_pattern is not None else {}),
         **({"answer_compare": answer_compare} if answer_compare is not None else {}),
         "guarantee": {
@@ -174,6 +184,7 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
             "test_tasks": int(test.sum()), "savings": on_test["savings"], "accuracy": on_test["accuracy"],
             "frontier_accuracy": on_test["frontier_accuracy"], "degradation_rate": on_test["degradation_rate"],
             "frontier_call_rate": on_test["frontier_call_rate"]},
+        **({"drift_baseline": baseline} if baseline is not None else {}),
         "provenance": {
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), "seed": seed,
             "fractions": list(fractions), "complete_tasks": len(tasks), "excluded_tasks": len(excluded),
@@ -182,6 +193,64 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     }
     policy["provenance"][DIGEST_FIELD] = policy_digest(policy)
     return policy
+
+
+def _drift_baseline(chain, stages, outcomes, passes, matches, frontier_index: int, parts: dict,
+                    answer_compare: str) -> dict | None:
+    """How often the chain's accepted answer differed from the frontier's on the graded
+    tasks, and how often that was not a loss: what shadow mode's drift check allows
+    for on top of the quality limit (``tine.shadow.drift``).
+
+    The proxy cannot see right or wrong live, only whether an accepted answer equals
+    the frontier's. A differing answer is not always a loss: the frontier can be the
+    one that is wrong, both can be wrong in different ways, and the same value can be
+    written in two ways. ``matches`` says, per task and candidate, whether the
+    candidate's answer equals the frontier's (``tine.checks.check_matches``). The
+    chain is walked per task as it runs: the first stage whose check passed accepts.
+    An answer accepted by a named check is not compared, as in shadow mode, and its
+    task is left out of ``tasks``. A differing answer is a loss when the frontier is
+    right and the accepted candidate is wrong.
+
+    The counts the drift check uses are those of the certify and test parts together.
+    The choose part is where the chain was picked, so it is kept apart in
+    ``by_part``, with the other two, for whoever wants to look again.
+
+    None, which writes no block, when the chain is empty, the checks do not say
+    whether answers match, no stage is compared, or the match of a compared accepted
+    answer is unknown.
+    """
+    if not chain or matches is None or all(stage["check"] not in BUILT_IN_CHECKS for stage in stages):
+        return None
+    outcomes = np.asarray(outcomes, dtype=bool)
+    reach = np.ones(len(outcomes), dtype=bool)
+    accepted, compared, differing, lost = (np.zeros(len(outcomes), dtype=bool) for _ in range(4))
+    for index, stage in zip(chain, stages):
+        took = reach & passes[:, index]
+        reach = reach & ~passes[:, index]
+        accepted |= took
+        if stage["check"] not in BUILT_IN_CHECKS:
+            continue
+        if any(value is None for value in matches[took, index]):
+            return None
+        differs = took & np.array([value is False for value in matches[:, index]], dtype=bool)
+        compared |= took
+        differing |= differs
+        lost |= differs & outcomes[:, frontier_index] & ~outcomes[:, index]
+
+    def counts(mask) -> dict:
+        return {"tasks": int((mask & ~(accepted & ~compared)).sum()), "compared": int((mask & compared).sum()),
+                "differing": int((mask & differing).sum()),
+                "differing_not_lost": int((mask & differing & ~lost).sum())}
+
+    graded = parts["certify"] | parts["test"]
+    whole = counts(graded)
+    if not whole["tasks"]:
+        return None
+    return {"parts": ["certify", "test"], "answer_compare": answer_compare,
+            "tasks": whole["tasks"], "accepted": int((graded & accepted).sum()), "compared": whole["compared"],
+            "differing": whole["differing"], "differing_lost": int((graded & differing & lost).sum()),
+            "differing_not_lost": whole["differing_not_lost"],
+            "by_part": {name: counts(mask) for name, mask in parts.items()}}
 
 
 def check_answer_pattern(pattern) -> None:
@@ -267,6 +336,15 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("A policy's answer_pattern must be a valid, nonempty regular expression") from None
     if policy.get("answer_compare") is not None and policy["answer_compare"] not in ANSWER_COMPARE_MODES:
         raise ValueError(f"A policy's answer_compare must be one of {list(ANSWER_COMPARE_MODES)}")
+    if "drift_baseline" in policy:
+        # The drift check turns these counts into the share of differing answers it
+        # allows for; counts that cannot be ones would give a level that means nothing.
+        baseline = policy["drift_baseline"] if isinstance(policy["drift_baseline"], dict) else {}
+        harmless, differing, tasks = (baseline.get(name) for name in ("differing_not_lost", "differing", "tasks"))
+        if (not all(type(value) is int for value in (harmless, differing, tasks))
+                or not 0 <= harmless <= differing <= tasks or tasks < 1):
+            raise ValueError("A policy's drift_baseline must hold whole numbers, with tasks at least 1 and "
+                             "0 <= differing_not_lost <= differing <= tasks")
     return policy
 
 

@@ -13,13 +13,9 @@ def read_checks(path):
         return pd.read_csv(stream, dtype=str, keep_default_na=False)
 
 
-def prepare_checks(checks, tasks, models):
-    """Return a tenant-scoped Boolean pass matrix and explicit evidence coverage.
-
-    Missing/unknown results conservatively pass without evidence, as no check
-    demonstrated a reason to escalate. Duplicate measurements require an
-    explicit choice of run by the caller, rather than aggregation.
-    """
+def _selected(checks, tasks, models):
+    """The check rows of the tasks' tenant for these tasks and models, the tenant, and
+    whether the rows name a tenant."""
     if not isinstance(checks, pd.DataFrame) or not checks.columns.is_unique:
         raise ValueError("checks must be a table with unique columns")
     required = {"task_id", "model", "passed"}
@@ -40,20 +36,32 @@ def prepare_checks(checks, tasks, models):
     selected = selected.loc[selected.task_id.isin(tasks.task_id) & selected.model.isin(models)]
     if selected.duplicated(["task_id", "model"]).any():
         raise ValueError("Duplicate check results for tenant/task_id/model; choose one check run explicitly")
+    return selected, tenant, scoped
 
-    def outcome(value):
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                return None
-            if value in {"0.0", "1.0"}:
-                value = float(value)
-        try:
-            return _success(value)
-        except (TypeError, ValueError):
-            raise ValueError("passed must contain Boolean/zero-one check results or an empty unknown") from None
 
-    selected = selected.assign(passed=selected.passed.map(outcome))
+def _outcome(value, column: str):
+    """True, False, or None for an empty or missing value."""
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        if value in {"0.0", "1.0"}:
+            value = float(value)
+    try:
+        return _success(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{column} must contain Boolean/zero-one check results or an empty unknown") from None
+
+
+def prepare_checks(checks, tasks, models):
+    """Return a tenant-scoped Boolean pass matrix and explicit evidence coverage.
+
+    Missing/unknown results conservatively pass without evidence, as no check
+    demonstrated a reason to escalate. Duplicate measurements require an
+    explicit choice of run by the caller, rather than aggregation.
+    """
+    selected, tenant, scoped = _selected(checks, tasks, models)
+    selected = selected.assign(passed=selected.passed.map(lambda value: _outcome(value, "passed")))
     pivot = selected.pivot(index="task_id", columns="model", values="passed")
     aligned = pivot.reindex(index=tasks.task_id.to_numpy(), columns=models)
     known = aligned.notna().to_numpy()
@@ -68,3 +76,24 @@ def prepare_checks(checks, tasks, models):
                               "expected": len(tasks)} for column, model in enumerate(models)},
     }
     return passes, report
+
+
+def check_matches(checks, tasks, models):
+    """Whether each candidate's answer equals the frontier's, where the checks say.
+
+    Reads the optional ``matches_frontier`` column that ``scripts/agreement_pairs.py``
+    writes beside ``passed``, for the same rows ``prepare_checks`` reads. Returns a
+    matrix aligned like its pass matrix, holding True, False, or None where the
+    checks do not say, or None when the checks have no such column.
+    """
+    selected, _, _ = _selected(checks, tasks, models)
+    if "matches_frontier" not in selected:
+        return None
+    selected = selected.assign(
+        matches_frontier=selected.matches_frontier.map(lambda value: _outcome(value, "matches_frontier")))
+    pivot = selected.pivot(index="task_id", columns="model", values="matches_frontier")
+    aligned = pivot.reindex(index=tasks.task_id.to_numpy(), columns=models)
+    matches = np.empty(aligned.shape, dtype=object)
+    for index, value in np.ndenumerate(aligned.to_numpy(dtype=object)):
+        matches[index] = None if pd.isna(value) else bool(value)
+    return matches
