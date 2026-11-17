@@ -435,6 +435,9 @@ class ShadowStore:
             # a request too long for the judge to read (its stage then calls no model).
             "check_rejection_reasons": dict(sorted(Counter(
                 entry["reason"] for entry in calls if isinstance(entry.get("reason"), str)).items())),
+            # Which step of each named check rejected: a step that failed counts, since a
+            # check fails closed. Runs stored before steps were kept are not counted.
+            "check_step_rejections": step_rejections(calls),
             **coverage(len(rows), self.counts(tenant)),
             # Requests the policy sends to the frontier lose nothing against it; accepted
             # answers that were not compared cannot be told either way and are left out.
@@ -442,6 +445,20 @@ class ShadowStore:
                     requests=len(rows) - (len(accepted) - len(compared))),
             "scope": SHADOW_SCOPE,
         }
+
+
+def step_rejections(entries) -> dict[str, dict[str, int]]:
+    """Check name to step type to the number of times a step of that type rejected an
+    answer, from stored check entries that list their ``steps``."""
+    counts: dict[str, Counter] = {}
+    for entry in entries:
+        steps = entry.get("steps")
+        if not isinstance(entry.get("check"), str) or not isinstance(steps, list):
+            continue
+        for step in steps:
+            if isinstance(step, dict) and step.get("passed") is False:
+                counts.setdefault(entry["check"], Counter())[str(step.get("type"))] += 1
+    return {name: dict(sorted(counts[name].items())) for name in sorted(counts)}
 
 
 def _largest(costs) -> float | None:

@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
-from .ledger import MAX_TOKEN_COUNT, Ledger, MeasuredBaselineError, MeasuredCostError
+from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineError, MeasuredCostError
 from .policy import FREEZE_EDITED, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
@@ -120,6 +120,18 @@ class ProxyConfig:
     # every row a route policy ran for. None for a configuration built in code: the
     # proxy then hashes the policies' canonical JSON.
     route_policies_sha256: str | None = None
+    # The share of requests a route policy could serve that skip it and go to the
+    # frontier instead, chosen from the request id. Their costs against the routed
+    # requests' give the saving under live routing (``holdout_estimate`` in the ledger
+    # report). 0 turns the holdout off.
+    audit_rate: float = 0.0
+    # Request limits, checked before anything is sent upstream or stored. A body over
+    # max_body_bytes gets 413. denied_fields (provider -> top-level field names) and
+    # anthropic_beta_allowlist (None: forward any anthropic-beta value) are opt-in and
+    # get 400.
+    max_body_bytes: int = 10_485_760
+    denied_fields: dict[str, list[str]] = field(default_factory=dict)
+    anthropic_beta_allowlist: list[str] | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -130,6 +142,7 @@ class ProxyConfig:
         shadow_policies, _ = _json_file("TINE_SHADOW_POLICIES")
         # Hashed from the same bytes that are parsed, so the digest is of what runs.
         route_policies, route_bytes = _json_file("TINE_ROUTE_POLICIES")
+        betas = os.environ.get("TINE_ANTHROPIC_BETA_ALLOWLIST")
         return cls(
             tenant_keys=json.loads(os.environ.get("TINE_TENANT_KEYS", "{}")),
             openai_api_key=os.environ.get("TINE_OPENAI_API_KEY", ""),
@@ -163,6 +176,11 @@ class ProxyConfig:
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
             ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
+            audit_rate=float(os.environ.get("TINE_AUDIT_RATE", "0")),
+            max_body_bytes=int(os.environ.get("TINE_MAX_BODY_BYTES", "10485760")),
+            denied_fields=json.loads(os.environ.get("TINE_DENIED_FIELDS", "{}")),
+            anthropic_beta_allowlist=([value.strip() for value in betas.split(",") if value.strip()]
+                                      if betas else None),
         )
 
     def checks_for(self, tenant: str) -> dict[str, list]:
@@ -189,6 +207,20 @@ class ProxyConfig:
             for provider, models in self.allowed_models.items()
         ):
             raise ValueError("TINE_ALLOWED_MODELS must map provider names to lists of nonempty model names")
+        if isinstance(self.max_body_bytes, bool) or not isinstance(self.max_body_bytes, int) or self.max_body_bytes < 1:
+            raise ValueError("TINE_MAX_BODY_BYTES must be a whole number of at least 1")
+        if not isinstance(self.denied_fields, dict) or any(
+            provider not in {"openai", "anthropic"}
+            or not isinstance(names, list)
+            or any(not isinstance(name, str) or not name for name in names)
+            for provider, names in self.denied_fields.items()
+        ):
+            raise ValueError("TINE_DENIED_FIELDS must map provider names to lists of nonempty field names")
+        if self.anthropic_beta_allowlist is not None and (
+                not isinstance(self.anthropic_beta_allowlist, list)
+                or any(not isinstance(value, str) or not value or value != value.strip() or "," in value
+                       for value in self.anthropic_beta_allowlist)):
+            raise ValueError("TINE_ANTHROPIC_BETA_ALLOWLIST must be a list of nonempty anthropic-beta values")
         for base in (self.openai_base_url, self.anthropic_base_url):
             try:
                 if not isinstance(base, str):
@@ -210,6 +242,8 @@ class ProxyConfig:
         if (not _finite_number(self.shadow_sample_rate) or isinstance(self.shadow_sample_rate, bool)
                 or not 0 <= self.shadow_sample_rate <= 1):
             raise ValueError("shadow_sample_rate must be between 0 and 1")
+        if not _finite_number(self.audit_rate) or not 0 <= self.audit_rate <= 1:
+            raise ValueError("audit_rate must be between 0 and 1")
         if self.shadow_max_cost_usd is not None and (
                 not _finite_number(self.shadow_max_cost_usd) or self.shadow_max_cost_usd < 0):
             raise ValueError("shadow_max_cost_usd must be a finite nonnegative amount")
@@ -410,6 +444,94 @@ def _cost(config: ProxyConfig, provider: str, model: str, tokens: dict) -> float
     return cost if math.isfinite(cost) else None
 
 
+class _StreamUsage:
+    """Reads token usage from a server-sent event stream as it is relayed, on the side.
+
+    The bytes are only read, never changed. Anthropic sends input tokens in
+    ``message_start`` and the final output tokens in ``message_delta``; OpenAI sends one
+    chunk with ``usage`` at the end, when the caller asked for it with
+    ``stream_options.include_usage``. ``tokens()`` is None while no usage has arrived.
+    """
+
+    # A longer line is skipped, not buffered: usage events are short.
+    MAX_LINE = 1 << 20
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        self.usage: dict[str, Any] | None = None
+        self.final_output = False
+        self._line = bytearray()
+        self._skipping = False
+        self._after_cr = False
+        self._data: list[bytes] = []
+
+    def feed(self, chunk: bytes) -> None:
+        try:
+            for piece in chunk.splitlines(keepends=True):
+                if self._after_cr and piece == b"\n" and not self._line:
+                    # The second half of a CRLF split across two chunks.
+                    self._after_cr = False
+                    continue
+                ended = piece.endswith((b"\n", b"\r"))
+                self._after_cr = piece.endswith(b"\r")
+                if not self._skipping:
+                    self._line += piece
+                    if len(self._line) > self.MAX_LINE:
+                        self._line.clear()
+                        self._skipping = True
+                if ended:
+                    if not self._skipping:
+                        self._take(bytes(self._line).rstrip(b"\r\n"))
+                    self._line.clear()
+                    self._skipping = False
+        except Exception:
+            # Reading usage must never interrupt the relayed stream.
+            self._line.clear()
+
+    def close(self) -> None:
+        """The stream ended: read a last event that had no blank line after it."""
+        if self._line and not self._skipping:
+            self._take(bytes(self._line).rstrip(b"\r\n"))
+        self._take(b"")
+
+    def _take(self, line: bytes) -> None:
+        if line.startswith(b"data:"):
+            self._data.append(line[5:].removeprefix(b" "))
+            return
+        if line or not self._data:
+            return
+        data, self._data = b"\n".join(self._data), []
+        # Most events carry no usage: skip decoding them.
+        if b'"usage"' not in data:
+            return
+        try:
+            event = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            return
+        if not isinstance(event, dict):
+            return
+        if self.provider == "openai":
+            if isinstance(event.get("usage"), dict):
+                self.usage = event["usage"]
+            return
+        if event.get("type") == "message_start" and isinstance(event.get("message"), dict):
+            usage = event["message"].get("usage")
+            if isinstance(usage, dict):
+                # Its output count is the first token's, not the reply's.
+                self.usage = {**(self.usage or {}), **{k: v for k, v in usage.items() if k != "output_tokens"}}
+        elif event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+            self.usage = {**(self.usage or {}), **event["usage"]}
+            self.final_output = "output_tokens" in event["usage"]
+
+    def tokens(self) -> dict[str, int | None] | None:
+        if self.usage is None:
+            return None
+        usage = self.usage
+        if self.provider == "anthropic" and not self.final_output:
+            usage = {k: v for k, v in usage.items() if k != "output_tokens"}
+        return _usage(self.provider, {"usage": usage})
+
+
 def _answer_reader(policy: dict, config: ProxyConfig) -> dict:
     """How a policy's agreement stages read a comparable answer, and where that came from."""
     if policy.get("answer_pattern"):
@@ -544,6 +666,10 @@ def create_app(
         except MeasuredCostError:
             raise HTTPException(status_code=409, detail="The proxy measured this request's baseline cost and "
                                                         "recorded its costs; a recorded cost cannot be replaced") from None
+        except HoldoutCostError:
+            raise HTTPException(status_code=409, detail="This request is in the frontier holdout comparison, which "
+                                                        "rests on the costs the proxy recorded; its costs cannot be "
+                                                        "set") from None
         if not found:
             raise HTTPException(status_code=404, detail="Request not found")
         return {"request_id": request_id, "success": success}
@@ -575,8 +701,10 @@ def create_app(
         """How answers are read for this policy: its own pattern, else the proxy's."""
         return policy.get("answer_pattern") or config.answer_pattern
 
-    def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict):
-        """How a policy's cheaper stages call a model and run a named check for one request."""
+    def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict,
+                    *, request_id: str, mode: str):
+        """How a policy's cheaper stages call a model and run a named check for one request.
+        ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks."""
         async def call(model: str) -> dict:
             response = await side.post(url, json={**body, "model": model}, headers=headers)
             response.raise_for_status()
@@ -600,7 +728,7 @@ def create_app(
         checks = build_checks(
             named, upstream=side, tenant=identity, provider=provider, body=body,
             anthropic_url=_upstream_url(config.anthropic_base_url, "/v1/messages"),
-            anthropic_key=config.anthropic_api_key, cost_of=price) if named else {}
+            anthropic_key=config.anthropic_api_key, cost_of=price, request_id=request_id, mode=mode) if named else {}
         return call, checks
 
     async def run_shadow(*, request_id: str, identity: str, provider: str, policy: dict, body: dict,
@@ -637,7 +765,8 @@ def create_app(
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
         try:
-            call, checks = stage_tools(identity, provider, policy, body, url, headers)
+            call, checks = stage_tools(identity, provider, policy, body, url, headers,
+                                       request_id=request_id, mode="shadow")
             outcome = await shadow_stages(policy, call, checks)
             entries = shadow_entries(outcome)
             shadow_store.record(
@@ -677,13 +806,34 @@ def create_app(
         except Exception:
             count_safely(identity, "failed")
 
+    async def read_body(request: Request) -> bytes:
+        # Refused by its declared length when it has one, and otherwise as soon as more
+        # than the limit has arrived, so an oversized body is never held in memory whole.
+        limit = config.max_body_bytes
+        too_large = HTTPException(status_code=413, detail=f"Request body is larger than {limit} bytes")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise too_large
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                raise too_large
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     async def forward(request: Request, provider: str, identity: str):
+        raw = await read_body(request)
         try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError):
+            body = json.loads(raw)
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise HTTPException(status_code=400, detail="Request must be JSON") from None
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise HTTPException(status_code=400, detail="A messages array is required")
+        denied = sorted(set(body) & set(config.denied_fields.get(provider, [])))
+        if denied:
+            raise HTTPException(status_code=400,
+                                detail=f"This proxy does not accept the request field(s): {', '.join(denied)}")
         try:
             json.dumps(body, allow_nan=False, ensure_ascii=False).encode("utf-8")
         except UnicodeEncodeError:
@@ -719,6 +869,13 @@ def create_app(
                 headers.get("anthropic-beta", "").encode("ascii")
             except UnicodeEncodeError:
                 raise HTTPException(status_code=400, detail="Provider protocol headers must contain ASCII text") from None
+            if config.anthropic_beta_allowlist is not None and "anthropic-beta" in headers:
+                refused = sorted({value.strip() for value in headers["anthropic-beta"].split(",") if value.strip()}
+                                 - set(config.anthropic_beta_allowlist))
+                if refused:
+                    raise HTTPException(status_code=400,
+                                        detail=f"This proxy does not forward the anthropic-beta value(s): "
+                                               f"{', '.join(refused)}")
             path = "/v1/messages"
         url = _upstream_url(getattr(config, f"{provider}_base_url"), path)
         # Only non-secret settings that affect request semantics enter the key.
@@ -759,25 +916,35 @@ def create_app(
         # Live routing: try the tenant's frozen policy before the frontier. Anything that
         # goes wrong here leaves the request on the ordinary frontier path below.
         routing_spent: float | None = None
+        # The named checks the policy ran, for the ledger row: unknown unless its stages ran.
+        routing_checks: list | None = None
         route = config.route_policies.get(identity, {}).get(provider)
         routable = route is not None and bool(route["stages"]) and not stream and selected == frontier
+        # The frontier holdout: with an audit rate, every request the policy could serve
+        # is in one of two groups. A held-out one skips the policy and goes to the
+        # frontier with nothing spent on routing. The salt keeps this choice apart from
+        # the shadow sample, which reads the same request id.
+        holdout = (sampled(f"holdout:{request_id}", config.audit_rate)
+                   if routable and config.audit_rate > 0 else None)
         # A request with tool definitions goes straight to the frontier when the policy
         # has an agreement stage: cheaper models cannot agree on tool calls. Nothing is
         # spent on the way, and the ledger row says why.
-        route_skip = TOOLS_SKIP_REASON if routable and skips_for_tools(route, body) else None
-        if route_skip is not None:
+        route_skip = TOOLS_SKIP_REASON if routable and not holdout and skips_for_tools(route, body) else None
+        if route_skip is not None or holdout:
             routing_spent = 0.0
         # Only a policy whose stages were tried traces its row to the policy file.
-        routing_ran = routable and route_skip is None
+        routing_ran = routable and route_skip is None and not holdout
         if routing_ran:
             try:
-                call, named_checks = stage_tools(identity, provider, route, body, url, headers)
+                call, named_checks = stage_tools(identity, provider, route, body, url, headers,
+                                                 request_id=request_id, mode="route")
                 routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
                 spent = [entry["cost_usd"] for entry in (*routed["calls"], *routed["checks"])]
                 total = None if any(value is None for value in spent) else math.fsum(spent)
             except Exception:
                 routed = None
             if routed is not None:
+                routing_checks = routed["checks"]
                 if routed["accepted"]:
                     served, result = routed["served_by"], routed["result"]
                     answer_cost = result["cost_usd"]
@@ -798,7 +965,8 @@ def create_app(
                         cached_tokens=tokens["cached_tokens"], cost_usd=answer_cost,
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
                         baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
-                        policy_sha256=policy_sha256, route_stage=routed["stage"],
+                        policy_sha256=policy_sha256, route_stage=routed["stage"], holdout=holdout,
+                        checks=routing_checks,
                         latency_ms=(time.monotonic() - started) * 1000)
                     if not recorded and config.ledger_required:
                         return unrecorded(request_id)
@@ -837,8 +1005,12 @@ def create_app(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
             stream=stream, fallback_used=fallback, cache_context=cache_context, route_skip_reason=route_skip,
+            holdout=holdout,
             # A route policy ran and sent the request on to the frontier.
-            **({"policy_sha256": policy_sha256, "route_stage": "frontier"} if routing_ran else {}),
+            **({"policy_sha256": policy_sha256, "route_stage": "frontier", "checks": routing_checks}
+               if routing_ran else {}),
+            # A held-out request names the policy it was held out from; no stage ran.
+            **({"policy_sha256": policy_sha256} if holdout else {}),
         )
         if response is None:
             # What a route policy spent before the frontier failed is still known. No
@@ -860,8 +1032,11 @@ def create_app(
         shadow_due = (shadow_policy is not None and shadow_policy["stages"] and selected == frontier
                       and not fallback and response.status_code < 400 and sampled(request_id, config.shadow_sample_rate))
         if stream and response.status_code < 400:
-            # Streaming never enters the verified answer cache. Costs stay unknown
-            # until actual usage/cost is supplied through the outcome endpoint.
+            # Streaming never enters the verified answer cache. The row is written
+            # before the first byte; token counts and the answer cost are filled in
+            # when the stream ends, if it carried usage. Otherwise they stay unknown
+            # until supplied through the outcome endpoint. The baseline and routing
+            # cost stay unknown either way.
             recorded = record_safely(**common, upstream_status=response.status_code)
             if not recorded and config.ledger_required:
                 await response.aclose()
@@ -871,12 +1046,36 @@ def create_app(
             # that the shadow report says how much of the sample it could not see.
             streamed = BackgroundTask(count_safely, identity, "streamed") if shadow_due else None
 
+            usage = _StreamUsage(provider)
+            priced_model = None if fallback else selected
+
+            def fill_usage() -> None:
+                # Also after a stream that broke off: what usage arrived is kept, and
+                # a cost needs every count. A failed write must not reach the caller.
+                if not recorded:
+                    return
+                try:
+                    usage.close()
+                    tokens = usage.tokens()
+                    if tokens is None:
+                        return
+                    store.fill_usage(
+                        identity, request_id, input_tokens=tokens["input_tokens"],
+                        output_tokens=tokens["output_tokens"], cached_tokens=tokens["cached_tokens"],
+                        cost_usd=_cost(config, provider, priced_model, tokens) if priced_model else None)
+                except Exception:
+                    pass
+
             async def chunks():
                 try:
                     async for chunk in response.aiter_bytes():
+                        usage.feed(chunk)
                         yield chunk
                 finally:
-                    await response.aclose()
+                    try:
+                        await response.aclose()
+                    finally:
+                        fill_usage()
 
             return StreamingResponse(
                 chunks(), status_code=response.status_code,
@@ -912,7 +1111,7 @@ def create_app(
         if not recorded and config.ledger_required:
             return unrecorded(request_id)
         if route is not None and route["stages"] and not stream:
-            result_headers["x-tine-route"] = "frontier"
+            result_headers["x-tine-route"] = "holdout" if holdout else "frontier"
         if route_skip is not None:
             result_headers["x-tine-route-skipped"] = "tools"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"

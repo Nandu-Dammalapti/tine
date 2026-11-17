@@ -257,7 +257,7 @@ def test_stages_stop_at_the_deadline_and_keep_what_was_already_spent():
         await asyncio.sleep(30)
     outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": slow_check}, deadline_seconds=0.1))
     assert outcome["checks"] == [{"check": "judge", "model": "a", "passed": False, "cost_usd": None,
-                                  "error": "DeadlineExceeded"}]
+                                  "error": "DeadlineExceeded", "checked_model": "a"}]
 
 
 def test_a_check_that_cannot_pass_skips_its_stage_before_any_model_is_paid():
@@ -275,8 +275,9 @@ def test_a_check_that_cannot_pass_skips_its_stage_before_any_model_is_paid():
     outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": judge}))
     # The skipped stage called nothing, so the later stage still asks its model once.
     assert made == ["a"] and outcome["accepted"] and outcome["stage"] == 1
+    # No model answered the skipped stage, so no answer was checked.
     assert outcome["checks"] == [{"check": "judge", "model": "a", "passed": False, "cost_usd": 0.0, "error": None,
-                                  "reason": "request_too_long"}]
+                                  "reason": "request_too_long", "checked_model": None}]
     judge.skip_reason = None
     made.clear()
     outcome = asyncio.run(run_stages_async(policy, call, checks={"judge": judge}))

@@ -453,28 +453,35 @@ def test_a_limit_per_tenant_keeps_one_busy_tenant_from_taking_every_slot():
 
 def test_a_sampled_request_that_streamed_is_counted_and_not_shadowed():
     seen = []
+    # One stream carries usage and one does not: a known cost changes none of the counts.
+    streams = [b'data: {"usage": null}\n\ndata: {"choices": [], "usage": {"prompt_tokens": 1000, '
+               b'"completion_tokens": 1000}}\n\ndata: [DONE]\n\n', b"data: {}\n\ndata: [DONE]\n\n"]
 
     async def provider(request):
         sent = json.loads(request.content)
         seen.append(sent["model"])
         if sent.get("stream"):
-            return httpx.Response(200, content=b"data: {}\n\ndata: [DONE]\n\n",
-                                  headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, content=streams.pop(0), headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json=reply("B"))
 
     async def scenario():
+        ledger = Ledger()
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
-            app = create_app(config(), ledger=Ledger(), client=upstream)
+            app = create_app(config(), ledger=ledger, client=upstream)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
                 headers = {"authorization": "Bearer token-a"}
+                costs = []
                 for stream in (True, True, False):
                     response = await client.post("/v1/chat/completions", headers=headers, json={
                         "model": "frontier", "stream": stream, "messages": [{"role": "user", "content": "q"}]})
                     assert response.status_code == 200
+                    costs.append(ledger.get("a", response.headers["x-tine-request-id"])["cost_usd"])
+                assert costs == [0.2, None, 0.2]
                 return (await client.get("/v1/shadow", headers=headers)).json()
     body = asyncio.run(scenario())
     assert seen == ["frontier", "frontier", "frontier", "small-a", "small-b"]
     assert body["streamed_not_shadowed"] == 2 and body["sampled_requests"] == 1 and body["shadow_coverage"] == 1.0
+    assert body["shadowed_requests"] == 1
 
 
 def test_the_counts_are_unknown_for_a_ledger_that_has_none():

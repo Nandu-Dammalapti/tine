@@ -149,9 +149,16 @@ def inert(text: str) -> str:
 
 
 def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: dict,
-                 anthropic_url: str, anthropic_key: str, cost_of) -> dict:
+                 anthropic_url: str, anthropic_key: str, cost_of, request_id: str | None = None,
+                 mode: str | None = None) -> dict:
     """Check functions for one request. ``cost_of(provider, model, payload)`` prices a
-    provider response from its usage, or returns None when it cannot."""
+    provider response from its usage, or returns None when it cannot. ``request_id``
+    and ``mode`` (``"shadow"`` or ``"route"``) are sent to webhooks, so that a run on
+    the customer's side can be matched with the proxy's records.
+
+    Each check's verdict lists the ``steps`` it ran, in order: the step's type,
+    whether it passed, its cost and, when it said one, the reason it did not pass.
+    Steps after the first rejection are not run and not listed."""
 
     async def webhook(step: dict, result: dict) -> dict:
         headers = {"content-type": "application/json"}
@@ -163,7 +170,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
         response = await upstream.post(
             step["url"], headers=headers, timeout=step.get("timeout_seconds", 60),
             json={"tenant": tenant, "provider": provider, "model": result.get("model"),
-                  "request": body, "response": result.get("payload")})
+                  "request_id": request_id, "mode": mode, "request": body, "response": result.get("payload")})
         response.raise_for_status()
         reply = response.json()
         if not isinstance(reply, dict) or not isinstance(reply.get("passed"), bool):
@@ -214,7 +221,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
 
     def make(steps: list[dict]):
         async def check(result: dict) -> dict:
-            costs, passed, tested, reason, failure = [], True, False, None, {}
+            costs, passed, tested, reason, failure, ran = [], True, False, None, {}, []
             for step in steps:
                 try:
                     if step["type"] == "webhook":
@@ -228,6 +235,10 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
                     failure = describe_failure(error)
                     failure["error"] = f"{step['type']} {failure['error']}"
                 costs.append(verdict["cost_usd"])
+                # What the step decided, for the audit record. No text the step read is kept.
+                ran.append({"type": step["type"], "passed": verdict["passed"], "cost_usd": verdict["cost_usd"],
+                            **({"reason": verdict["reason"]} if verdict.get("reason") else {}),
+                            **failure})
                 if not verdict["passed"]:
                     passed, reason = False, verdict.get("reason")
                     break
@@ -236,7 +247,7 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
             # steps cost is still reported, so known spending is not lost with it.
             known = math.fsum(cost for cost in costs if cost is not None)
             return {"passed": passed, "cost_usd": None if any(cost is None for cost in costs) else known,
-                    "known_cost_usd": known, **({"reason": reason} if reason else {}), **failure}
+                    "known_cost_usd": known, **({"reason": reason} if reason else {}), **failure, "steps": ran}
         # Every step must pass, so a judge that cannot read the whole request rejects
         # whatever a model answers: the stage need not call one (tine.policy).
         check.skip_reason = ("request_too_long" if request_too_long

@@ -809,3 +809,108 @@ def test_cli_checks_differing_answers_against_the_described_policys_limit(tmp_pa
     page = cli.build(tenant="acme", ledger=path, policy=policy_path)
     assert 'class="alarm"' in page and "more than the policy&#x27;s quality limit of 2.00%" in page
     assert 'class="alarm"' not in cli.build(tenant="acme", ledger=path)  # no policy, no limit to check against
+
+
+def holdout_ledger(path=None, *, routed_cost: float = 0.1, held: int = 30) -> Ledger:
+    """Live routing with a frontier holdout: thirty routed requests (cheap answers with
+    estimated baselines, and some escalations) and ``held`` held out for the frontier."""
+    ledger = Ledger(path) if path else Ledger()
+    for index in range(30):
+        hard = index % 5 == 0
+        ledger.record(tenant="acme", provider="openai", model="big" if hard else "small-a",
+                      request_body={"q": index}, success=True, holdout=False,
+                      cost_usd=1.0 if hard else routed_cost, routing_cost_usd=0.05,
+                      baseline_cost_usd=1.0, baseline_estimated=not hard)
+    for index in range(held):
+        ledger.record(tenant="acme", provider="openai", model="big", request_body={"held": index}, success=True,
+                      holdout=True, cost_usd=0.9 + 0.2 * (index % 2), routing_cost_usd=0.0, baseline_cost_usd=1.0)
+    return ledger
+
+
+def test_the_holdout_saving_leads_the_page_with_its_interval_and_estimates_stay_apart():
+    report = holdout_ledger().report("acme")
+    estimate = report["holdout_estimate"]
+    sentences = headline_sentences(report, None)
+    assert sentences[0] == (
+        "Measured under routing, from a random frontier holdout: routed requests cost "
+        f"{percent(estimate['saving_fraction'], rounding='down')} less per request than requests held out for the "
+        f"frontier model (95% interval for the saving: {percent(estimate['saving_fraction_low'], rounding='down')} "
+        f"to {percent(estimate['saving_fraction_high'], rounding='down')}), on 30 routed requests and 30 held out. "
+        "It is an estimate from a random sample, and it does not measure quality.")
+    assert estimate["saving_fraction"] == pytest.approx(1 - (6 * 1.05 + 24 * 0.15) / 30)
+    assert any(sentence.startswith("Estimated, not measured") for sentence in sentences[1:])
+    assert any("escalated to it or were held out" in sentence and "the holdout figure above" in sentence
+               for sentence in sentences)
+    page = render(report, None, tenant="acme", generated_at="now")
+    title = page[page.index("<h1>"):page.index("</h1>")]
+    assert "random frontier holdout" in title
+    text = text_of(page)
+    for expected in (
+        "Measured under routing: random frontier holdout",
+        "Routed requests with known costs 30", "Held-out requests with known costs 30",
+        "Mean cost per routed request, answer and routing $0.33",
+        "Mean cost per held-out request, the frontier model $1.00",
+        f"Saving per request, measured from the holdout {percent(estimate['saving_fraction'], rounding='down')}",
+        "95% interval for the saving", "delta method",
+        "The holdout saving is an estimate from a random sample.",
+        estimate["scope"],
+    ):
+        assert expected in text, expected
+    # The estimated figure stays in its own table, after the holdout one.
+    holdout_table = text[text.index("Measured under routing: random"):text.index("Measured against the frontier model")]
+    assert "estimated" not in holdout_table.lower().replace("an estimate from a random sample", "")
+
+
+def test_a_holdout_with_routed_costs_not_fully_known_reads_as_an_upper_limit():
+    ledger = holdout_ledger()
+    for index in range(10):  # escalations after a failed cheap call: routing cost not known
+        ledger.record(tenant="acme", provider="openai", model="big", request_body={"failed": index}, success=True,
+                      holdout=False, cost_usd=1.0, routing_cost_usd=None)
+    report = ledger.report("acme")
+    estimate = report["holdout_estimate"]
+    assert estimate["saving_is_upper_limit"] is True
+    first = headline_sentences(report, None)[0]
+    assert first.startswith("Measured under routing, from a random frontier holdout: routed requests cost at most "
+                            f"{percent(estimate['saving_fraction'], rounding='down')} less per request")
+    assert "95% interval for that upper limit" in first
+    assert "on 40 routed requests, 10 of them counted at the part of their cost that is known" in first
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    for expected in ("Counted at the known part of their cost, routed 10",
+                     "Mean cost per routed request, answer and routing, at least",
+                     f"Saving per request, measured from the holdout at most "
+                     f"{percent(estimate['saving_fraction'], rounding='down')}",
+                     "the routed mean is a lower limit and the saving an upper limit"):
+        assert expected in text, expected
+    # Without such requests neither the headline nor the table reads as a limit.
+    plain_report = holdout_ledger().report("acme")
+    assert "at most" not in headline_sentences(plain_report, None)[0]
+    plain = text_of(render(plain_report, None, tenant="acme", generated_at="now"))
+    assert "Mean cost per routed request, answer and routing $" in plain
+    assert "measured from the holdout at most" not in plain and "the saving an upper limit." not in plain
+
+
+def test_a_holdout_too_small_for_a_figure_shows_counts_only():
+    report = holdout_ledger(held=29).report("acme")
+    assert report["holdout_estimate"]["saving_fraction"] is None
+    assert not headline_sentences(report, None)[0].startswith("Measured under routing")
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    assert "Held-out requests with known costs 29" in text
+    assert "not shown until each group has 30 requests with known costs" in text
+    assert "Mean cost per held-out request, the frontier model not known" in text
+
+
+def test_a_holdout_that_shows_routing_cost_more_calls_it_a_loss():
+    report = holdout_ledger(routed_cost=2.0).report("acme")
+    first = headline_sentences(report, None)[0]
+    assert "more per request than requests held out" in first and "so there is no saving" in first
+    assert "less per request" not in first
+
+
+def test_cli_shows_the_holdout_estimate_from_a_ledger_file(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    holdout_ledger(path).close()
+    output = tmp_path / "report.html"
+    cli.main(["--ledger", str(path), "--tenant", "acme", "--output", str(output), "--generated-at", "2026-11-17"])
+    text = text_of(output.read_text(encoding="utf-8"))
+    assert text.count("Measured under routing, from a random frontier holdout") == 1
+    assert "Held-out requests with known costs 30" in text

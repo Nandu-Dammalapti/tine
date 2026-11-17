@@ -1,6 +1,6 @@
 # Local proxy and ledger
 
-The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
+The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
 
 To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). The image has not been built or run yet.
 
@@ -17,6 +17,9 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_TIMEOUT_SECONDS` | Upstream timeout, default 30 |
 | `TINE_MODEL_PRICES` | Explicit USD-per-million token rates keyed by `provider:model`. Optional, except that shadow sampling needs a price for every stage model and judge model of a shadow policy |
 | `TINE_VERIFIED_CACHE` | `true` by default; cache requires an explicit successful outcome |
+| `TINE_MAX_BODY_BYTES` | Largest request body on the provider routes, in bytes. Default 10485760 (10 MB). Larger gets 413 (see Request limits) |
+| `TINE_DENIED_FIELDS` | Optional JSON object of provider names and arrays of top-level request fields refused with 400. Unset: none |
+| `TINE_ANTHROPIC_BETA_ALLOWLIST` | Optional comma-separated `anthropic-beta` values that may be forwarded; others get 400. Unset or empty: all forwarded |
 
 Never commit credentials or paste provider keys into notebook cells. The app refuses startup without configured tenant keys. Clients use their **proxy tenant token**, not the provider key, in `Authorization: Bearer ...`; Anthropic clients can use `x-api-key` for that proxy token. Outbound requests use the server's provider credential. A caller-supplied tenant header cannot select a tenant.
 
@@ -37,6 +40,25 @@ Without a route policy, automatic proxy records leave routing cost unknown, incl
 Net savings require known answer, routing, and baseline costs for a verified successful request. `verified_cost_usd` now includes both cost components, exposed separately as `verified_answer_cost_usd` and `verified_routing_cost_usd`. `verified_savings_usd` and `savings_fraction` are null when no comparable request exists. `unknown_cost_requests` now counts requests missing either component; separate answer/routing counts identify the gaps. Known cost totals sum measured components across successes, failures, and pending requests, so they are incomplete while any component is unknown. Cost per verified success is null until every request has both costs. Unrepresentable numeric aggregates are also null.
 
 Unknown outcomes and costs remain unknown. Cached responses are scoped by tenant, provider, upstream endpoint, model, exact request contents, and forwarded Anthropic version/beta headers. With a route policy the cached answer may be a cheaper model's: a routed answer is stored under the request as it arrived (see Routing through a policy). They become eligible after success is explicitly confirmed. After upgrading, responses recorded with the older cache keys require a fresh upstream request and successful outcome before cache reuse, because those keys lack upstream context. Streaming responses are not cached. The ledger stores prompts/responses; use only data you intend to retain in the configured local database.
+
+Streamed replies are relayed byte for byte. The proxy writes the ledger row before the first byte, then
+reads token usage from the events as they pass, without changing them. When the stream ends it fills in
+the row's token counts and answer cost (`cost_usd`) from that usage and `TINE_MODEL_PRICES`:
+
+- Anthropic: input tokens (with cache reads and writes) from `message_start`, output tokens from
+  `message_delta`.
+- OpenAI: the chunk that carries `usage`. OpenAI sends it only when the caller asked for it with
+  `"stream_options": {"include_usage": true}`. The proxy does not add that option to a request.
+- No usage, or a stream that broke off before the final count: the cost stays unknown, as before. What
+  arrived is kept (an Anthropic stream cut off mid-reply keeps its input tokens).
+- A stream served after a fallback gets token counts and no cost, as a buffered reply does.
+- Only empty fields are filled. A cost the caller sent through the outcome endpoint first is kept.
+
+A streamed row has no baseline: `baseline_cost_usd` and routing cost stay unknown, so streams never
+count in `verified_savings_usd`. The caller may still supply both, as for any request the proxy did not
+measure. Streams are still never cached, shadowed or routed; `streamed_not_shadowed` counts them as
+before. Built and tested with stand-in streams for both providers; never used by a real customer or run
+against a real provider's stream.
 
 For OpenAI-compatible usage, omitted optional cache details retain the zero-cache default. Explicitly null or malformed `prompt_tokens_details` instead leave cached tokens, estimated cost, and the automatic frontier baseline unknown, even if input/output totals are valid. The provider response still passes through unchanged; a later measured cost can be supplied through the outcome endpoint.
 
@@ -87,9 +109,72 @@ only escalated requests and cannot come out positive for the policy as a whole. 
 is the answer's token counts at the frontier's prices; in the simulated pilots it came to about 0.45
 times the frontier's recorded cost, because cheap answers were shorter. Neither figure is the policy's
 saving. Measuring that needs a random share of requests always sent to the frontier (a holdout), with a
-confidence interval. **That holdout is not built** (it is designed as `TINE_AUDIT_RATE` in
-[LEARNING_LOOP.md](LEARNING_LOOP.md)). Until it exists, the saving of live routing is a projection from
-shadow mode or an estimate, never a measurement, and no fee should rest on it.
+confidence interval. `TINE_AUDIT_RATE` sets that share. It is off by default (0), and without it the
+saving of live routing is a projection from shadow mode or an estimate, never a measurement.
+
+**The frontier holdout.** With `TINE_AUDIT_RATE` between 0 and 1, every request a route policy could
+serve (the tenant and provider have a policy with stages, the request does not stream and asks for the
+frontier model) falls in one of two groups:
+
+- **Held out**, a share equal to the rate, chosen from the request id as shadow sampling is
+  (`sampled("holdout:" + request_id, rate)`; the prefix keeps it apart from the shadow sample). The
+  policy is skipped and the frontier answers, tools or not. The response carries `x-tine-route:
+  holdout`. The ledger row has `holdout` 1, `routing_cost_usd` 0.0, the frontier's cost as both
+  `cost_usd` and a `proxy_measured` baseline, and `policy_sha256` naming the policy it was held out
+  from, with `route_stage` NULL.
+- **Routed**, the rest: handled exactly as without a holdout (a stage, the frontier, or skipped for
+  tools). The row has `holdout` 0.
+
+Rows outside the comparison have `holdout` NULL: no policy, a streamed request, a request for an
+allowlisted model, and cache hits (the cache is looked up before the choice is made). Older ledgers
+gain the column, NULL on every existing row. Nothing else changes for a held-out request. A tenant's
+provider cannot have a shadow policy as well as a route policy, so a held-out request is never shadowed.
+
+`GET /v1/savings` then carries `holdout_estimate` (null while no row is in the comparison):
+
+- `routed_requests` and `holdout_requests`: requests in each group whose answer and routing costs are
+  both known.
+- `routed_unknown_cost_requests`: routed requests whose answer or routing cost is not known. Routing
+  cost is unknown when a cheaper call failed (an HTTP error or a 503), a check raised or had no usage,
+  a webhook failed closed, or `TINE_ROUTE_DEADLINE_SECONDS` ran out. Those requests then usually
+  escalated and paid the frontier as well, so they are the costliest routed requests. Leaving them out
+  would overstate the saving, so each is counted at the part of its cost that is known (unknown parts
+  as 0). While any are, `saving_is_upper_limit` is true: the routed mean is a lower limit, and the
+  saving and both ends of its interval are upper limits.
+- `holdout_unknown_cost_requests`: held-out requests whose cost is not known (a 502, or a frontier model
+  with no price). They are left out and counted.
+- `routed_mean_cost_usd` (answer plus routing cost, escalations included) and `holdout_mean_cost_usd`.
+- `saving_fraction` = 1 - mean(routed) / mean(holdout), with `saving_fraction_low` and
+  `saving_fraction_high` at `confidence` 0.95. The interval is a normal approximation on the ratio
+  (delta method, the groups independent): the standard error is
+  sqrt(var(routed)/n_routed + R^2 var(holdout)/n_holdout) / mean(holdout), with R the ratio, and the
+  interval is the saving plus or minus 1.96 of them. `method` says so in words.
+- No mean, saving or interval is given until each group has `min_requests_per_group` (30) requests with
+  known costs, or while the held-out mean is 0.
+- `scope` says what the figure is: an estimate from a random sample, not a billing amount. It assumes
+  the two groups are alike, and the random choice is what makes them so. It does not measure quality.
+
+On a request in the comparison (`holdout` 0 or 1), a PATCH that sets `cost_usd` or `routing_cost_usd`
+returns 409 ("This request is in the frontier holdout comparison, which rests on the costs the proxy
+recorded; its costs cannot be set") and changes nothing. The outcome and a baseline the proxy did not
+measure can still be set.
+
+Limits:
+
+- The estimate pools every row in the ledger with `holdout` set, whatever its policy digest or the rate
+  at the time. Changing the policy or the rate mixes periods in different proportions in the two
+  groups. Start a new ledger, or filter by `policy_sha256` in SQL, after a change.
+- At a rate of 5% and 30 held-out requests needed, the first figure needs about 600 eligible requests.
+  The interval is wide until both groups are much larger, and it is only approximate for small groups
+  or very skewed costs.
+- Held-out requests cost the frontier's price. That is part of the price of measuring, and it lowers
+  the saving the tenant gets by about the rate times the saving.
+- It says nothing about quality. A routed answer that was wrong costs the same here as a right one.
+- A routed request whose cost is not fully known turns the figure into an upper limit, and its costs
+  cannot be filled in later (the 409 above). Find why routing cost went unknown (a model that fails,
+  a webhook, the deadline) and fix it to get a point figure again. Held-out requests whose cost is not
+  known are still left out, which can move the figure either way.
+- Built and tested with stand-in providers. Never run on real traffic or used by a real customer.
 
 ### Audit trail
 
@@ -103,11 +188,28 @@ shadow mode or an estimate, never a measurement, and no fee should rest on it.
     frontier. That includes a policy error and a frontier failure (a 502).
   - Both are NULL when no route policy ran: no policy for that tenant and provider, a policy with
     `stages: []`, a streamed request, a request for an allowlisted model, a request skipped for tools,
-    and cache hits. A cache hit is traced through `cached_from` to the row that served it.
+    and cache hits. A cache hit is traced through `cached_from` to the row that served it. A request
+    held out for the frontier (`holdout` 1) has `policy_sha256` and a NULL `route_stage`.
+- `requests.holdout` (integer, nullable): 1 for a request held out for the frontier, 0 for one routed
+  through the policy, NULL outside the holdout comparison (see Measuring the saving under live
+  routing).
   - The policy file is read only at startup. A changed file shows up as a new digest only after a
     restart.
 - `requests.route_skip_reason` (text, nullable) says why a request went past its route policy
   untried, for example because it carried tools (see Routing through a policy).
+- `requests.checks_json` (JSON text, nullable) keeps the named checks a route policy ran for the
+  request, in order. `Ledger.get` returns it decoded as `checks`. There is no HTTP endpoint that reads
+  one request; read the ledger row. Each entry has:
+  - `check` (the check's name), `checked_model` (the model whose answer it read; null for a stage
+    skipped before any model answered), `passed`, `cost_usd`, and `reason`, `error` and `status` when
+    there are any. `model` is the stage's first model, as before.
+  - `steps`: what each step decided, in order: `type` (`webhook` or `judge`), `passed`, `cost_usd`,
+    and `reason`, `error` and `status` when there are any. Steps after the first rejection did not run
+    and are not listed. A check cut off by the route deadline has no `steps`.
+  - It is `[]` when the policy ran but no named check did (an agreement or unchecked stage), and NULL
+    when no route policy ran, when its run raised an error, for cache hits, and for rows written
+    before the column existed.
+  - No request text, answer or patch is stored in it.
 - Every outcome update is appended to the `outcome_events` table: `event_id`, `tenant`, `request_id`,
   `created_at`, `outcome_sequence`, `fields_json` and `previous_json`. `fields_json` holds the fields
   the PATCH set, plus `baseline_source` when it set a baseline. `previous_json` holds what those fields
@@ -126,6 +228,34 @@ shadow mode or an estimate, never a measurement, and no fee should rest on it.
   streamed requests (the stream is closed before any byte is relayed). The 502 for an unreachable
   upstream is unchanged, since no answer is served. Shadow runs do not start for a request that got a
   503.
+
+### Request limits
+
+Three limits apply to `POST /v1/chat/completions` and `POST /v1/messages`. Each is checked after the
+tenant token and before the verified cache, a policy, shadow mode or any provider call.
+
+- `TINE_MAX_BODY_BYTES` is on by default at 10485760 bytes (10 MB). A body with a larger
+  `Content-Length` gets 413 before it is read. A body without one is read until it passes the limit,
+  then refused with 413. A body of exactly the limit is accepted. Set a whole number of at least 1.
+  The limit does not cover `PATCH /v1/outcomes/{request_id}`, whose body is a few fixed fields.
+- `TINE_DENIED_FIELDS` is off unless set. It is a JSON object like `TINE_ALLOWED_MODELS`, for example
+  `{"openai": ["store"], "anthropic": ["mcp_servers", "container"]}`. A request that has a listed
+  top-level field gets 400 naming the field, whatever its value, so `"store": false` is refused too.
+  Only top-level keys are checked. A field listed for one provider is still forwarded to the other.
+  An unknown provider, a string in place of an array or an empty name stops startup. Tools that the
+  provider runs on its own side, such as `mcp_servers`, reach their targets from the provider's
+  network, so an egress firewall around the proxy cannot block them. Deny the field here instead.
+- `TINE_ANTHROPIC_BETA_ALLOWLIST` is off unless set. It is a comma-separated list of `anthropic-beta`
+  values. The request's header is split on commas and trimmed, and if any value is not on the list the
+  request gets 400 naming the refused values. A request without the header is unaffected. Unset or
+  empty forwards every value, as before. It applies to `/v1/messages` only.
+
+What is stored for a refused request: nothing. The 413 and 400 are returned before a ledger row,
+cache entry or shadow count is written, and the response has no `x-tine-request-id`. The refusal
+appears only in the server's access log, as the line uvicorn writes for every request (client address,
+method, path, status). The body and headers are not logged.
+
+These limits were built and tested with stand-in providers. No real customer has used them.
 
 ### One base URL per provider
 
@@ -209,6 +339,14 @@ More fields of `GET /v1/shadow`:
   texts are compared`. It is `{}` for a tenant without a shadow policy.
 - `sent_to_frontier_for_tools`: sampled requests that defined tools and went to the frontier untried
   (see Routing through a policy). They are counted inside `shadowed_requests`.
+- `check_step_rejections`: check name to step type to the number of times a step of that type turned
+  an answer down, for example `{"tests+judge": {"webhook": 3, "judge": 5}}`. A step that failed (an
+  error or timeout) counts, because a check fails closed. A stage skipped before any model answered
+  has no steps and is counted in `check_rejection_reasons` instead. Runs stored before steps were kept
+  are not counted. `{}` when there are none.
+- Each check entry in `shadow_runs.calls_json` keeps `checked_model` (the model whose answer it read)
+  and `steps`, as in the ledger's `checks_json` (see Audit trail). Its `model` stays
+  `check:<name>`.
 - `check_rejection_reasons`: reason (`request_too_long`, `response_too_long`) to the number of shadow
   check records with it; `{}` when there are none. A shadowed request whose stages were all skipped
   still counts in `shadowed_requests`, at shadow cost $0 and not accepted (the frontier would answer).
@@ -316,7 +454,9 @@ Limits to state with any number from it:
   compared with the frontier's, because two right patches rarely match word for word.
 - Projected savings use only requests whose costs are all known, so every stage model needs a price in
   `TINE_MODEL_PRICES`. Streaming requests are never shadowed; sampled ones are counted in
-  `streamed_not_shadowed`. The streamed share of traffic caps any saving.
+  `streamed_not_shadowed`. The streamed share of traffic caps any saving. A streamed request's own
+  cost is recorded in the ledger when its stream carries usage (see above); that does not change these
+  counts.
 - Shadow results store no prompt or response text; the request record already holds the tenant's request
   and the frontier's response.
 
@@ -335,6 +475,8 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
 - `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
   `TINE_TIMEOUT_SECONDS`. When it runs out the request goes to the frontier.
+- `TINE_AUDIT_RATE`: the share of requests held out for the frontier, between 0 and 1. Default 0, off
+  (see Measuring the saving under live routing).
 
 For a non-streaming request that would have gone to the frontier, the proxy tries the policy's stages in
 order, with the same request and the model swapped. A stage's models are called together. If the
@@ -398,16 +540,16 @@ What the ledger records for a routed request:
   baseline supplied later through the outcome endpoint replaces the estimate. It is then recorded as
   `caller` and reported with the caller-supplied figures, never as measured (see Where a baseline
   comes from).
-- `policy_sha256` and `route_stage` name the policy file and the stage behind the row (see Audit
-  trail).
+- `policy_sha256` and `route_stage` name the policy file and the stage behind the row, and
+  `checks_json` which answers the named checks read and what each step decided (see Audit trail).
 - If the frontier cannot be reached after the policy escalated, the 502 row still records what the
   cheaper attempts and checks cost.
 
 The quality limit of a route policy is the one certified when it was frozen, on the tasks it was
 frozen from. The proxy does not check that live traffic resembles those tasks; shadow mode's drift
 warning is the only signal. Outcomes still have to be reported through the outcome endpoint for
-savings to count as verified. Under live routing the saving itself cannot be measured (see Measuring
-the saving under live routing).
+savings to count as verified. Under live routing the saving itself is measured only with a frontier
+holdout (`TINE_AUDIT_RATE`; see Measuring the saving under live routing).
 
 Limits of routing and shadow mode that are not fixed in code:
 
@@ -449,10 +591,12 @@ order, all of which must pass.
 ]}
 ```
 
-- `webhook`: the proxy POSTs `{"tenant", "provider", "model", "request", "response"}` to a URL the
-  operator controls and reads back `{"passed": true|false, "cost_usd": optional}`. This is how a
-  tenant's own tests are run: beside their repository, on their infrastructure. **The proxy never
-  executes model-written code.** `bearer_env` names an environment variable holding a token to send; the
+- `webhook`: the proxy POSTs `{"tenant", "provider", "model", "request_id", "mode", "request",
+  "response"}` to a URL the operator controls. `request_id` is the proxy's id for the request (the
+  `x-tine-request-id` header and the ledger row) and `mode` is `"shadow"` or `"route"`, so a run on
+  the customer's side can be matched with the proxy's records. It reads back
+  `{"passed": true|false, "cost_usd": optional}`. This is how a tenant's own tests are run: beside
+  their repository, on their infrastructure. **The proxy never executes model-written code.** `bearer_env` names an environment variable holding a token to send; the
   token is never written to the configuration. `timeout_seconds` defaults to 60 and may be at most 600.
   A `cost_usd` that is not a usable amount (negative, `NaN`, infinite, or above one million dollars)
   makes that check's cost unknown. It is never added to a total.

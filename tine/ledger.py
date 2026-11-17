@@ -8,6 +8,11 @@ Every baseline carries where it came from (``baseline_source``): measured by the
 proxy, supplied by the caller, or estimated. Only measured ones count as verified
 savings. ``requests`` holds the current state of a request; every outcome update is
 also appended to ``outcome_events`` with the values it replaced, so none is lost.
+
+Under live routing with a frontier holdout (``TINE_AUDIT_RATE``), ``holdout`` marks the
+requests a route policy could have served: 1 for those held out and sent to the
+frontier, 0 for those routed through the policy. ``report`` compares the mean cost per
+request of the two groups (``holdout_estimate``).
 """
 
 from __future__ import annotations
@@ -16,8 +21,10 @@ import hashlib
 import json
 import math
 import sqlite3
+import statistics
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,6 +35,33 @@ MAX_TOKEN_COUNT = 2**63 - 1  # SQLite INTEGER storage limit.
 # Where a baseline cost came from. Only a baseline the proxy measured, by calling the
 # frontier model for this request, counts toward verified savings.
 BASELINE_SOURCES = ("proxy_measured", "caller", "estimated")
+# The holdout estimate shows no figure until each group has this many requests with
+# known costs: below it the normal approximation behind the interval is poor.
+HOLDOUT_MIN_REQUESTS = 30
+HOLDOUT_CONFIDENCE = 0.95
+HOLDOUT_METHOD = (
+    "normal approximation on the ratio of mean costs (delta method, the two groups independent): "
+    "saving = 1 - R with R = mean(routed)/mean(holdout), standard error "
+    "sqrt(var(routed)/n_routed + R^2 var(holdout)/n_holdout) / mean(holdout), interval saving +/- 1.96 standard errors"
+)
+HOLDOUT_SCOPE = (
+    "an estimate from a random sample, not a billing amount: a share of the requests a route policy could have "
+    "served (TINE_AUDIT_RATE, chosen from the request id) skipped the policy and went to the frontier model. It "
+    "compares the mean cost per request of the routed group (answer plus routing cost, escalations included) with "
+    "that of the held-out group, so it assumes the two groups are alike; the random choice is what makes them so. "
+    "Cache hits, streamed requests and requests for an allowlisted model are in neither group. A routed request "
+    "whose cost is not fully known (a cheaper call failed, a check raised or the route deadline ran out, and it "
+    "usually escalated) is counted at its known part, so while there are any the routed mean is a lower limit "
+    "and the saving an upper limit (saving_is_upper_limit); held-out requests whose cost is not known are left "
+    "out and counted. It pools every policy digest and audit rate in the ledger: "
+    "changing either mixes periods. It does not measure quality: whether the routed answers were as good as the "
+    "frontier's is not part of it"
+)
+
+
+class HoldoutCostError(ValueError):
+    """An outcome update tried to set a cost on a request in the holdout comparison:
+    the holdout estimate rests on the costs the proxy recorded."""
 
 
 class MeasuredBaselineError(ValueError):
@@ -88,6 +122,46 @@ def _cost_sum(values) -> float | None:
     return total if math.isfinite(total) else None
 
 
+def holdout_estimate(routed: list[float], holdout: list[float], *, routed_unknown: Sequence[float] = (),
+                     holdout_unknown: int = 0) -> dict[str, Any]:
+    """The saving under live routing, from per-request costs of the routed and held-out
+    groups. No figure is given until each group has ``HOLDOUT_MIN_REQUESTS`` costs and
+    the held-out mean is above zero; the counts are always given.
+
+    ``routed_unknown`` holds the known part of each routed request whose cost is not
+    fully known. Those are mostly escalations, the costliest routed requests, so leaving
+    them out would bias the saving upward. They are counted at their known part instead,
+    which makes the routed mean a lower limit and the saving an upper limit."""
+    routed_unknown = list(routed_unknown)
+    result: dict[str, Any] = {
+        "routed_requests": len(routed), "holdout_requests": len(holdout),
+        "routed_unknown_cost_requests": len(routed_unknown), "holdout_unknown_cost_requests": holdout_unknown,
+        "routed_mean_cost_usd": None, "holdout_mean_cost_usd": None,
+        "saving_fraction": None, "saving_fraction_low": None, "saving_fraction_high": None,
+        "saving_is_upper_limit": bool(routed_unknown),
+        "confidence": HOLDOUT_CONFIDENCE, "min_requests_per_group": HOLDOUT_MIN_REQUESTS,
+        "method": HOLDOUT_METHOD, "scope": HOLDOUT_SCOPE,
+    }
+    routed = [*routed, *routed_unknown]
+    if min(len(routed), len(holdout)) < HOLDOUT_MIN_REQUESTS:
+        return result
+    try:
+        mean_routed, mean_holdout = statistics.fmean(routed), statistics.fmean(holdout)
+        if not mean_holdout > 0 or not math.isfinite(mean_routed) or not math.isfinite(mean_holdout):
+            return result
+        ratio = mean_routed / mean_holdout
+        error = math.sqrt(statistics.variance(routed) / len(routed)
+                          + ratio**2 * statistics.variance(holdout) / len(holdout)) / mean_holdout
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return result
+    if not math.isfinite(ratio) or not math.isfinite(error):
+        return result
+    z = statistics.NormalDist().inv_cdf(0.5 + HOLDOUT_CONFIDENCE / 2)
+    result.update(routed_mean_cost_usd=mean_routed, holdout_mean_cost_usd=mean_holdout, saving_fraction=1 - ratio,
+                  saving_fraction_low=1 - ratio - z * error, saving_fraction_high=1 - ratio + z * error)
+    return result
+
+
 class Ledger:
     """A single local DB can contain tenants; every read/update requires one."""
 
@@ -133,7 +207,9 @@ class Ledger:
                     route_skip_reason TEXT,
                     baseline_source TEXT,
                     policy_sha256 TEXT,
-                    route_stage TEXT
+                    route_stage TEXT,
+                    holdout INTEGER CHECK(holdout IN (0, 1) OR holdout IS NULL),
+                    checks_json TEXT
                 )"""
             )
             self._db.execute(
@@ -167,6 +243,12 @@ class Ledger:
                 if name not in columns:
                     # Older rows do not say which policy, if any, served them.
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {name} TEXT")
+            if "holdout" not in columns:
+                # Older rows were never part of a holdout comparison.
+                self._db.execute("ALTER TABLE requests ADD COLUMN holdout INTEGER")
+            if "checks_json" not in columns:
+                # Older rows did not keep the checks a route policy ran: unknown, not none.
+                self._db.execute("ALTER TABLE requests ADD COLUMN checks_json TEXT")
             # Append-only history of outcome updates: what each one set, and what it replaced.
             self._db.execute(
                 """CREATE TABLE IF NOT EXISTS outcome_events (
@@ -234,6 +316,8 @@ class Ledger:
         baseline_source: str | None = None,
         policy_sha256: str | None = None,
         route_stage: int | str | None = None,
+        holdout: bool | None = None,
+        checks: list[dict[str, Any]] | None = None,
     ) -> str:
         """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
         was worked out, not measured: the frontier model was not called for this
@@ -244,7 +328,13 @@ class Ledger:
         out, a baseline is ``estimated`` when so marked and ``proxy_measured`` otherwise.
         ``policy_sha256`` and ``route_stage`` trace a request a route policy ran on: the
         digest of the policy file and the index of the stage that answered, or
-        ``"frontier"``. The stage is stored as text."""
+        ``"frontier"``. The stage is stored as text. ``checks`` lists the named checks
+        the route policy ran for this request (``tine.policy.run_stages_async``): which
+        model's answer each read and what each step decided. It holds no request or
+        response text; None means no policy's stages ran or their record was lost.
+
+        ``holdout`` is set only on a request in the frontier holdout comparison: True
+        when it was held out and sent to the frontier, False when it was routed."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
         if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
@@ -264,6 +354,10 @@ class Ledger:
             raise ValueError("route_stage must be a stage index, 'frontier' or None")
         if success is not None and not isinstance(success, bool):
             raise ValueError("success must be bool or None")
+        if holdout is not None and not isinstance(holdout, bool):
+            raise ValueError("holdout must be bool or None")
+        if checks is not None and (not isinstance(checks, list) or not all(isinstance(run, dict) for run in checks)):
+            raise ValueError("checks must be a list of check records or None")
         if route_skip_reason is not None and (not isinstance(route_skip_reason, str) or not route_skip_reason):
             raise ValueError("route_skip_reason must be a nonempty string or None")
         for name, value in (
@@ -317,6 +411,8 @@ class Ledger:
             "baseline_source": baseline_source,
             "policy_sha256": policy_sha256,
             "route_stage": None if route_stage is None else str(route_stage),
+            "holdout": None if holdout is None else int(holdout),
+            "checks_json": None if checks is None else json.dumps(checks, allow_nan=False),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
@@ -342,6 +438,9 @@ class Ledger:
         result["request_body"] = json.loads(result.pop("request_json"))
         raw_response = result.pop("response_json")
         result["response_body"] = json.loads(raw_response) if raw_response else None
+        # A ledger opened read-only may predate the column.
+        raw_checks = result.pop("checks_json", None)
+        result["checks"] = json.loads(raw_checks) if raw_checks is not None else None
         result["success"] = (
             None if result["success"] is None else bool(result["success"])
         )
@@ -364,7 +463,9 @@ class Ledger:
         raises ``MeasuredBaselineError`` and changes nothing. On a request whose baseline
         the proxy measured, ``cost_usd`` and ``routing_cost_usd`` may fill a cost that is
         not known or replace one an earlier update supplied, never one the proxy recorded:
-        that raises ``MeasuredCostError`` and changes nothing. Each update is appended to
+        that raises ``MeasuredCostError`` and changes nothing. On a request in the holdout
+        comparison neither cost may be set at all: that raises ``HoldoutCostError``. Each
+        update is appended to
         ``outcome_events`` with the values it replaced. Returns False when the tenant
         has no such request."""
         if not isinstance(success, bool):
@@ -388,12 +489,15 @@ class Ledger:
             # Hold the write lock from the read of the old values to the event that keeps them.
             self._db.execute("BEGIN IMMEDIATE")
             row = self._db.execute(
-                "SELECT success, cost_usd, routing_cost_usd, baseline_cost_usd, baseline_source "
+                "SELECT success, cost_usd, routing_cost_usd, baseline_cost_usd, baseline_source, holdout "
                 "FROM requests WHERE tenant=? AND request_id=?",
                 (tenant, request_id),
             ).fetchone()
             if row is None:
                 return False
+            if row["holdout"] is not None and {"cost_usd", "routing_cost_usd"} & set(fields):
+                raise HoldoutCostError("this request is in the holdout comparison, which rests on the costs the "
+                                       "proxy recorded; its costs cannot be set")
             if "baseline_cost_usd" in fields and row["baseline_source"] == "proxy_measured":
                 raise MeasuredBaselineError("the proxy measured this request's baseline; it cannot be replaced")
             recorded = [name for name in ("cost_usd", "routing_cost_usd") if name in fields and row[name] is not None]
@@ -420,6 +524,40 @@ class Ledger:
                  json.dumps(previous, allow_nan=False)),
             )
         return True
+
+    def fill_usage(
+        self,
+        tenant: str,
+        request_id: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        cost_usd: float | None = None,
+    ) -> bool:
+        """Fill token counts and the answer cost the proxy learned after recording a
+        request, such as a streamed reply's usage once the stream has ended. Only empty
+        fields are filled: a value already there, such as a cost the caller supplied
+        meanwhile, is kept. This is not an outcome update and adds no outcome event.
+        Returns False when the tenant has no such request."""
+        _nonnegative(cost_usd, "cost_usd")
+        for name, value in (
+            ("input_tokens", input_tokens),
+            ("output_tokens", output_tokens),
+            ("cached_tokens", cached_tokens),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_TOKEN_COUNT
+            ):
+                raise ValueError(f"{name} must be an integer between 0 and {MAX_TOKEN_COUNT} or None")
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE requests SET input_tokens=COALESCE(input_tokens, ?), output_tokens=COALESCE(output_tokens, ?), "
+                "cached_tokens=COALESCE(cached_tokens, ?), cost_usd=COALESCE(cost_usd, ?) "
+                "WHERE tenant=? AND request_id=?",
+                (input_tokens, output_tokens, cached_tokens, cost_usd, tenant, request_id),
+            )
+        return cursor.rowcount > 0
 
     def outcome_events(self, tenant: str, request_id: str) -> list[dict[str, Any]]:
         """Every outcome update of one request, oldest first: the fields it set and the
@@ -476,9 +614,10 @@ class Ledger:
             # A ledger opened read-only may predate the column: work its sources out as an upgrade would.
             columns = {row["name"] for row in self._db.execute("PRAGMA table_info(requests)")}
             source = "baseline_source" if "baseline_source" in columns else _legacy_baseline_source(columns)
+            holdout = "holdout" if "holdout" in columns else "NULL"
             rows = self._db.execute(
-                f"SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from,{source} AS baseline_source "
-                "FROM requests WHERE tenant=?",
+                f"SELECT success,cost_usd,routing_cost_usd,baseline_cost_usd,cached_from,{source} AS baseline_source,"
+                f"{holdout} AS holdout FROM requests WHERE tenant=?",
                 (tenant,),
             ).fetchall()
         costed = [
@@ -516,6 +655,20 @@ class Ledger:
         unknown_routing = sum(row["routing_cost_usd"] is None for row in rows)
         unknown_cost = sum(row["cost_usd"] is None or row["routing_cost_usd"] is None for row in rows)
         successes = sum(row["success"] == 1 for row in rows)
+        # The two groups of the holdout comparison, each request's answer plus routing cost.
+        # A routed request whose cost is not fully known is kept at its known part: those
+        # are mostly escalations, and leaving them out would overstate the saving.
+        groups: dict[int, list[float]] = {0: [], 1: []}
+        routed_partial: list[float] = []
+        holdout_unknown = 0
+        for row in rows:
+            if row["holdout"] in groups:
+                if row["cost_usd"] is not None and row["routing_cost_usd"] is not None:
+                    groups[row["holdout"]].append(row["cost_usd"] + row["routing_cost_usd"])
+                elif row["holdout"] == 0:
+                    routed_partial.append((row["cost_usd"] or 0.0) + (row["routing_cost_usd"] or 0.0))
+                else:
+                    holdout_unknown += 1
         savings = fraction = None
         if comparable and verified_baseline is not None and verified_cost is not None:
             savings = verified_baseline - verified_cost
@@ -559,6 +712,11 @@ class Ledger:
                 "(in a ledger written before baseline sources were recorded, any request whose outcome was "
                 "updated): Tine did not measure it, so this figure is the caller's and is not part of verified savings"
             ),
+            "holdout_estimate": (
+                holdout_estimate(groups[0], groups[1], routed_unknown=routed_partial,
+                                 holdout_unknown=holdout_unknown)
+                if any(groups.values()) or routed_partial or holdout_unknown else None
+            ),
             "scope": (
                 "development ledger; outcomes are caller-attested, verified baselines were measured by the proxy, "
                 "and on those requests the caller can supply only costs the proxy did not record"
@@ -576,6 +734,6 @@ class Ledger:
                 "are excluded from this subtotal, so it is not a billing amount. Under live routing the proxy "
                 "calls the frontier only for requests that escalated, which also paid for the cheaper attempts, "
                 "so this subtotal is not the policy's saving; measuring that needs a random share of requests "
-                "always sent to the frontier, which is not built"
+                "always sent to the frontier: with TINE_AUDIT_RATE set, holdout_estimate compares the two groups"
             ),
         }

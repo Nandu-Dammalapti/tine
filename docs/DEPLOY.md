@@ -106,8 +106,8 @@ Leaves, to destinations you configure:
 - **A judge check sends the request's user text and a cheaper model's response to a Claude model**
   through the Anthropic base URL and key you configured.
 - **A webhook check sends the full request and the cheaper model's response to the URL in your checks
-  file**, together with the tenant id, the provider and the model name, and with the bearer token you
-  named. Point it only at your own infrastructure. If you point it somewhere else, that is where the
+  file**, together with the tenant id, the provider, the model name, the proxy's request id and
+  whether the proxy is shadowing or routing, and with the bearer token you named. Point it only at your own infrastructure. If you point it somewhere else, that is where the
   data goes. Three rules for `bearer_env`, enforced at startup: it may not name a `TINE_*` variable,
   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; a webhook that is sent a token must use an `https://` url,
   loopback included; and one token variable may be sent for one tenant only. The example
@@ -156,11 +156,19 @@ Do not treat this as a production service.
 - **The ledger fails open by default.** When a row cannot be written the answer is still served, marked
   `x-tine-ledger: unavailable`. Set `TINE_LEDGER_REQUIRED=1` (or `true`) to return 503 instead, so no
   answer goes out unrecorded. It is commented out in `deploy/tine.env.example` under "Ledger".
+- **Request limits are basic.** A body over `TINE_MAX_BODY_BYTES` (default 10 MB) gets 413.
+  `TINE_DENIED_FIELDS` and `TINE_ANTHROPIC_BETA_ALLOWLIST` are off until set, and refuse listed request
+  fields and unlisted `anthropic-beta` values with 400. Nothing refused is stored in the ledger. There
+  is no rate limit. Tested with stand-ins only; see Request limits in PROXY.md. They are commented out
+  in `deploy/tine.env.example` under "Request limits".
 - **No metrics or structured logs.** Only `/health` and the container's log output.
 - **Never run on real traffic.** Shadow mode, routing through a policy and named checks have been
   tested with stand-in providers and recorded answers only. See PROXY.md for the limits of each.
 - **Streaming requests are passed through** to the frontier (or to a model you allowed by name in
-  `TINE_ALLOWED_MODELS`) and are never shadowed or routed by a policy.
+  `TINE_ALLOWED_MODELS`) and are never shadowed or routed by a policy. Their answer cost is recorded
+  from the usage the stream carries; OpenAI streams carry it only when the caller sends
+  `"stream_options": {"include_usage": true}`, which the proxy does not add. Without usage the cost
+  stays unknown. Tested with stand-in streams only.
 
 ## Start in shadow mode with a spending cap
 
@@ -253,9 +261,15 @@ New ledger rows then have no `route_stage`. When you change the file instead of 
 `policy_sha256` on new rows changes with it, so the ledger shows which file served each request.
 
 Routing (`TINE_ROUTE_POLICIES`) changes what callers receive. Leave it unset until the shadow report
-and PROXY.md have been read. Under live routing the saving cannot be measured: that needs a random
-share of requests always sent to the frontier, which is not built (PROXY.md, Measuring the saving
-under live routing). A tenant's provider can have a shadow policy or a route policy, not both.
+and PROXY.md have been read. Under live routing the saving is measured only with a frontier holdout:
+`TINE_AUDIT_RATE` (default 0, off) sends that share of the requests a policy could serve to the
+frontier, and `GET /v1/savings` then compares the two groups' mean cost per request, with a 95%
+interval, in `holdout_estimate` (PROXY.md, Measuring the saving under live routing). It is an estimate
+from a random sample, it does not measure quality, and held-out requests cost the frontier's price.
+While some routed requests have a routing cost that is not known (a cheaper model failing, a webhook,
+the route deadline), the figure is only an upper limit on the saving.
+Built and tested with stand-ins only. A tenant's provider can have a shadow policy or a route policy,
+not both.
 `TINE_ROUTE_DEADLINE_SECONDS` is how long a route policy's cheaper stages may take together for one
 request before it goes to the frontier. It defaults to `TINE_TIMEOUT_SECONDS`. Raise it to cover the
 test run when a stage's check runs tests.
@@ -313,8 +327,8 @@ Run one container at a time: PROXY.md asks that all writers restart together on 
 one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
-`policy_sha256`, `route_stage` and `route_skip_reason` columns to `requests`, `skip_reason` to
-`shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
+`policy_sha256`, `route_stage`, `route_skip_reason`, `checks_json` and `holdout` columns to `requests`,
+`skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
 - an estimated baseline becomes `estimated`;
@@ -323,8 +337,8 @@ by this rule:
   it.
 
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
-have no `policy_sha256` or `route_stage`, earlier outcome updates are not in `outcome_events`, and
-shadow coverage counts start at the upgrade.
+have no `policy_sha256`, `route_stage`, `checks_json` or `holdout`, older shadow runs have no check steps,
+earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
 
 ## Checked without Docker
 
