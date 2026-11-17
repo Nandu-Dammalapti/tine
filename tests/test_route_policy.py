@@ -35,7 +35,7 @@ def chat(text):
 
 
 def world(answers, seen, *, tests_pass=True, judge_probability=0.9, down=(), webhook_reply=None, judge_usage=True,
-          judge_requests=None):
+          judge_requests=None, webhook_bodies=None):
     """One stand-in for the model provider, the customer's test webhook and the judge.
     ``webhook_reply`` is the webhook's raw reply body, for replies JSON cannot carry."""
     def handler(request):
@@ -43,6 +43,8 @@ def world(answers, seen, *, tests_pass=True, judge_probability=0.9, down=(), web
             seen.append("webhook")
             sent = json.loads(request.content)
             assert sent["tenant"] == "a" and sent["response"]["choices"] and "authorization" not in request.headers
+            if webhook_bodies is not None:
+                webhook_bodies.append(sent)
             if webhook_reply is not None:
                 return httpx.Response(200, content=webhook_reply, headers={"content-type": "application/json"})
             return httpx.Response(200, json={"passed": tests_pass, "cost_usd": 0.01})
@@ -138,6 +140,43 @@ def test_a_code_stage_runs_the_customers_tests_then_the_judge():
     assert seen == ["coder", "webhook", "judge", "frontier"]  # accepted by verdict but below the 0.7 threshold
 
 
+def test_a_routed_row_keeps_which_answer_each_check_read_and_what_each_step_decided():
+    routed = config(route_policies={"a": {"openai": CODE}}, checks=CHECKS)
+    sent = []
+    response, row = ask(routed, world({"coder": "diff --git a b", "frontier": "frontier patch"}, [],
+                                      webhook_bodies=sent))
+    assert row["checks"] == [{"check": "tests+judge", "model": "coder", "passed": True, "cost_usd": pytest.approx(0.02),
+                              "error": None, "checked_model": "coder",
+                              "steps": [{"type": "webhook", "passed": True, "cost_usd": 0.01},
+                                        {"type": "judge", "passed": True, "cost_usd": pytest.approx(0.01)}]}]
+    # The webhook is told which request it is checking and that the proxy is routing it.
+    assert [(body["request_id"], body["mode"]) for body in sent] == [(response.headers["x-tine-request-id"], "route")]
+    # The judge rejects: the frontier answers, and the row says which step turned the answer down.
+    response, row = ask(routed, world({"coder": "x", "frontier": "y"}, [], judge_probability=0.6))
+    assert row["route_stage"] == "frontier" and row["checks"][0]["checked_model"] == "coder"
+    assert [(step["type"], step["passed"]) for step in row["checks"][0]["steps"]] == [("webhook", True), ("judge", False)]
+    # A failing webhook is a rejecting step with its error; the judge after it is not run.
+    response, row = ask(routed, world({"coder": "x", "frontier": "y"}, [], webhook_reply=b"not json"))
+    assert row["checks"][0]["steps"] == [{"type": "webhook", "passed": False, "cost_usd": None,
+                                          "error": "webhook JSONDecodeError"}]
+    # Neither the request nor any answer is kept with the checks.
+    stored = json.dumps(row["checks"])
+    assert "fix the bug" not in stored and '"x"' not in stored
+    # An agreement policy runs no named check; a request no policy ran on keeps no record.
+    _, row = ask(config(route_policies={"a": {"openai": AGREE}}), world({"small-a": "1", "small-b": "1"}, []))
+    assert row["checks"] == []
+    _, row = ask(config(), world({"frontier": "1"}, []))
+    assert row["checks"] is None
+
+
+def test_a_skipped_stage_is_recorded_with_no_checked_model():
+    routed = config(route_policies={"a": {"openai": CODE}}, checks=CHECKS)
+    _, row = ask(routed, world({"frontier": "y"}, []),
+                 body={"model": "frontier", "messages": [{"role": "user", "content": "x" * 12001}]})
+    assert row["checks"] == [{"check": "tests+judge", "model": "coder", "passed": False, "cost_usd": 0.0,
+                              "error": None, "reason": "request_too_long", "checked_model": None}]
+
+
 def test_shadow_mode_runs_named_checks_without_comparing_answers():
     shadowed = config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0, shadow_max_cost_usd=1.0,
                       checks=CHECKS)
@@ -157,6 +196,42 @@ def test_shadow_mode_runs_named_checks_without_comparing_answers():
     assert report["policy_would_accept"] == 1 and report["accepted_compared_with_frontier"] == 0
     assert report["accepted_matching_frontier_share"] is None
     assert report["projected_policy_cost_usd"] == pytest.approx(0.03) and report["shadow_spend_usd"] == pytest.approx(0.03)
+
+
+def test_shadow_runs_keep_each_checks_steps_and_the_report_counts_rejections_by_step():
+    shadowed = config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0, shadow_max_cost_usd=1.0,
+                      checks=CHECKS)
+    sent = []
+
+    async def scenario():
+        verdicts = iter([0.9, 0.1, 0.1])
+        healthy = world({"coder": "cheap patch", "frontier": "frontier patch"}, [], webhook_bodies=sent)
+
+        def handler(request):
+            if request.url.path.endswith("/v1/messages"):
+                return world({}, [], judge_probability=next(verdicts))(request)
+            return healthy(request)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            ledger = Ledger()
+            app = create_app(shadowed, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                ids = []
+                for index in range(3):
+                    answer = await client.post("/v1/chat/completions", headers=headers, json={
+                        "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                    ids.append(answer.headers["x-tine-request-id"])
+                report = (await client.get("/v1/shadow", headers=headers)).json()
+                stored = ledger._db.execute("SELECT calls_json FROM shadow_runs WHERE request_id=?", (ids[1],)).fetchone()
+                return ids, report, json.loads(stored[0])
+    ids, report, entries = asyncio.run(scenario())
+    assert [(body["request_id"], body["mode"]) for body in sent] == [(request_id, "shadow") for request_id in ids]
+    check = entries[-1]
+    assert check["model"] == "check:tests+judge" and check["checked_model"] == "coder"
+    assert check["steps"] == [{"type": "webhook", "passed": True, "cost_usd": 0.01},
+                              {"type": "judge", "passed": False, "cost_usd": pytest.approx(0.01)}]
+    assert report["check_step_rejections"] == {"tests+judge": {"judge": 2}}
+    assert report["check_rejection_reasons"] == {}
 
 
 def test_policies_and_checks_are_validated_before_anything_runs():
@@ -686,7 +761,10 @@ def test_a_failed_check_records_its_step_and_http_status_and_the_stop_reason_nam
     report, entries = asyncio.run(scenario())
     assert seen == ["frontier", "coder", "webhook", "frontier"]  # stopped after the first: 1 of 2 is unknown
     assert entries[1] == {"model": "check:tests+judge", "check": "tests+judge", "passed": False, "cost_usd": None,
-                          "error": "webhook HTTPStatusError", "status": 503, "known_cost_usd": 0.0}
+                          "error": "webhook HTTPStatusError", "status": 503, "known_cost_usd": 0.0,
+                          "checked_model": "coder",
+                          "steps": [{"type": "webhook", "passed": False, "cost_usd": None,
+                                     "error": "webhook HTTPStatusError", "status": 503}]}
     assert report["failed_shadow_calls"] == 1 and report["skipped_stopped"] == 1
     assert report["sampling"].endswith("Most common: check:tests+judge: HTTP 503 (1)")
 

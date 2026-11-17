@@ -701,8 +701,10 @@ def create_app(
         """How answers are read for this policy: its own pattern, else the proxy's."""
         return policy.get("answer_pattern") or config.answer_pattern
 
-    def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict):
-        """How a policy's cheaper stages call a model and run a named check for one request."""
+    def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict,
+                    *, request_id: str, mode: str):
+        """How a policy's cheaper stages call a model and run a named check for one request.
+        ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks."""
         async def call(model: str) -> dict:
             response = await side.post(url, json={**body, "model": model}, headers=headers)
             response.raise_for_status()
@@ -726,7 +728,7 @@ def create_app(
         checks = build_checks(
             named, upstream=side, tenant=identity, provider=provider, body=body,
             anthropic_url=_upstream_url(config.anthropic_base_url, "/v1/messages"),
-            anthropic_key=config.anthropic_api_key, cost_of=price) if named else {}
+            anthropic_key=config.anthropic_api_key, cost_of=price, request_id=request_id, mode=mode) if named else {}
         return call, checks
 
     async def run_shadow(*, request_id: str, identity: str, provider: str, policy: dict, body: dict,
@@ -763,7 +765,8 @@ def create_app(
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
         try:
-            call, checks = stage_tools(identity, provider, policy, body, url, headers)
+            call, checks = stage_tools(identity, provider, policy, body, url, headers,
+                                       request_id=request_id, mode="shadow")
             outcome = await shadow_stages(policy, call, checks)
             entries = shadow_entries(outcome)
             shadow_store.record(
@@ -913,6 +916,8 @@ def create_app(
         # Live routing: try the tenant's frozen policy before the frontier. Anything that
         # goes wrong here leaves the request on the ordinary frontier path below.
         routing_spent: float | None = None
+        # The named checks the policy ran, for the ledger row: unknown unless its stages ran.
+        routing_checks: list | None = None
         route = config.route_policies.get(identity, {}).get(provider)
         routable = route is not None and bool(route["stages"]) and not stream and selected == frontier
         # The frontier holdout: with an audit rate, every request the policy could serve
@@ -931,13 +936,15 @@ def create_app(
         routing_ran = routable and route_skip is None and not holdout
         if routing_ran:
             try:
-                call, named_checks = stage_tools(identity, provider, route, body, url, headers)
+                call, named_checks = stage_tools(identity, provider, route, body, url, headers,
+                                                 request_id=request_id, mode="route")
                 routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
                 spent = [entry["cost_usd"] for entry in (*routed["calls"], *routed["checks"])]
                 total = None if any(value is None for value in spent) else math.fsum(spent)
             except Exception:
                 routed = None
             if routed is not None:
+                routing_checks = routed["checks"]
                 if routed["accepted"]:
                     served, result = routed["served_by"], routed["result"]
                     answer_cost = result["cost_usd"]
@@ -959,6 +966,7 @@ def create_app(
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
                         baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
                         policy_sha256=policy_sha256, route_stage=routed["stage"], holdout=holdout,
+                        checks=routing_checks,
                         latency_ms=(time.monotonic() - started) * 1000)
                     if not recorded and config.ledger_required:
                         return unrecorded(request_id)
@@ -999,7 +1007,8 @@ def create_app(
             stream=stream, fallback_used=fallback, cache_context=cache_context, route_skip_reason=route_skip,
             holdout=holdout,
             # A route policy ran and sent the request on to the frontier.
-            **({"policy_sha256": policy_sha256, "route_stage": "frontier"} if routing_ran else {}),
+            **({"policy_sha256": policy_sha256, "route_stage": "frontier", "checks": routing_checks}
+               if routing_ran else {}),
             # A held-out request names the policy it was held out from; no stage ran.
             **({"policy_sha256": policy_sha256} if holdout else {}),
         )

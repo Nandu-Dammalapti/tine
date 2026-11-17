@@ -397,7 +397,18 @@ def _check_run(name: str, model: str, verdict: dict) -> dict:
         run["known_cost_usd"] = partial
     if not run["passed"] and isinstance(verdict.get("reason"), str) and verdict["reason"]:
         run["reason"] = verdict["reason"]
+    if isinstance(verdict.get("steps"), list):
+        run["steps"] = [_step(step) for step in verdict["steps"] if isinstance(step, dict)]
     return run
+
+
+def _step(step: dict) -> dict:
+    """The record of one step of a named check (``tine.runtime_checks``): its type,
+    whether it passed, its cost and why it did not pass or failed, if it said."""
+    return {"type": step["type"] if isinstance(step.get("type"), str) else None,
+            "passed": step.get("passed") is True, "cost_usd": known_cost(step.get("cost_usd")),
+            **{key: step[key] for key in ("reason", "error") if isinstance(step.get(key), str) and step[key]},
+            **_status(step.get("status"))}
 
 
 async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dict | None = None,
@@ -411,7 +422,9 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
 
     Returns ``accepted``, and when accepted the ``stage``, the model that
     ``served_by`` it and its ``result``; always the ``calls`` and ``checks`` made, so
-    that every cent spent on the way is accounted for.
+    that every cent spent on the way is accounted for. Each check names the
+    ``checked_model`` whose answer it read (None for a skipped stage) and, for a
+    named check that lists them, its ``steps``.
 
     With ``deadline_seconds`` the stages together get that long. When it runs out
     nothing is accepted, so a stalled model or check delays the caller by the deadline
@@ -459,18 +472,20 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
         except Exception as error:
             checking.remove((name, model))
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
-                               **describe_failure(error)})
+                               **describe_failure(error), "checked_model": model})
             return False
         checking.remove((name, model))
-        check_runs.append(_check_run(name, model, verdict))
+        check_runs.append({**_check_run(name, model, verdict), "checked_model": model})
         return check_runs[-1]["passed"]
 
     async def stages():
         for index, stage in enumerate(policy["stages"]):
             skip = getattr(checks.get(stage["check"]), "skip_reason", None)
             if skip:
-                check_runs.append(_check_run(stage["check"], stage["models"][0],
-                                             {"passed": False, "cost_usd": 0.0, "reason": skip}))
+                # No model answered, so no answer was checked.
+                check_runs.append({**_check_run(stage["check"], stage["models"][0],
+                                                {"passed": False, "cost_usd": 0.0, "reason": skip}),
+                                   "checked_model": None})
                 continue
             results = await asyncio.gather(*(attempt(model) for model in stage["models"]))
             if any(result is None for result in results):
@@ -492,7 +507,7 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
         accepted = None
         calls.extend({"model": model, "cost_usd": None, "error": "DeadlineExceeded"} for model in calling)
         check_runs.extend({"check": name, "model": model, "passed": False, "cost_usd": None,
-                           "error": "DeadlineExceeded"} for name, model in checking)
+                           "error": "DeadlineExceeded", "checked_model": model} for name, model in checking)
     return accepted or {"accepted": False, "stage": None, "served_by": None, "result": None, "check": None,
                         "calls": calls, "checks": check_runs}
 

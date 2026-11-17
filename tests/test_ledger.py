@@ -592,3 +592,26 @@ def test_holdout_column_is_added_to_an_older_ledger(tmp_path):
     assert migrated.report("a")["holdout_estimate"] is None
     assert migrated.get("a", row(migrated, holdout=True))["holdout"] == 1
     migrated.close()
+
+
+def test_the_checks_column_is_added_to_an_older_ledger_and_keeps_check_records(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger, cost_usd=0.25)
+    ledger.close()
+    with sqlite3.connect(path) as database:
+        database.execute("ALTER TABLE requests DROP COLUMN checks_json")
+    migrated = Ledger(path)
+    # An older row does not say what checks ran: unknown, not an empty list.
+    assert migrated.get("a", request_id)["checks"] is None
+    checks = [{"check": "tests", "model": "cheap", "checked_model": "cheap", "passed": False, "cost_usd": 0.01,
+               "error": None, "steps": [{"type": "webhook", "passed": False, "cost_usd": 0.01}]}]
+    checked = row(migrated, checks=checks)
+    assert migrated.get("a", checked)["checks"] == checks
+    assert migrated.get("a", row(migrated, checks=[]))["checks"] == []
+    for broken in ({"check": "tests"}, ["not a record"]):
+        with pytest.raises(ValueError, match="checks"):
+            row(migrated, checks=broken)
+    migrated.close()
