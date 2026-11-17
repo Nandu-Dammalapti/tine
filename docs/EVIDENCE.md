@@ -62,8 +62,12 @@ It does not mean:
 
 - every answer is right, or that no single task gets worse;
 - the limit holds on traffic unlike the certify tasks. The proxy does not check this.
-  Shadow mode warns when cheaper answers differ from the frontier's more often than the
-  limit, which is a reason to grade, not a measured loss (`../docs/PROXY.md`);
+  Shadow mode's drift check counts accepted cheaper answers that differ from the
+  frontier's. It warns when their share is clearly above what the certification allows
+  for: the limit plus the share that differed without a loss on the graded tasks, recorded
+  in the policy file when it is frozen. A warning is a reason to grade a sample, not a
+  measured loss. On the recorded runs a steady loss of twice the limit seldom warned
+  within 1,000 requests (`../docs/PROXY.md`, `2026-11-17-drift-check/README.md`);
 - certainty. One certification in 20 can be wrong by design.
 
 Small samples certify little. With about 80 certify tasks, zero losses still gives a
@@ -91,13 +95,18 @@ None of this has run on real traffic. The code path was tested with stand-ins on
 with recorded SWE-bench data. Not built: nightly retraining per customer, distillation, a
 production datastore and streaming under a policy. A random frontier holdout to measure
 the saving under live routing is now built and was used once with real models (below).
-Paid model calls so far total $172.55: $47.73 for judge measurements ($12.69 in
+Paid model calls so far total $179.00: $47.73 for judge measurements ($12.69 in
 `2026-11-14-api-judge/README.md`, $31.02 in `2026-11-16-judge-probes/README.md` and $4.02
 in `2026-11-17-judge-prompt/README.md`), $23.65 and $60.00 for the two live pilots below,
 $26.43 for the rate-limit tests and a 1,500-question shadow run
-(`2026-11-17-concurrency-and-long-shadow/README.md`) and $14.74 for a pilot on a public
-set of one company's support tickets (`2026-11-17-ticket-pilot/README.md`). Spend that is
-in no results file is not counted.
+(`2026-11-17-concurrency-and-long-shadow/README.md`), $14.74 for a pilot on a public
+set of one company's support tickets (`2026-11-17-ticket-pilot/README.md`) and $6.45 for
+that pilot again without tickets that repeat a prompt example
+(`2026-11-17-ticket-pilot-clean/README.md`). Spend that is in no results file is not
+counted. Those repeats flattered the first ticket pilot, whose Sonnet-alone saving of 49%
+should not be quoted. The clean rerun supports the pair policy instead (Haiku and Sonnet
+agree, else Opus): 0.7% lost on 280 fresh tickets (upper bound 2.2%) and a measured
+saving of 35% (29-40%).
 
 **A live pilot with real models** (`2026-11-17-live-pilot/README.md`). Three current
 Claude models answered MMLU-Pro questions, as stand-in exact-answer traffic, through

@@ -1,0 +1,31 @@
+run,epsilon,requests,runs,old_rule_times_limit,new_baseline_warning_times_limit,new_baseline_warning_or_notice_times_limit,new_default_warning_times_limit
+MMLU-Pro first pilot,0.04,1000,200,1.0,2.5,1.5,4.5
+MMLU-Pro first pilot,0.04,3000,200,1.0,2.0,1.5,4.0
+MMLU-Pro long-1..5,0.04,1000,200,1.0,2.0,1.5,4.5
+MMLU-Pro long-1..5,0.04,3000,200,1.0,2.0,1.0,4.0
+MedQA,0.04,1000,200,1.5,2.5,2.0,5.0
+MedQA,0.04,3000,200,1.5,2.5,1.5,4.5
+ARC-Challenge,0.04,1000,200,1.0,2.0,1.5,4.5
+ARC-Challenge,0.04,3000,200,1.0,1.5,1.5,4.0
+FinQA exact,0.04,1000,200,1.0,3.5,2.5,2.0
+FinQA exact,0.04,3000,200,1.0,3.0,2.0,1.5
+FinQA by value,0.04,1000,200,1.0,3.5,3.0,2.0
+FinQA by value,0.04,3000,200,1.0,3.0,2.5,1.5
+MATH-500 exact,0.04,1000,200,1.0,3.0,2.0,4.0
+MATH-500 exact,0.04,3000,200,1.0,2.5,1.5,3.5
+MATH-500 by value,0.04,1000,200,1.0,2.0,1.0,4.5
+MATH-500 by value,0.04,3000,200,1.0,1.5,1.0,4.0
+IT tickets,0.04,1000,200,1.0,1.5,1.0,3.0
+IT tickets,0.04,3000,200,1.0,1.0,1.0,2.5
+xRouteBench test part,0.04,1000,200,1.0,2.0,1.5,4.0
+xRouteBench test part,0.04,3000,200,1.0,2.0,1.0,3.5
+xRouteBench choose part,0.04,1000,200,1.0,2.5,1.5,4.5
+xRouteBench choose part,0.04,3000,200,1.0,2.0,1.0,4.0
+MMLU-Pro first pilot,0.02,1000,200,1.0,3.0,3.0,8.0
+MMLU-Pro first pilot,0.02,3000,200,1.0,2.5,2.0,7.0
+MMLU-Pro long-1..5,0.02,1000,200,1.0,3.0,2.5,7.5
+MMLU-Pro long-1..5,0.02,3000,200,1.0,2.5,2.0,6.5
+xRouteBench test part,0.02,1000,200,1.0,3.0,2.5,7.0
+xRouteBench test part,0.02,3000,200,1.0,2.0,1.5,6.0
+xRouteBench choose part,0.02,1000,200,1.0,3.0,2.5,7.0
+xRouteBench choose part,0.02,3000,200,1.0,2.5,2.0,6.0

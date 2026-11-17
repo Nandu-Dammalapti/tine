@@ -1,29 +1,31 @@
 # Deploying the proxy in a container
 
-**No Docker daemon has built or run these files as they now stand.** A daemon built the image once, on
+**A Docker daemon built these files and ran the self-test once, on 2026-11-17: 18 of 18 checks passed
+against a stand-in provider** (`results/2026-11-17-container-selftest`; Docker 29.9.3, macOS arm64). The
+image has never been deployed or used by a customer. Before that, a daemon built the image once, on
 2026-11-17, from the `Dockerfile` as it was before the changes described here, which installed the
 dependencies without the lock file. A container of that image served 40 paid requests through a route
 policy (it has no write-up of its own; `results/2026-11-17-concurrency-and-long-shadow` notes it as the
 container test), and `python -m tine backup-ledger` was later run in the same image
 ([REPORT.md](REPORT.md), Getting the ledger out of a running container). The `Dockerfile` and
-`docker-compose.yml` were changed afterwards on a machine whose daemon was not running, and not every
-step of the Dockerfile as it is now has been run.
+`docker-compose.yml` were changed afterwards on a machine whose daemon was not running.
 
 - Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a
   `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on
   `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop.
-- Not run in their present form: the `COPY` that now brings `requirements-dev.lock`, and the
-  `pip install` with that lock as constraints. The base image, the `COPY` of `tine/`, the user-creation
-  step (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME` are unchanged from the image that
-  was built once.
+- Run by a Docker daemon on 2026-11-17, in one build and self-test of these files: every step, the
+  `COPY` that brings `requirements-dev.lock`, the `pip install` with that lock as constraints and the
+  user-creation step (`groupadd`, `useradd`, `chown`, `chmod`) included.
 
 The image's command was run from a read-only copy of the package against a stand-in provider.
 `docker compose config`, which needs no daemon, accepted the compose files.
-[Checked without Docker](#checked-without-docker) lists what that covered. It does not cover a build
-of the files as they are now, the install against the lock on Linux, or the ledger volume under the
-compose file as it is now. Expect to fix something on the first build of these files. Of the `docker`
-commands on this page, only `docker exec` and `docker cp` have been run, in the earlier image and not
-in their `docker compose` forms: treat every `docker` command below as untested.
+[Checked without Docker](#checked-without-docker) lists what that covered. The one-command check
+covered the rest once: a build of the files as they are now, the install against the lock on Linux, the
+start, and the ledger volume over a restart and a stop. It ran `docker compose build`, `up -d --wait`
+and `cp` among its commands, in its own project, with a generated env file and its own compose
+override. The `docker` commands of [Test the container on your own
+machine](#test-the-container-on-your-own-machine), with your own env file and key, have not been run on
+these files by a daemon.
 
 The quickest first run needs no key and costs nothing: `python3 scripts/container_selftest.py` builds
 the image and tests a running container against a stand-in provider. See
@@ -46,11 +48,14 @@ The container runs `python -m tine serve --host 0.0.0.0 --port 8000` as user 100
 health check calls `GET /health` with the Python standard library. The check ignores `HTTP_PROXY`, so
 it still reaches the loopback address when you give the container an egress proxy.
 
-The proxy does not load numpy, pandas, scikit-learn or matplotlib, although the image holds them for
-`python -m tine freeze-policy`. Outside Docker it was ready 0.3 seconds after it was started.
+The proxy starts without loading numpy, pandas, scikit-learn or matplotlib, although the image holds
+them for `python -m tine freeze-policy`. Outside Docker it was ready 0.3 seconds after it was started.
+The first `GET /v1/shadow` that runs a drift check ([PROXY.md](PROXY.md), The drift check) loads numpy
+and scipy, which work out its bounds, and they stay loaded. It never loads pandas, scikit-learn or
+matplotlib.
 
-The package is all the image holds, so these are the commands to run in the container. Neither loads
-those libraries:
+The package is all the image holds, so these are the commands to run in the container. Neither needs
+those libraries to start:
 
 | Command | Use |
 | --- | --- |
@@ -311,13 +316,17 @@ the stop with a stream open, which takes 20 seconds by design.
 Options: `--port N` for another host port, `--keep` to leave the test containers running for a look
 around, `--skip-build` to test the image that already exists, `--wait SECONDS` for a slow machine.
 
-**This script has not been run against a real Docker daemon.** It was run with the Mac's `python3`
-(3.9) against a stand-in for the `docker` command that starts the real proxy and the real stand-in
-provider as local processes (`tests/test_container_selftest.py`). So its requests, the policy edit and
-restart, the ledger copy, the report page and the stop are tested; its `docker` commands, the build,
-uid 10001 and the read-only filesystem are not. The stand-in's `docker compose cp` is a file copy, so
-it does not show what Docker's own does with a file on the volume. `docker compose config` accepts the two compose files together. These
-lines are from that run; with a real daemon the stop takes about 20 seconds, not 3:
+**This script was run against a real Docker daemon once, on 2026-11-17, and all 18 checks passed**
+(Docker 29.9.3, macOS arm64, a stand-in provider; `results/2026-11-17-container-selftest`). The image
+was 861 MB. That is one build on one machine: the image has never been deployed or used by a customer.
+
+The script is also run with the Mac's `python3` (3.9) against a stand-in for the `docker` command that
+starts the real proxy and the real stand-in provider as local processes
+(`tests/test_container_selftest.py`). That test covers its requests, the policy edit and restart, the
+ledger copy, the report page and the stop. It does not cover its `docker` commands, the build, uid
+10001 or the read-only filesystem: only the one real run does. The stand-in's `docker compose cp` is a
+file copy. `docker compose config` accepts the two compose files together. These lines are from the
+stand-in run; in the real run the stop took 20.6 seconds, not 3:
 
 ```text
 image builds                  PASS  docker compose build tine
@@ -361,9 +370,10 @@ What has been run and what has not, as of 2026-11-17:
 - `docker compose config`, which needs no daemon, read that env file to the same values as the
   script's own check (Docker Compose v5.7.0).
 - The savings page at the end was made from a ledger that run wrote.
-- No `docker` command below was run on these files: not `build`, `up`, `ps`, `logs`, `exec`, `cp` or
-  `down`. An earlier Dockerfile was built once (top of this page); the image these files describe
-  has still not been built.
+- No `docker` command below was run on these files with an operator's own env file: not `build`, `up`,
+  `ps`, `logs`, `exec`, `cp` or `down`. The one-command check built the image of these files once and
+  ran its own compose commands (top of this page). An earlier Dockerfile was built once before that.
+  A daemon has not run the steps of this section.
 
 Run [Check the image with one command](#check-the-image-with-one-command) first. It finds a build or
 start problem without a key. This section then tests your own key, model and prices.
@@ -567,7 +577,7 @@ tenant whose policy to take from it:
   `docker compose exec -T tine python - --ledger /data/ledger-copy.sqlite3 --tenant local-test --policy /config/route-policies.json --output /tmp/report.html < scripts/savings_report.py`,
   then `docker compose exec -T tine cat /tmp/report.html > artifacts/container-savings.html`, then the
   `rm` line. The script was run this way outside Docker; these `docker compose exec` commands are what
-  the one-command check runs, and were not run by a daemon.
+  the one-command check runs. A daemon ran them once, in that check, on 2026-11-17.
 - Do not open the ledger for a report from a volume mounted read-only (`:ro`) in a second container.
   SQLite needs to write beside a ledger in write-ahead mode even to read it, and the report fails with
   `attempt to write a readonly database`.
@@ -575,7 +585,8 @@ tenant whose policy to take from it:
   copy when you are done, and check that its mode is 600.
 - `backup-ledger` and `savings_report.py` with the container's policies file were run here outside
   Docker, on a ledger a running proxy had open. The `docker compose exec` and `docker compose cp`
-  around them were not run. [REPORT.md](REPORT.md) says what was run in the earlier image,
+  around them were run once, by the one-command check on 2026-11-17, and not with an operator's own
+  files. [REPORT.md](REPORT.md) says what was run in the earlier image,
   and explains the page.
 
 ### 7. Stop and remove
@@ -657,7 +668,10 @@ Do not treat this as a production service.
   planned and not built. The ledger stores prompts and responses in plain text: protect the volume and
   its backups as you would the prompts themselves, and encrypt the disk.
 - **Single process.** One container, one worker. Do not run two containers on the same ledger volume
-  and do not scale the service past one replica. There is no load test, so capacity is unknown.
+  and do not scale the service past one replica. A load test against a stand-in
+  provider on one laptop (`results/2026-11-17-proxy-load-test`) found about 0.7 ms added at one request
+  in flight, about 6 ms at 10 in flight with 2 s replies, and a ceiling of about 1,100 requests a second
+  for the process. Over 100 requests in flight queue on the upstream pool. It is not a capacity promise.
 - **No TLS termination.** The container speaks plain HTTP. Put it behind your own gateway or load
   balancer, which terminates TLS, limits request size and rate, and restricts who can connect. Tenant
   tokens travel in a header, so never expose port 8000 beyond the host or a private network.
@@ -726,8 +740,11 @@ have done. Shadow calls are real calls on your provider account and cost real mo
 8. **Restart and read the report.** `docker compose up -d --force-recreate` (a changed policy file
    alone does not make plain `up -d` restart the container), then `GET /v1/shadow` with the tenant
    token. `GET /health` shows `"shadow": "sampling"` when it is on. Read each token's acceptance share
-   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed` and `drift_warning`
-   before routing anything.
+   against its policy's estimate, `shadow_coverage`, `streamed_not_shadowed`, `drift_check` and
+   `drift_warning` before routing anything. A `drift_check` that starts with `rough check` means the
+   policy file records no drift baseline, so only a large change would show. A `drift_check` of
+   `notice` means accepted answers differ from the frontier's more often than on the graded tasks,
+   within what the certification allows for: grade a sample ([PROXY.md](PROXY.md), The drift check).
 
 What the cap does and does not do:
 
@@ -862,7 +879,7 @@ one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
 `policy_sha256`, `route_stage`, `route_skip_reason`, `checks_json` and `holdout` columns to `requests`,
-`skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
+`skip_reason` and `policy_chain_sha256` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
 - an estimated baseline becomes `estimated`;
@@ -873,6 +890,9 @@ by this rule:
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
 have no `policy_sha256`, `route_stage`, `checks_json` or `holdout`, older shadow runs have no check steps,
 earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
+Older shadow runs have no `policy_chain_sha256`; a proxy that starts with the policy file they were run
+with fills it in, so that the drift check of that policy frozen again still counts them
+([POLICY.md](POLICY.md), The drift baseline).
 
 ## Checked without Docker
 
@@ -907,7 +927,7 @@ earlier outcome updates are not in `outcome_events`, and shadow coverage counts 
 - git ignores `deploy/client-token.txt`, and this page gives the steps of Test the container on your own
   machine in order, with only options the scripts have;
 - this page, the Dockerfile and [PROXY.md](PROXY.md) say in the same words which Dockerfile steps were
-  run by hand and which were not, and the steps named as not run are the ones the Dockerfile has.
+  run by hand and which a daemon has run, and the steps named are the ones the Dockerfile has.
 
 `tests/test_container_env.py` runs `scripts/container_env.py` on a made-up key file in a temporary
 folder: the key and the token never reach its output, both files are mode 600, an existing env file is
@@ -946,6 +966,9 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
 - **Import cost.** Importing the proxy took 0.13 to 0.26 seconds and about 50 MB, and loaded none of
   numpy, pandas, scipy, scikit-learn or matplotlib. Before `tine/policy.py` was changed to import them
   only when a policy is frozen, it took 1.8 seconds and 212 MB with matplotlib's cache already built.
+  The drift check added later needs numpy and scipy for its bounds. Measured on a Mac outside Docker,
+  not in the image: the first shadow report with a drift check took 0.34 seconds and raised the
+  process's peak memory from 51 MB to 122 MB; later reports do not pay it again.
 - **Health check.** The Dockerfile's command, with the port changed, exited 0 in 0.04 seconds, exited
   0 with `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` set to a dead address, and exited 1 with nothing
   listening.
@@ -982,14 +1005,21 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
   policy that names `judge:x`, `tests` or `tests+judge:x` it exited with status 1 and named the check,
   as it did with the development environment's Python.
 
-Not checked on the files as they are now, by anything: that the base image pulls, that the image
-builds, that the packages install and import on the base image, that the two `COPY` steps and the
-user-creation step (`groupadd`, `useradd`, `chown`, `chmod`) run, that the container starts as uid
-10001 under a read-only root filesystem, that the health check passes in a container and when `healthy` first shows, that volume
-ownership works as described, what `docker compose up -d` does after a file-only edit, the exit code
-Docker reports after a stop, whether macOS asks Docker Desktop for access to this folder on the first
-bind mount, and every `docker` command on this page that needs the daemon.
+Checked once on the files as they are now, by the one-command check against a real daemon on
+2026-11-17 (`results/2026-11-17-container-selftest`, 18 of 18 checks, a stand-in provider): that the
+base image pulls, that the image builds, that the packages install and import on the base image, that
+the two `COPY` steps and the user-creation step (`groupadd`, `useradd`, `chown`, `chmod`) run, that the
+container starts as uid 10001 under a read-only root filesystem, that the health check passes in a
+container, that the ledger volume keeps its rows over a restart, and the exit code Docker reports after
+a stop (143, after 20.6 seconds with a stream open).
+
+Not checked on the files as they are now, by anything: when `healthy` first shows, that volume
+ownership works as described on an operator's own volume, what `docker compose up -d` does after a
+file-only edit, whether macOS asks Docker Desktop for access to this folder on the first bind mount,
+and the `docker` commands of Test the container on your own machine with an operator's own env file.
+The image has never been deployed or used by a customer.
 
 The earlier image did pull the base image, build, start and serve 40 requests on 2026-11-17, and it ran
-as uid 10001 under a read-only root filesystem for the backup test in [REPORT.md](REPORT.md). None of
-that was repeated after the lock-file and host-port changes.
+as uid 10001 under a read-only root filesystem for the backup test in [REPORT.md](REPORT.md). The
+one-command check repeated the build, the start and those two checks after the lock-file and host-port
+changes. The paid requests were not repeated.

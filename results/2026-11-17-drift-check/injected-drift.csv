@@ -1,0 +1,535 @@
+run,epsilon,drift,level,requests,recorded_order,runs,old_rule_warns,new_baseline_warns,new_baseline_warns_or_notices,new_default_warns,mean_loss,mean_differing_share
+MMLU-Pro first pilot,0.04,steady from the start,1x eps,297,True,200,0.95,0.0,0.02,0.0,0.0397,0.0504
+MMLU-Pro first pilot,0.04,steady from the start,1x eps,1000,False,200,0.94,0.0,0.275,0.0,0.0403,0.0515
+MMLU-Pro first pilot,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.84,0.0,0.0401,0.0511
+MMLU-Pro first pilot,0.04,steady from the start,1.5x eps,297,True,200,1.0,0.01,0.47,0.0,0.0603,0.0716
+MMLU-Pro first pilot,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.035,0.97,0.0,0.06,0.071
+MMLU-Pro first pilot,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.25,1.0,0.0,0.0601,0.0713
+MMLU-Pro first pilot,0.04,steady from the start,2x eps,297,True,200,1.0,0.22,0.945,0.0,0.0823,0.0945
+MMLU-Pro first pilot,0.04,steady from the start,2x eps,1000,False,200,1.0,0.755,1.0,0.0,0.08,0.0924
+MMLU-Pro first pilot,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.08,0.0924
+MMLU-Pro first pilot,0.04,steady from the start,3x eps,297,True,200,1.0,0.95,1.0,0.0,0.119,0.1325
+MMLU-Pro first pilot,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.0,0.1201,0.1337
+MMLU-Pro first pilot,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1335
+MMLU-Pro first pilot,0.04,steady from the start,40% agree wrong,297,True,200,1.0,1.0,1.0,1.0,0.3799,0.4146
+MMLU-Pro first pilot,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3813,0.4163
+MMLU-Pro first pilot,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3803,0.4148
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,297,True,200,0.835,0.01,0.15,0.0,0.0347,0.045
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.85,0.0,0.345,0.0,0.0356,0.0463
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,0.925,0.035,0.94,0.0,0.0356,0.0463
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,297,True,200,0.96,0.08,0.475,0.0,0.0447,0.0552
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,0.985,0.19,0.935,0.0,0.0453,0.0564
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.82,1.0,0.0,0.0454,0.0565
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,297,True,200,1.0,0.995,1.0,0.63,0.111,0.1264
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,0.995,0.1095,0.1254
+MMLU-Pro first pilot,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1102,0.1264
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 10%,297,True,200,1.0,0.775,1.0,0.0,0.0202,0.1173
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0204,0.1183
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0204,0.118
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 25%,297,True,200,1.0,1.0,1.0,0.935,0.0202,0.2506
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0202,0.2495
+MMLU-Pro first pilot,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0203,0.2483
+MMLU-Pro long-1..5,0.04,steady from the start,1x eps,1500,True,200,1.0,0.0,0.775,0.0,0.0399,0.0544
+MMLU-Pro long-1..5,0.04,steady from the start,1x eps,1000,False,200,0.98,0.0,0.365,0.0,0.0395,0.0537
+MMLU-Pro long-1..5,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.9,0.0,0.0399,0.0542
+MMLU-Pro long-1..5,0.04,steady from the start,1.5x eps,1500,True,200,1.0,0.155,1.0,0.0,0.0606,0.0757
+MMLU-Pro long-1..5,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.12,0.99,0.0,0.06,0.0754
+MMLU-Pro long-1..5,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.485,1.0,0.0,0.0596,0.0751
+MMLU-Pro long-1..5,0.04,steady from the start,2x eps,1500,True,200,1.0,0.99,1.0,0.0,0.0802,0.0961
+MMLU-Pro long-1..5,0.04,steady from the start,2x eps,1000,False,200,1.0,0.9,1.0,0.0,0.0811,0.0969
+MMLU-Pro long-1..5,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0806,0.0964
+MMLU-Pro long-1..5,0.04,steady from the start,3x eps,1500,True,200,1.0,1.0,1.0,0.0,0.1202,0.1375
+MMLU-Pro long-1..5,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.0,0.1195,0.1371
+MMLU-Pro long-1..5,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1204,0.1378
+MMLU-Pro long-1..5,0.04,steady from the start,40% agree wrong,1500,True,200,1.0,1.0,1.0,1.0,0.3878,0.4213
+MMLU-Pro long-1..5,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3886,0.4217
+MMLU-Pro long-1..5,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3864,0.4197
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1500,True,200,1.0,0.0,0.825,0.0,0.039,0.0534
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.96,0.0,0.59,0.0,0.0382,0.0528
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.06,1.0,0.0,0.0387,0.0533
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1500,True,200,1.0,0.195,1.0,0.0,0.0488,0.0633
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,0.995,0.255,0.945,0.0,0.0484,0.0629
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.895,1.0,0.0,0.0481,0.0627
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1500,True,200,1.0,1.0,1.0,1.0,0.1192,0.1368
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1163,0.1357
+MMLU-Pro long-1..5,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1149,0.134
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 10%,1500,True,200,1.0,1.0,1.0,0.0,0.0247,0.1274
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0248,0.1276
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0247,0.1281
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 25%,1500,True,200,1.0,1.0,1.0,1.0,0.0247,0.2598
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0248,0.261
+MMLU-Pro long-1..5,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0249,0.2617
+MedQA,0.04,steady from the start,1x eps,200,True,200,0.395,0.0,0.0,0.0,0.0391,0.0393
+MedQA,0.04,steady from the start,1x eps,1000,False,200,0.43,0.0,0.005,0.0,0.0398,0.0399
+MedQA,0.04,steady from the start,1x eps,3000,False,200,0.495,0.0,0.005,0.0,0.0402,0.0403
+MedQA,0.04,steady from the start,1.5x eps,200,True,200,0.875,0.0,0.05,0.0,0.06,0.0602
+MedQA,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.0,0.605,0.0,0.0605,0.0606
+MedQA,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.0,0.985,0.0,0.0605,0.0607
+MedQA,0.04,steady from the start,2x eps,200,True,200,0.99,0.0,0.365,0.0,0.0829,0.0832
+MedQA,0.04,steady from the start,2x eps,1000,False,200,1.0,0.11,0.985,0.0,0.0791,0.0793
+MedQA,0.04,steady from the start,2x eps,3000,False,200,1.0,0.545,1.0,0.0,0.0798,0.0801
+MedQA,0.04,steady from the start,3x eps,200,True,200,1.0,0.39,0.93,0.0,0.1196,0.12
+MedQA,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.0,0.1206,0.121
+MedQA,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1204,0.1208
+MedQA,0.04,steady from the start,40% agree wrong,200,True,200,1.0,1.0,1.0,1.0,0.3922,0.3982
+MedQA,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3934,0.3988
+MedQA,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3957,0.401
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,200,True,200,0.02,0.0,0.0,0.0,0.0235,0.0236
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.0,0.0,0.015,0.0,0.0235,0.0236
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,0.0,0.0,0.2,0.0,0.0235,0.0236
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,200,True,200,0.195,0.0,0.0,0.0,0.0332,0.0334
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,0.085,0.01,0.49,0.0,0.0337,0.0338
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,0.025,0.17,0.995,0.0,0.0338,0.0339
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,200,True,200,1.0,0.13,0.805,0.0,0.1034,0.1051
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,0.995,0.1033,0.1047
+MedQA,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1029,0.1042
+MedQA,0.04,noise: matching accepted answers read as different,noise 10%,200,True,200,1.0,0.12,0.745,0.0,0.005,0.102
+MedQA,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.82,1.0,0.0,0.0048,0.0993
+MedQA,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0048,0.0996
+MedQA,0.04,noise: matching accepted answers read as different,noise 25%,200,True,200,1.0,1.0,1.0,0.66,0.005,0.2452
+MedQA,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0051,0.2433
+MedQA,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.005,0.2419
+ARC-Challenge,0.04,steady from the start,1x eps,200,True,200,0.81,0.0,0.0,0.0,0.0393,0.0496
+ARC-Challenge,0.04,steady from the start,1x eps,1000,False,200,0.89,0.0,0.03,0.0,0.0398,0.0496
+ARC-Challenge,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.17,0.0,0.0397,0.0498
+ARC-Challenge,0.04,steady from the start,1.5x eps,200,True,200,1.0,0.005,0.075,0.0,0.0604,0.0711
+ARC-Challenge,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.33,0.795,0.0,0.0613,0.0717
+ARC-Challenge,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.81,1.0,0.0,0.0597,0.0703
+ARC-Challenge,0.04,steady from the start,2x eps,200,True,200,1.0,0.2,0.485,0.0,0.0822,0.0931
+ARC-Challenge,0.04,steady from the start,2x eps,1000,False,200,1.0,0.95,1.0,0.0,0.0798,0.0907
+ARC-Challenge,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0797,0.0906
+ARC-Challenge,0.04,steady from the start,3x eps,200,True,200,1.0,0.855,0.96,0.0,0.1172,0.1295
+ARC-Challenge,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.0,0.1211,0.133
+ARC-Challenge,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1193,0.1312
+ARC-Challenge,0.04,steady from the start,40% agree wrong,200,True,200,1.0,1.0,1.0,1.0,0.4018,0.4191
+ARC-Challenge,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.4007,0.4184
+ARC-Challenge,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.4008,0.4179
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,200,True,200,0.775,0.0,0.0,0.0,0.0384,0.0488
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.88,0.01,0.165,0.0,0.0387,0.0492
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,0.985,0.175,0.7,0.0,0.0389,0.0492
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,200,True,200,0.97,0.0,0.0,0.0,0.0494,0.06
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,0.995,0.47,0.755,0.0,0.0496,0.0601
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.98,1.0,0.0,0.0486,0.059
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,200,True,200,1.0,0.925,1.0,0.0,0.1191,0.1318
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1182,0.1299
+ARC-Challenge,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1187,0.1302
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 10%,200,True,200,1.0,0.85,0.965,0.0,0.025,0.1296
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.025,0.1316
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0252,0.132
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 25%,200,True,200,1.0,1.0,1.0,0.915,0.025,0.2755
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0249,0.277
+ARC-Challenge,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0249,0.2748
+FinQA exact,0.04,steady from the start,1x eps,200,True,200,1.0,0.0,0.0,0.0,0.0409,0.152
+FinQA exact,0.04,steady from the start,1x eps,1000,False,200,1.0,0.0,0.0,0.005,0.0399,0.1501
+FinQA exact,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.0,0.03,0.0397,0.151
+FinQA exact,0.04,steady from the start,1.5x eps,200,True,200,1.0,0.0,0.0,0.0,0.0595,0.1689
+FinQA exact,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.0,0.02,0.255,0.0603,0.1706
+FinQA exact,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.0,0.1,0.88,0.06,0.17
+FinQA exact,0.04,steady from the start,2x eps,200,True,200,1.0,0.0,0.01,0.01,0.0814,0.1891
+FinQA exact,0.04,steady from the start,2x eps,1000,False,200,1.0,0.01,0.365,0.78,0.0802,0.188
+FinQA exact,0.04,steady from the start,2x eps,3000,False,200,1.0,0.0,0.935,1.0,0.0801,0.188
+FinQA exact,0.04,steady from the start,3x eps,200,True,200,1.0,0.02,0.225,0.325,0.1203,0.2247
+FinQA exact,0.04,steady from the start,3x eps,1000,False,200,1.0,0.705,1.0,1.0,0.1216,0.2244
+FinQA exact,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,1.0,0.1209,0.2244
+FinQA exact,0.04,steady from the start,40% agree wrong,200,True,200,1.0,1.0,1.0,1.0,0.3242,0.4728
+FinQA exact,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3273,0.474
+FinQA exact,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3287,0.4752
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,200,True,200,1.0,0.0,0.0,0.0,0.0294,0.1406
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.0,0.0,0.0,0.0278,0.1408
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.005,0.045,0.0275,0.1404
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,200,True,200,1.0,0.0,0.0,0.0,0.039,0.1484
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.0,0.035,0.105,0.0376,0.1498
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.0,0.255,0.595,0.0377,0.1496
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,200,True,200,1.0,0.0,0.005,0.12,0.0889,0.2116
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,0.995,1.0,1.0,0.0884,0.2122
+FinQA exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.0893,0.2125
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 10%,200,True,200,1.0,0.0,0.0,0.0,0.01,0.1637
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.0,0.0,0.125,0.0097,0.1633
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,0.0,0.015,0.535,0.0097,0.1636
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 25%,200,True,200,1.0,0.005,0.215,0.28,0.01,0.2207
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,0.545,0.985,1.0,0.0097,0.2183
+FinQA exact,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,0.995,1.0,1.0,0.0098,0.2204
+FinQA by value,0.04,steady from the start,1x eps,200,True,200,1.0,0.0,0.0,0.0,0.0394,0.1635
+FinQA by value,0.04,steady from the start,1x eps,1000,False,200,1.0,0.0,0.0,0.13,0.0402,0.165
+FinQA by value,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.0,0.615,0.0397,0.1642
+FinQA by value,0.04,steady from the start,1.5x eps,200,True,200,1.0,0.0,0.0,0.0,0.0605,0.1827
+FinQA by value,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.0,0.0,0.615,0.0595,0.182
+FinQA by value,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.0,0.0,0.995,0.0601,0.1823
+FinQA by value,0.04,steady from the start,2x eps,200,True,200,1.0,0.0,0.0,0.045,0.0827,0.2028
+FinQA by value,0.04,steady from the start,2x eps,1000,False,200,1.0,0.0,0.055,0.945,0.0796,0.2001
+FinQA by value,0.04,steady from the start,2x eps,3000,False,200,1.0,0.005,0.3,1.0,0.0799,0.2003
+FinQA by value,0.04,steady from the start,3x eps,200,True,200,1.0,0.015,0.03,0.625,0.1201,0.2373
+FinQA by value,0.04,steady from the start,3x eps,1000,False,200,1.0,0.56,0.93,1.0,0.1191,0.2373
+FinQA by value,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,1.0,0.12,0.2379
+FinQA by value,0.04,steady from the start,40% agree wrong,200,True,200,1.0,1.0,1.0,1.0,0.3298,0.4841
+FinQA by value,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3322,0.4873
+FinQA by value,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3318,0.487
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,200,True,200,1.0,0.0,0.0,0.0,0.0348,0.1594
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.0,0.0,0.115,0.0353,0.1594
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.0,0.52,0.0352,0.1592
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,200,True,200,1.0,0.0,0.0,0.0,0.045,0.1691
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.0,0.0,0.385,0.044,0.1674
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.015,0.045,1.0,0.0448,0.1681
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,200,True,200,1.0,0.0,0.0,0.46,0.0969,0.2328
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,0.995,1.0,1.0,0.098,0.231
+FinQA by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.0983,0.2311
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 10%,200,True,200,1.0,0.0,0.0,0.0,0.02,0.1895
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.0,0.01,0.85,0.02,0.192
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,0.0,0.025,1.0,0.02,0.1898
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 25%,200,True,200,1.0,0.09,0.25,0.885,0.02,0.2573
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,0.97,1.0,1.0,0.02,0.2572
+FinQA by value,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0198,0.2561
+MATH-500 exact,0.04,steady from the start,1x eps,100,True,200,1.0,0.0,0.0,0.0,0.0403,0.0804
+MATH-500 exact,0.04,steady from the start,1x eps,1000,False,200,1.0,0.0,0.0,0.0,0.0405,0.0811
+MATH-500 exact,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.01,0.0,0.0398,0.0803
+MATH-500 exact,0.04,steady from the start,1.5x eps,100,True,200,1.0,0.0,0.0,0.0,0.0586,0.0988
+MATH-500 exact,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.0,0.28,0.0,0.0604,0.1009
+MATH-500 exact,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.0,0.85,0.0,0.06,0.1005
+MATH-500 exact,0.04,steady from the start,2x eps,100,True,200,1.0,0.0,0.005,0.0,0.0799,0.1211
+MATH-500 exact,0.04,steady from the start,2x eps,1000,False,200,1.0,0.01,0.94,0.0,0.08,0.1214
+MATH-500 exact,0.04,steady from the start,2x eps,3000,False,200,1.0,0.06,1.0,0.0,0.0803,0.1214
+MATH-500 exact,0.04,steady from the start,3x eps,100,True,200,1.0,0.06,0.33,0.0,0.1225,0.1639
+MATH-500 exact,0.04,steady from the start,3x eps,1000,False,200,1.0,0.93,1.0,0.05,0.1195,0.1604
+MATH-500 exact,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.445,0.1196,0.1609
+MATH-500 exact,0.04,steady from the start,40% agree wrong,100,True,200,1.0,1.0,1.0,1.0,0.3762,0.4277
+MATH-500 exact,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3785,0.4308
+MATH-500 exact,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3781,0.4302
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,100,True,200,1.0,0.0,0.0,0.0,0.0265,0.0676
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.0,0.005,0.0,0.0269,0.0673
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.055,0.0,0.0276,0.0677
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,100,True,200,1.0,0.0,0.0,0.0,0.0369,0.0781
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.005,0.275,0.0,0.0384,0.0787
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.035,0.88,0.0,0.0378,0.0783
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,100,True,200,1.0,0.0,0.15,0.0,0.1005,0.1464
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1021,0.1446
+MATH-500 exact,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1023,0.1456
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 10%,100,True,200,1.0,0.005,0.065,0.0,0.01,0.1299
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.11,0.99,0.0,0.0103,0.1306
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,0.425,1.0,0.0,0.0101,0.1297
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 25%,100,True,200,1.0,0.77,0.97,0.305,0.01,0.2531
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0102,0.2509
+MATH-500 exact,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0101,0.2492
+MATH-500 by value,0.04,steady from the start,1x eps,100,True,200,0.6,0.0,0.015,0.0,0.0391,0.051
+MATH-500 by value,0.04,steady from the start,1x eps,1000,False,200,0.935,0.0,0.795,0.0,0.0398,0.0517
+MATH-500 by value,0.04,steady from the start,1x eps,3000,False,200,0.995,0.0,1.0,0.0,0.0401,0.0518
+MATH-500 by value,0.04,steady from the start,1.5x eps,100,True,200,0.895,0.01,0.18,0.0,0.0615,0.0747
+MATH-500 by value,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.29,1.0,0.0,0.0599,0.0734
+MATH-500 by value,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.945,1.0,0.0,0.0606,0.074
+MATH-500 by value,0.04,steady from the start,2x eps,100,True,200,0.985,0.095,0.535,0.0,0.0843,0.0985
+MATH-500 by value,0.04,steady from the start,2x eps,1000,False,200,1.0,0.955,1.0,0.0,0.0806,0.0944
+MATH-500 by value,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.08,0.0946
+MATH-500 by value,0.04,steady from the start,3x eps,100,True,200,1.0,0.555,0.925,0.0,0.1191,0.1375
+MATH-500 by value,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.0,0.1205,0.1381
+MATH-500 by value,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1205,0.138
+MATH-500 by value,0.04,steady from the start,40% agree wrong,100,True,200,1.0,1.0,1.0,1.0,0.3785,0.4124
+MATH-500 by value,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3776,0.4119
+MATH-500 by value,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.378,0.412
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,100,True,200,0.275,0.0,0.0,0.0,0.0265,0.0381
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.405,0.02,0.635,0.0,0.028,0.0391
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,0.335,0.095,1.0,0.0,0.0277,0.0389
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,100,True,200,0.56,0.0,0.025,0.0,0.0372,0.0495
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,0.915,0.385,0.975,0.0,0.0373,0.0491
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,0.995,0.97,1.0,0.0,0.0376,0.0496
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,100,True,200,1.0,0.32,0.815,0.0,0.1021,0.1209
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1021,0.1181
+MATH-500 by value,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.102,0.1181
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 10%,100,True,200,0.995,0.225,0.74,0.0,0.01,0.1141
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0095,0.1137
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0099,0.1152
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 25%,100,True,200,1.0,1.0,1.0,0.33,0.01,0.2552
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0102,0.2572
+MATH-500 by value,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0099,0.2572
+IT tickets,0.04,steady from the start,1x eps,300,True,200,1.0,0.0,0.0,0.0,0.04,0.1067
+IT tickets,0.04,steady from the start,1x eps,1000,False,200,1.0,0.425,0.83,0.0,0.0401,0.1072
+IT tickets,0.04,steady from the start,1x eps,3000,False,200,1.0,0.98,1.0,0.0,0.0398,0.1067
+IT tickets,0.04,steady from the start,1.5x eps,300,True,200,1.0,0.445,0.835,0.0,0.06,0.1303
+IT tickets,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.985,1.0,0.0,0.0598,0.1297
+IT tickets,0.04,steady from the start,1.5x eps,3000,False,200,1.0,1.0,1.0,0.0,0.06,0.1299
+IT tickets,0.04,steady from the start,2x eps,300,True,200,1.0,0.96,0.995,0.0,0.0809,0.1548
+IT tickets,0.04,steady from the start,2x eps,1000,False,200,1.0,1.0,1.0,0.025,0.0803,0.1539
+IT tickets,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.1,0.0799,0.1537
+IT tickets,0.04,steady from the start,3x eps,300,True,200,1.0,1.0,1.0,0.275,0.1215,0.2024
+IT tickets,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.955,0.1201,0.2004
+IT tickets,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,1.0,0.1196,0.2003
+IT tickets,0.04,steady from the start,40% agree wrong,300,True,200,1.0,1.0,1.0,1.0,0.3306,0.4484
+IT tickets,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3292,0.4472
+IT tickets,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3284,0.4477
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,300,True,200,1.0,0.035,0.34,0.0,0.05,0.1182
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.88,0.99,0.0,0.0497,0.1189
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0498,0.1187
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,300,True,200,1.0,0.555,0.915,0.005,0.0594,0.1302
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.995,1.0,0.0,0.0598,0.1303
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,1.0,1.0,0.08,0.0598,0.1303
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,300,True,200,1.0,1.0,1.0,0.91,0.1102,0.1896
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1119,0.1929
+IT tickets,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1121,0.192
+IT tickets,0.04,noise: matching accepted answers read as different,noise 10%,300,True,200,1.0,1.0,1.0,0.205,0.04,0.1971
+IT tickets,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.915,0.0401,0.1953
+IT tickets,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,1.0,0.0401,0.1962
+IT tickets,0.04,noise: matching accepted answers read as different,noise 25%,300,True,200,1.0,1.0,1.0,1.0,0.04,0.3272
+IT tickets,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0404,0.3298
+IT tickets,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.04,0.3297
+xRouteBench test part,0.04,steady from the start,1x eps,1414,True,200,1.0,0.0,0.99,0.0,0.0404,0.0718
+xRouteBench test part,0.04,steady from the start,1x eps,1000,False,200,1.0,0.0,0.74,0.0,0.0394,0.0709
+xRouteBench test part,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,1.0,0.0,0.0394,0.0709
+xRouteBench test part,0.04,steady from the start,1.5x eps,1414,True,200,1.0,0.23,1.0,0.0,0.0594,0.0911
+xRouteBench test part,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.185,1.0,0.0,0.0601,0.0916
+xRouteBench test part,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.8,1.0,0.0,0.061,0.0924
+xRouteBench test part,0.04,steady from the start,2x eps,1414,True,200,1.0,0.995,1.0,0.0,0.08,0.1117
+xRouteBench test part,0.04,steady from the start,2x eps,1000,False,200,1.0,0.915,1.0,0.0,0.0805,0.1127
+xRouteBench test part,0.04,steady from the start,2x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0798,0.1117
+xRouteBench test part,0.04,steady from the start,3x eps,1414,True,200,1.0,1.0,1.0,0.005,0.1203,0.1524
+xRouteBench test part,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.03,0.1201,0.1533
+xRouteBench test part,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.045,0.1197,0.1519
+xRouteBench test part,0.04,steady from the start,40% agree wrong,1414,True,200,1.0,1.0,1.0,1.0,0.354,0.4074
+xRouteBench test part,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.353,0.4064
+xRouteBench test part,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3537,0.4072
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1414,True,200,1.0,0.005,0.845,0.0,0.0271,0.0582
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.995,0.01,0.595,0.0,0.0275,0.0593
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.04,0.99,0.0,0.0273,0.059
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1414,True,200,1.0,0.41,1.0,0.0,0.0363,0.0673
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.195,0.96,0.0,0.0377,0.0689
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.825,1.0,0.0,0.0375,0.0686
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1414,True,200,1.0,1.0,1.0,1.0,0.0947,0.1325
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.0961,0.1327
+xRouteBench test part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.096,0.1325
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 10%,1414,True,200,1.0,0.995,1.0,0.0,0.0099,0.115
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.955,1.0,0.0,0.0102,0.1148
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0101,0.1143
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 25%,1414,True,200,1.0,1.0,1.0,1.0,0.0099,0.2252
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0098,0.2249
+xRouteBench test part,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0098,0.2243
+xRouteBench choose part,0.04,steady from the start,1x eps,1922,True,200,1.0,0.0,0.97,0.0,0.0398,0.065
+xRouteBench choose part,0.04,steady from the start,1x eps,1000,False,200,1.0,0.0,0.435,0.0,0.0396,0.065
+xRouteBench choose part,0.04,steady from the start,1x eps,3000,False,200,1.0,0.0,0.985,0.0,0.0402,0.0655
+xRouteBench choose part,0.04,steady from the start,1.5x eps,1922,True,200,1.0,0.06,1.0,0.0,0.0596,0.0851
+xRouteBench choose part,0.04,steady from the start,1.5x eps,1000,False,200,1.0,0.035,0.975,0.0,0.0593,0.0848
+xRouteBench choose part,0.04,steady from the start,1.5x eps,3000,False,200,1.0,0.295,1.0,0.0,0.0603,0.0857
+xRouteBench choose part,0.04,steady from the start,2x eps,1922,True,200,1.0,0.995,1.0,0.0,0.0796,0.1053
+xRouteBench choose part,0.04,steady from the start,2x eps,1000,False,200,1.0,0.785,1.0,0.0,0.0803,0.1064
+xRouteBench choose part,0.04,steady from the start,2x eps,3000,False,200,1.0,0.995,1.0,0.0,0.0798,0.1054
+xRouteBench choose part,0.04,steady from the start,3x eps,1922,True,200,1.0,1.0,1.0,0.005,0.1199,0.1461
+xRouteBench choose part,0.04,steady from the start,3x eps,1000,False,200,1.0,1.0,1.0,0.005,0.1199,0.1459
+xRouteBench choose part,0.04,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.1202,0.1462
+xRouteBench choose part,0.04,steady from the start,40% agree wrong,1922,True,200,1.0,1.0,1.0,1.0,0.3662,0.4094
+xRouteBench choose part,0.04,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3664,0.4093
+xRouteBench choose part,0.04,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3664,0.4097
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1922,True,200,1.0,0.01,0.785,0.0,0.0295,0.0545
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,0.99,0.0,0.335,0.0,0.0301,0.0555
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.01,0.93,0.0,0.0305,0.0555
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1922,True,200,1.0,0.56,1.0,0.0,0.0398,0.0646
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.11,0.915,0.0,0.04,0.0652
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.665,1.0,0.0,0.04,0.0648
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1922,True,200,1.0,1.0,1.0,1.0,0.1022,0.1312
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1023,0.1321
+xRouteBench choose part,0.04,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1012,0.1309
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 10%,1922,True,200,1.0,1.0,1.0,0.0,0.0135,0.1126
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,0.905,1.0,0.0,0.0133,0.1128
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0134,0.1124
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 25%,1922,True,200,1.0,1.0,1.0,1.0,0.0135,0.2246
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0136,0.2234
+xRouteBench choose part,0.04,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0134,0.2236
+MMLU-Pro first pilot,0.02,steady from the start,1x eps,297,True,200,1.0,0.0,0.0,0.0,0.0202,0.0303
+MMLU-Pro first pilot,0.02,steady from the start,1x eps,1000,False,200,0.97,0.0,0.0,0.0,0.0199,0.0302
+MMLU-Pro first pilot,0.02,steady from the start,1x eps,3000,False,200,1.0,0.0,0.0,0.0,0.0202,0.0305
+MMLU-Pro first pilot,0.02,steady from the start,1.5x eps,297,True,200,1.0,0.0,0.0,0.0,0.0301,0.0406
+MMLU-Pro first pilot,0.02,steady from the start,1.5x eps,1000,False,200,1.0,0.005,0.02,0.0,0.0301,0.0401
+MMLU-Pro first pilot,0.02,steady from the start,1.5x eps,3000,False,200,1.0,0.0,0.06,0.0,0.0302,0.0408
+MMLU-Pro first pilot,0.02,steady from the start,2x eps,297,True,200,1.0,0.005,0.015,0.0,0.0398,0.0505
+MMLU-Pro first pilot,0.02,steady from the start,2x eps,1000,False,200,1.0,0.085,0.325,0.0,0.0403,0.0512
+MMLU-Pro first pilot,0.02,steady from the start,2x eps,3000,False,200,1.0,0.465,0.845,0.0,0.0399,0.0507
+MMLU-Pro first pilot,0.02,steady from the start,3x eps,297,True,200,1.0,0.195,0.39,0.0,0.0578,0.0691
+MMLU-Pro first pilot,0.02,steady from the start,3x eps,1000,False,200,1.0,0.935,0.98,0.0,0.0597,0.0717
+MMLU-Pro first pilot,0.02,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0599,0.0716
+MMLU-Pro first pilot,0.02,steady from the start,40% agree wrong,297,True,200,1.0,1.0,1.0,1.0,0.3831,0.4185
+MMLU-Pro first pilot,0.02,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.379,0.4138
+MMLU-Pro first pilot,0.02,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3796,0.4146
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,297,True,200,1.0,0.0,0.005,0.0,0.0246,0.0348
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.0,0.005,0.0,0.0257,0.036
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.0,0.0,0.0253,0.0355
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,297,True,200,1.0,0.015,0.07,0.0,0.0302,0.0405
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.03,0.105,0.0,0.0304,0.0412
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.185,0.435,0.0,0.0305,0.0411
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,297,True,200,1.0,1.0,1.0,0.82,0.1101,0.1256
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1106,0.1264
+MMLU-Pro first pilot,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1094,0.1258
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 10%,297,True,200,1.0,0.995,1.0,0.0,0.0202,0.1188
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.005,0.0194,0.1154
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0198,0.1168
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 25%,297,True,200,1.0,1.0,1.0,1.0,0.0202,0.2497
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0204,0.2488
+MMLU-Pro first pilot,0.02,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0204,0.2485
+MMLU-Pro long-1..5,0.02,steady from the start,1x eps,1500,True,200,1.0,0.0,0.0,0.0,0.0247,0.0387
+MMLU-Pro long-1..5,0.02,steady from the start,1x eps,1000,False,200,1.0,0.0,0.0,0.0,0.0243,0.0385
+MMLU-Pro long-1..5,0.02,steady from the start,1x eps,3000,False,200,1.0,0.0,0.015,0.0,0.0244,0.0385
+MMLU-Pro long-1..5,0.02,steady from the start,1.5x eps,1500,True,200,1.0,0.0,0.0,0.0,0.0301,0.0443
+MMLU-Pro long-1..5,0.02,steady from the start,1.5x eps,1000,False,200,1.0,0.025,0.05,0.0,0.0304,0.0445
+MMLU-Pro long-1..5,0.02,steady from the start,1.5x eps,3000,False,200,1.0,0.035,0.245,0.0,0.0301,0.0442
+MMLU-Pro long-1..5,0.02,steady from the start,2x eps,1500,True,200,1.0,0.355,0.885,0.0,0.0399,0.0545
+MMLU-Pro long-1..5,0.02,steady from the start,2x eps,1000,False,200,1.0,0.18,0.485,0.0,0.0401,0.0545
+MMLU-Pro long-1..5,0.02,steady from the start,2x eps,3000,False,200,1.0,0.81,0.985,0.0,0.0403,0.0548
+MMLU-Pro long-1..5,0.02,steady from the start,3x eps,1500,True,200,1.0,1.0,1.0,0.0,0.0601,0.0752
+MMLU-Pro long-1..5,0.02,steady from the start,3x eps,1000,False,200,1.0,0.945,0.995,0.0,0.0604,0.076
+MMLU-Pro long-1..5,0.02,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0605,0.0758
+MMLU-Pro long-1..5,0.02,steady from the start,40% agree wrong,1500,True,200,1.0,1.0,1.0,1.0,0.3864,0.4198
+MMLU-Pro long-1..5,0.02,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3862,0.4198
+MMLU-Pro long-1..5,0.02,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3865,0.42
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1500,True,200,1.0,0.0,0.0,0.0,0.0284,0.0425
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.01,0.045,0.0,0.0282,0.0426
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.04,0.175,0.0,0.0283,0.0427
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1500,True,200,1.0,0.01,0.275,0.0,0.0336,0.0478
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.12,0.265,0.0,0.0337,0.0479
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.375,0.785,0.0,0.0335,0.0478
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1500,True,200,1.0,1.0,1.0,1.0,0.118,0.1353
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1154,0.1343
+MMLU-Pro long-1..5,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1151,0.1339
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 10%,1500,True,200,1.0,1.0,1.0,0.005,0.0247,0.1273
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0243,0.1272
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.035,0.0244,0.1275
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 25%,1500,True,200,1.0,1.0,1.0,1.0,0.0247,0.2602
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0243,0.2597
+MMLU-Pro long-1..5,0.02,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0245,0.2604
+xRouteBench test part,0.02,steady from the start,1x eps,1414,True,200,1.0,0.0,0.005,0.0,0.0198,0.051
+xRouteBench test part,0.02,steady from the start,1x eps,1000,False,200,1.0,0.0,0.015,0.0,0.0198,0.051
+xRouteBench test part,0.02,steady from the start,1x eps,3000,False,200,1.0,0.0,0.145,0.0,0.0199,0.0511
+xRouteBench test part,0.02,steady from the start,1.5x eps,1414,True,200,1.0,0.01,0.48,0.0,0.03,0.0612
+xRouteBench test part,0.02,steady from the start,1.5x eps,1000,False,200,1.0,0.045,0.355,0.0,0.0302,0.0617
+xRouteBench test part,0.02,steady from the start,1.5x eps,3000,False,200,1.0,0.12,0.905,0.0,0.0299,0.0613
+xRouteBench test part,0.02,steady from the start,2x eps,1414,True,200,1.0,0.58,1.0,0.0,0.0411,0.0724
+xRouteBench test part,0.02,steady from the start,2x eps,1000,False,200,1.0,0.305,0.77,0.0,0.0398,0.0713
+xRouteBench test part,0.02,steady from the start,2x eps,3000,False,200,1.0,0.9,1.0,0.0,0.0401,0.0715
+xRouteBench test part,0.02,steady from the start,3x eps,1414,True,200,1.0,1.0,1.0,0.0,0.0599,0.0916
+xRouteBench test part,0.02,steady from the start,3x eps,1000,False,200,1.0,0.945,1.0,0.0,0.0593,0.0906
+xRouteBench test part,0.02,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0604,0.0917
+xRouteBench test part,0.02,steady from the start,40% agree wrong,1414,True,200,1.0,1.0,1.0,1.0,0.3526,0.4058
+xRouteBench test part,0.02,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3522,0.4053
+xRouteBench test part,0.02,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.353,0.4063
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1414,True,200,1.0,0.0,0.0,0.0,0.0171,0.0482
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.005,0.025,0.0,0.0172,0.0487
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.155,0.0,0.0174,0.0486
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1414,True,200,1.0,0.025,0.24,0.0,0.0222,0.0533
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.03,0.21,0.0,0.0232,0.0546
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.225,0.745,0.0,0.0229,0.054
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1414,True,200,1.0,1.0,1.0,1.0,0.0953,0.1332
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,0.995,0.0952,0.1317
+xRouteBench test part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.0955,0.1322
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 10%,1414,True,200,1.0,1.0,1.0,0.0,0.0099,0.1153
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0098,0.1142
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.01,0.1151
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 25%,1414,True,200,1.0,1.0,1.0,1.0,0.0099,0.225
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0098,0.2239
+xRouteBench test part,0.02,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0099,0.2251
+xRouteBench choose part,0.02,steady from the start,1x eps,1922,True,200,1.0,0.0,0.0,0.0,0.0198,0.0448
+xRouteBench choose part,0.02,steady from the start,1x eps,1000,False,200,1.0,0.0,0.005,0.0,0.0207,0.0455
+xRouteBench choose part,0.02,steady from the start,1x eps,3000,False,200,1.0,0.0,0.005,0.0,0.0202,0.0453
+xRouteBench choose part,0.02,steady from the start,1.5x eps,1922,True,200,1.0,0.0,0.195,0.0,0.0295,0.0547
+xRouteBench choose part,0.02,steady from the start,1.5x eps,1000,False,200,1.0,0.0,0.115,0.0,0.0302,0.0552
+xRouteBench choose part,0.02,steady from the start,1.5x eps,3000,False,200,1.0,0.01,0.455,0.0,0.0301,0.0552
+xRouteBench choose part,0.02,steady from the start,2x eps,1922,True,200,1.0,0.25,0.99,0.0,0.0403,0.0655
+xRouteBench choose part,0.02,steady from the start,2x eps,1000,False,200,1.0,0.105,0.47,0.0,0.0394,0.0644
+xRouteBench choose part,0.02,steady from the start,2x eps,3000,False,200,1.0,0.45,0.96,0.0,0.04,0.0652
+xRouteBench choose part,0.02,steady from the start,3x eps,1922,True,200,1.0,1.0,1.0,0.0,0.0608,0.0862
+xRouteBench choose part,0.02,steady from the start,3x eps,1000,False,200,1.0,0.91,1.0,0.0,0.0605,0.0862
+xRouteBench choose part,0.02,steady from the start,3x eps,3000,False,200,1.0,1.0,1.0,0.0,0.0603,0.0858
+xRouteBench choose part,0.02,steady from the start,40% agree wrong,1922,True,200,1.0,1.0,1.0,1.0,0.3656,0.4084
+xRouteBench choose part,0.02,steady from the start,40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.3655,0.4086
+xRouteBench choose part,0.02,steady from the start,40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.3653,0.4083
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1922,True,200,1.0,0.0,0.0,0.0,0.02,0.0449
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,1000,False,200,1.0,0.0,0.01,0.0,0.0202,0.0453
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 2x eps,3000,False,200,1.0,0.0,0.015,0.0,0.0202,0.0452
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1922,True,200,1.0,0.0,0.195,0.0,0.0251,0.05
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,1000,False,200,1.0,0.005,0.065,0.0,0.025,0.0496
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 3x eps,3000,False,200,1.0,0.055,0.49,0.0,0.025,0.0499
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1922,True,200,1.0,1.0,1.0,1.0,0.1029,0.1319
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,1000,False,200,1.0,1.0,1.0,1.0,0.1015,0.1308
+xRouteBench choose part,0.02,"nothing in the first half, then a straight climb",ramp to 40% agree wrong,3000,False,200,1.0,1.0,1.0,1.0,0.1016,0.1312
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 10%,1922,True,200,1.0,1.0,1.0,0.0,0.0135,0.1132
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 10%,1000,False,200,1.0,1.0,1.0,0.0,0.0136,0.1131
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 10%,3000,False,200,1.0,1.0,1.0,0.0,0.0134,0.113
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 25%,1922,True,200,1.0,1.0,1.0,1.0,0.0135,0.224
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 25%,1000,False,200,1.0,1.0,1.0,1.0,0.0138,0.2233
+xRouteBench choose part,0.02,noise: matching accepted answers read as different,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,0.0138,0.2234
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 10%,200,True,200,1.0,0.0,0.0,0.0,,0.1617
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 10%,1000,False,200,1.0,0.0,0.005,0.095,,0.1622
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 10%,3000,False,200,1.0,0.0,0.02,0.525,,0.1621
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 25%,200,True,200,1.0,0.01,0.145,0.2,,0.2163
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 25%,1000,False,200,1.0,0.495,0.995,0.995,,0.2183
+FinQA exact,0.04,noise limited to real rewritings of a number,noise 25%,3000,False,200,1.0,0.98,1.0,1.0,,0.2191
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 10%,200,True,200,1.0,0.0,0.0,0.0,,0.1893
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 10%,1000,False,200,1.0,0.0,0.01,0.78,,0.1885
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 10%,3000,False,200,1.0,0.0,0.005,1.0,,0.1884
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 25%,200,True,200,1.0,0.055,0.225,0.905,,0.2569
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 25%,1000,False,200,1.0,0.97,1.0,1.0,,0.256
+FinQA by value,0.04,noise limited to real rewritings of a number,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,,0.2543
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 10%,100,True,200,1.0,0.0,0.01,0.0,,0.111
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 10%,1000,False,200,1.0,0.0,0.645,0.0,,0.1104
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 10%,3000,False,200,1.0,0.0,1.0,0.0,,0.1118
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 25%,100,True,200,1.0,0.26,0.825,0.025,,0.2062
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 25%,1000,False,200,1.0,1.0,1.0,0.995,,0.2053
+MATH-500 exact,0.04,noise limited to real rewritings of a number,noise 25%,3000,False,200,1.0,1.0,1.0,1.0,,0.2048
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 10%,100,True,200,0.79,0.0,0.03,0.0,,0.0598
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 10%,1000,False,200,0.99,0.005,0.955,0.0,,0.0581
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 10%,3000,False,200,1.0,0.005,1.0,0.0,,0.0581
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 25%,100,True,200,0.995,0.205,0.785,0.0,,0.1164
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 25%,1000,False,200,1.0,1.0,1.0,0.0,,0.1144
+MATH-500 by value,0.04,noise limited to real rewritings of a number,noise 25%,3000,False,200,1.0,1.0,1.0,0.0,,0.115
+MMLU-Pro first pilot,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0798,0.0919
+MMLU-Pro first pilot,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0801,0.0923
+MMLU-Pro first pilot,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1335
+MMLU-Pro first pilot,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1335
+MMLU-Pro long-1..5,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0799,0.0959
+MMLU-Pro long-1..5,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0801,0.096
+MMLU-Pro long-1..5,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.1201,0.1372
+MMLU-Pro long-1..5,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1372
+MedQA,0.04,steady from the start,2x eps,10000,False,200,1.0,0.99,1.0,0.0,0.0798,0.0801
+MedQA,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0799,0.0801
+MedQA,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.1198,0.1203
+MedQA,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.12,0.1204
+ARC-Challenge,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0797,0.0908
+ARC-Challenge,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.08,0.0911
+ARC-Challenge,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1318
+ARC-Challenge,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.1202,0.132
+FinQA exact,0.04,steady from the start,2x eps,10000,False,200,1.0,0.025,1.0,1.0,0.0801,0.1883
+FinQA exact,0.04,steady from the start,2x eps,30000,False,200,1.0,0.09,1.0,1.0,0.08,0.1877
+FinQA exact,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,1.0,0.1199,0.2237
+FinQA exact,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,1.0,0.1201,0.2236
+FinQA by value,0.04,steady from the start,2x eps,10000,False,200,1.0,0.0,0.975,1.0,0.0798,0.2007
+FinQA by value,0.04,steady from the start,2x eps,30000,False,200,1.0,0.025,1.0,1.0,0.0801,0.2006
+FinQA by value,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,1.0,0.1205,0.238
+FinQA by value,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,1.0,0.12,0.2376
+MATH-500 exact,0.04,steady from the start,2x eps,10000,False,200,1.0,0.32,1.0,0.0,0.0799,0.121
+MATH-500 exact,0.04,steady from the start,2x eps,30000,False,200,1.0,0.93,1.0,0.0,0.08,0.121
+MATH-500 exact,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.995,0.1206,0.1616
+MATH-500 exact,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,1.0,0.1201,0.1614
+MATH-500 by value,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0802,0.095
+MATH-500 by value,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.08,0.0948
+MATH-500 by value,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.12,0.1375
+MATH-500 by value,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.1199,0.1374
+IT tickets,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.66,0.0801,0.154
+IT tickets,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.995,0.0799,0.1538
+IT tickets,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,1.0,0.1199,0.2009
+IT tickets,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,1.0,0.1201,0.201
+xRouteBench test part,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0805,0.1121
+xRouteBench test part,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0799,0.1116
+xRouteBench test part,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.395,0.1198,0.1518
+xRouteBench test part,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.99,0.1199,0.152
+xRouteBench choose part,0.04,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0796,0.1051
+xRouteBench choose part,0.04,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.08,0.1056
+xRouteBench choose part,0.04,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.045,0.1203,0.1463
+xRouteBench choose part,0.04,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.21,0.1199,0.1459
+MMLU-Pro first pilot,0.02,steady from the start,2x eps,10000,False,200,1.0,0.985,1.0,0.0,0.0401,0.0508
+MMLU-Pro first pilot,0.02,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.04,0.0507
+MMLU-Pro first pilot,0.02,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0598,0.0713
+MMLU-Pro first pilot,0.02,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0599,0.0714
+MMLU-Pro long-1..5,0.02,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0398,0.0543
+MMLU-Pro long-1..5,0.02,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0398,0.0543
+MMLU-Pro long-1..5,0.02,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0602,0.0755
+MMLU-Pro long-1..5,0.02,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0599,0.0751
+xRouteBench test part,0.02,steady from the start,2x eps,10000,False,200,1.0,1.0,1.0,0.0,0.04,0.0713
+xRouteBench test part,0.02,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0401,0.0714
+xRouteBench test part,0.02,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0602,0.0917
+xRouteBench test part,0.02,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.06,0.0916
+xRouteBench choose part,0.02,steady from the start,2x eps,10000,False,200,1.0,0.98,1.0,0.0,0.0401,0.0653
+xRouteBench choose part,0.02,steady from the start,2x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0399,0.0653
+xRouteBench choose part,0.02,steady from the start,3x eps,10000,False,200,1.0,1.0,1.0,0.0,0.0599,0.0854
+xRouteBench choose part,0.02,steady from the start,3x eps,30000,False,200,1.0,1.0,1.0,0.0,0.0598,0.0853

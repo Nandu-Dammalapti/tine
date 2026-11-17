@@ -1,6 +1,7 @@
 # Used only by scripts/container_selftest.py, on top of docker-compose.yml:
 #   docker compose -p tine-selftest -f docker-compose.yml -f docker-compose.selftest.yml ...
-# NOT YET RUN BY A DOCKER DAEMON. "docker compose config" accepts the pair (v5.7.0).
+# RUN ONCE BY A DOCKER DAEMON IN THIS FORM, on 2026-11-17: 18 of 18 checks passed
+# (results/2026-11-17-container-selftest). "docker compose config" accepts the pair (v5.7.0).
 #
 # It tests the same image under the same hardening settings, with three differences:
 # its own generated env file and config folder (deploy/tine.env and deploy/config are

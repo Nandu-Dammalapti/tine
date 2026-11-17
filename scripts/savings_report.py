@@ -33,7 +33,6 @@ shadowed request was run with and adds a note of its own if they differ.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sqlite3
 import sys
@@ -46,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tine.ledger import Ledger  # noqa: E402
 from tine.policy import FREEZE_EDITED, freeze_state, validate_policy  # noqa: E402
 from tine.report_page import render  # noqa: E402
-from tine.shadow import ShadowStore  # noqa: E402
+from tine.shadow import ShadowStore, chain_column, run_with  # noqa: E402
 
 
 def open_read_only(path: Path) -> Ledger:
@@ -66,11 +65,12 @@ def _has_table(ledger: Ledger, name: str) -> bool:
     return row is not None
 
 
-def reports_from_ledger(path: Path, tenant: str, epsilon: float | None = None) -> tuple[dict, dict | None]:
+def reports_from_ledger(path: Path, tenant: str, policy: dict | None = None) -> tuple[dict, dict | None]:
     """The tenant's ledger report, and its shadow report if the ledger has shadow rows
     to read. A ledger that never ran shadow mode has no shadow table and gives None.
-    ``epsilon``, the described policy's quality limit, is what differing answers are
-    checked against, as ``GET /v1/shadow`` does with the policy it runs."""
+    ``policy``, the described policy, is what differing answers are checked against:
+    its quality limit and drift baseline, on the requests run with that file, as
+    ``GET /v1/shadow`` does with each policy it runs. Without one nothing is checked."""
     ledger = open_read_only(path)
     try:
         if not _has_table(ledger, "requests"):
@@ -81,7 +81,7 @@ def reports_from_ledger(path: Path, tenant: str, epsilon: float | None = None) -
         if _has_table(ledger, "shadow_runs"):
             store = ShadowStore.__new__(ShadowStore)
             store._ledger = ledger
-            shadow_report = store.report(tenant, epsilon=epsilon)
+            shadow_report = store.report(tenant, policies=None if policy is None else {"policy": policy})
         return ledger.report(tenant), shadow_report
     finally:
         ledger.close()
@@ -90,26 +90,31 @@ def reports_from_ledger(path: Path, tenant: str, epsilon: float | None = None) -
 def policy_mismatch_note(path: Path, tenant: str, policy: dict) -> str | None:
     """A sentence for the page when shadowed requests were run with another policy.
 
-    Each shadow row stores a digest of the policy it was run with. The shadow report
-    adds all of a tenant's rows together, whatever their policy, so a page that
-    describes one policy beside those figures must say when they do not belong to it.
-    The digest is computed as ``ShadowStore.record`` computes it.
+    Each shadow row stores a digest of the policy file it was run with and one of how
+    that policy runs (``tine.shadow.run_with``). The shadow report adds all of a
+    tenant's rows together, whatever their policy, so a page that describes one
+    policy beside those figures must say when they do not belong to it. A row run
+    with another file that runs the same way (the policy frozen again) belongs to it.
+    The drift check is the exception: it counts only the rows that belong to the
+    described policy, and the note says so.
     """
     ledger = open_read_only(path)
     try:
         if not _has_table(ledger, "shadow_runs"):
             return None
-        rows = ledger._db.execute("SELECT policy_sha256, COUNT(*) AS runs FROM shadow_runs WHERE tenant=? "
-                                  "GROUP BY policy_sha256", (tenant,)).fetchall()
+        chain = chain_column(ledger)
+        rows = ledger._db.execute(f"SELECT policy_sha256, {chain}, COUNT(*) AS runs FROM shadow_runs WHERE tenant=? "
+                                  "GROUP BY 1, 2", (tenant,)).fetchall()
     finally:
         ledger.close()
-    digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    mine = run_with(policy)
     total = sum(row["runs"] for row in rows)
-    other = sum(row["runs"] for row in rows if row["policy_sha256"] != digest)
+    other = sum(row["runs"] for row in rows if not mine(row))
     if not other:
         return None
-    return (f"{other:,} of the {total:,} shadowed requests were run with a different policy file from the one "
-            "described on this page. The shadow figures add all of them together.")
+    return (f"{other:,} of the {total:,} shadowed requests were run with a different policy from the one "
+            "described on this page. The shadow figures add all of them together. The drift check counts only "
+            "requests run with this policy, or with a file of the same stages, answer pattern and comparison.")
 
 
 def reports_from_json(path: Path) -> tuple[dict | None, dict | None]:
@@ -194,10 +199,7 @@ def build(*, tenant: str, ledger: Path | None = None, report_json: Path | None =
     if provider is not None and policy is None:
         raise ValueError("--provider chooses a policy from the --policy file: give --policy too")
     described = read_policy(policy, tenant, provider) if policy else None
-    guarantee = described.get("guarantee") if described and described["stages"] else None
-    epsilon = guarantee.get("epsilon") if isinstance(guarantee, dict) else None
-    epsilon = epsilon if isinstance(epsilon, (int, float)) and not isinstance(epsilon, bool) else None
-    ledger_report, shadow_report = (reports_from_ledger(ledger, tenant, epsilon) if ledger
+    ledger_report, shadow_report = (reports_from_ledger(ledger, tenant, described) if ledger
                                     else reports_from_json(report_json))
     for report in (ledger_report, shadow_report):
         if isinstance(report, dict) and report.get("tenant") not in (None, tenant):

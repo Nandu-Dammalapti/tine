@@ -691,6 +691,12 @@ def create_app(
     app.state.ledger = store
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
+    if shadow_store is not None:
+        # Rows these very files ran before rows kept how their policy runs: mark them, so
+        # that a policy frozen again later still counts them in its drift check.
+        for identity, by_provider in config.shadow_policies.items():
+            for policy in by_provider.values():
+                shadow_store.adopt(identity, policy)
     # When shadow mode holds back for the provider's rate limit. ``clock`` (seconds since
     # the epoch) is for tests.
     shadow_limits = (ShadowLimits(config.shadow_max_calls_per_minute, clock or time.time)
@@ -787,14 +793,12 @@ def create_app(
                     if identity in config.shadow_policies else "no shadow policy for this tenant")
         policies = {provider: _policy_summary(policy, config)
                     for provider, policy in config.shadow_policies.get(identity, {}).items()}
-        # Differing answers are checked against the strictest quality limit among the
-        # tenant's shadow policies: the report adds all of its shadowed requests together.
-        limits = [policy["guarantee"]["epsilon"] for policy in config.shadow_policies.get(identity, {}).values()
-                  if policy["stages"] and _finite_number(policy["guarantee"].get("epsilon"))]
         reached = {name for provider, policy in config.shadow_policies.get(identity, {}).items()
                    for name in _providers_reached(provider, policy, config.checks_for(identity))}
-        return {**shadow_store.report(identity, epsilon=min(limits, default=None)), "sampling": sampling,
-                "policies": policies, **shadow_limits.report(identity, reached)}
+        # Differing answers are checked per policy: each provider's policy on the requests
+        # run with it, against its own quality limit and drift baseline.
+        return {**shadow_store.report(identity, policies=config.shadow_policies.get(identity, {})),
+                "sampling": sampling, "policies": policies, **shadow_limits.report(identity, reached)}
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None

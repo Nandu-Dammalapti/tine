@@ -652,14 +652,16 @@ def test_docker_compose_reads_the_env_example_as_these_tests_do(tmp_path):
 
 def test_deploy_doc_states_what_was_not_done():
     text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
-    # No daemon had built these files as they stand when this was written. This sentence, the
-    # same claim at the top of the Dockerfile and both compose files, and docs/PROXY.md change
-    # together when someone has built them.
-    assert "No Docker daemon has built or run these files as they now stand" in text
-    assert "NOT YET BUILT BY A DOCKER DAEMON IN THIS FORM" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    # A daemon built these files and ran the self-test once, on 2026-11-17
+    # (results/2026-11-17-container-selftest). This sentence, the same claim at the top of the
+    # Dockerfile and both compose files, and docs/PROXY.md change together. The image has
+    # still never been deployed.
+    assert "A Docker daemon built these files and ran the self-test once, on 2026-11-17" in text
+    assert "The image has never been deployed or used by a customer" in " ".join(text.split())
+    assert "BUILT AND SELF-TESTED ONCE BY A DOCKER DAEMON IN THIS FORM" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
     for name in ("docker-compose.yml", "docker-compose.selftest.yml"):
         assert "BY A DOCKER DAEMON" in (ROOT / name).read_text(encoding="utf-8"), name
-    assert "This script has not been run against a real Docker daemon" in text
+    assert "This script was run against a real Docker daemon once, on 2026-11-17" in text
     assert "—" not in text
     for name in ("TINE_SHADOW_SAMPLE_RATE", "TINE_SHADOW_MAX_COST_USD", "SQLite", "TLS", "backup"):
         assert name in text, name
@@ -667,7 +669,7 @@ def test_deploy_doc_states_what_was_not_done():
 
 # The files that speak of the image. An image of the Dockerfile as it was before the
 # lock-file constraints was built once, on 2026-11-17, and its container served 40 paid
-# requests; the files as they now stand have not been built.
+# requests. The files as they now stand were built and self-tested once the same day.
 IMAGE_STATE_FILES = ("docs/DEPLOY.md", "docs/PROXY.md", "docs/REPORT.md", "docs/ARCHITECTURE_STATUS.md", "README.md",
                      "AGENTS.md", "results/README.md", "Dockerfile", "docker-compose.yml")
 
@@ -705,15 +707,15 @@ def test_deploy_doc_does_not_say_routing_was_tested_with_stand_ins_only():
             "customer's traffic") in text
 
 
-# Which Dockerfile steps were run by hand outside Docker, and which have not been run as
-# they now are. The three files that say it use these words. Both sentences go when a
-# daemon has built the image from the files as they stand.
+# Which Dockerfile steps were run by hand outside Docker, and which a daemon has run. The
+# three files that say it use these words. A daemon built the image from the files as they
+# stand once, on 2026-11-17 (results/2026-11-17-container-selftest).
 RUN_BY_HAND = ("Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes requirements.txt, "
                "a pip dry-run resolve of its lines for Linux (nothing was installed), the image's command "
                "(on 127.0.0.1, not 0.0.0.0), the health check command, requests and a stop.")
-NOT_RUN = ("Not run in their present form: the COPY that now brings requirements-dev.lock, and the pip install "
-           "with that lock as constraints. The base image, the COPY of tine/, the user-creation step "
-           "(groupadd, useradd, chown, chmod), USER and VOLUME are unchanged from the image that was built once.")
+RUN_BY_DAEMON = ("Run by a Docker daemon on 2026-11-17, in one build and self-test of these files: every step, the "
+                 "COPY that brings requirements-dev.lock, the pip install with that lock as constraints and the "
+                 "user-creation step (groupadd, useradd, chown, chmod) included.")
 
 
 def plain_words(text: str) -> str:
@@ -725,24 +727,23 @@ def plain_words(text: str) -> str:
 def test_the_steps_run_by_hand_are_stated_the_same_everywhere(name):
     """These files once said that each step of the Dockerfile was run by hand. The
     dependency step was a dry run, and the COPY, user, USER and VOLUME steps need a
-    daemon. One built them once, before the first COPY and the install took the lock
-    file: nothing has run those two as they are now."""
+    daemon. One built them once before the first COPY and the install took the lock
+    file, and once after (the self-test of 2026-11-17)."""
     words = plain_words((ROOT / name).read_text(encoding="utf-8"))
-    assert RUN_BY_HAND in words and NOT_RUN in words
-    assert words.index(RUN_BY_HAND) < words.index(NOT_RUN)
+    assert RUN_BY_HAND in words and RUN_BY_DAEMON in words
+    assert words.index(RUN_BY_HAND) < words.index(RUN_BY_DAEMON)
     for claim in (r"each step[^.]*\brun by hand", r"its steps were run by hand", r"every step[^.]*\bwas run\b"):
         assert not re.search(claim, words, flags=re.IGNORECASE), claim
-    assert re.search(r"[Nn]ot every step [^.]* has been run", words)
 
 
-def test_the_steps_named_as_not_run_are_the_dockerfiles():
+def test_the_steps_named_are_the_dockerfiles():
     """The sentence names steps of the Dockerfile. It must change when they do."""
     steps = dockerfile_instructions()
     assert sum(name == "COPY" for name, _ in steps) == 2
     assert sum(name == "USER" for name, _ in steps) == 1 and sum(name == "VOLUME" for name, _ in steps) == 1
     creating = [arguments for name, arguments in steps if name == "RUN" and "useradd" in arguments]
     assert len(creating) == 1
-    named = re.search(r"user-creation step \(([^)]*)\)", NOT_RUN).group(1).split(", ")
+    named = re.search(r"user-creation step \(([^)]*)\)", RUN_BY_DAEMON).group(1).split(", ")
     assert all(re.search(rf"\b{command}\b", creating[0]) for command in named), named
     # Every RUN is one of the two the sentences speak of: the install and the user step.
     runs = [arguments for name, arguments in steps if name == "RUN"]
@@ -805,9 +806,9 @@ def test_deploy_doc_gives_the_local_test_in_order():
     # Requests through the container are paid, and the page says so where it shows the command.
     paid = section.index("--yes-paid")
     assert "paid calls" in section[paid:paid + 400].lower()
-    # The image of these files was not built when this was written. The sentence goes when
-    # someone has built it.
-    assert "the image these files describe has still not been built" in " ".join(section.split())
+    # The self-test built the image of these files once. The steps of this section, with an
+    # operator's own env file, have still not been run by a daemon.
+    assert "A daemon has not run the steps of this section" in " ".join(section.split())
     # The ledger copy holds prompts: it is written where git ignores it.
     assert "docker compose cp tine:/data/ledger-copy.sqlite3 artifacts/" in section
     assert "/artifacts/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()

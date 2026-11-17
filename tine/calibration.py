@@ -28,8 +28,10 @@ from numbers import Integral, Real
 import numpy as np
 from scipy.stats import beta
 
-from tine.routing import route_indices
 from tine.numeric import real_array
+
+# tine.routing (pandas, scikit-learn) is imported where it is used. The proxy's drift check
+# needs clopper_pearson_upper from this module and must not load them for it.
 
 
 def _integer(value: object, name: str, minimum: int = 0) -> int:
@@ -197,6 +199,8 @@ def calibrate(
         if n and not grid:
             result["reason"] = "empty_threshold_grid"
         return result
+
+    from tine.routing import route_indices
 
     rows = np.arange(n)
     still_testing = True

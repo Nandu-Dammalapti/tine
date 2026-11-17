@@ -1,7 +1,9 @@
 # Tine development proxy, one container.
-# NOT YET BUILT OR STARTED BY A DOCKER DAEMON IN THIS FORM (the image of an earlier
-# Dockerfile was built and run once, on 2026-11-17). "docker compose config", which needs no
-# daemon, accepts this file (Docker Compose v5.7.0, 2026-11-17). See docs/DEPLOY.md.
+# BUILT AND STARTED ONCE BY A DOCKER DAEMON IN THIS FORM, on 2026-11-17, by
+# scripts/container_selftest.py with docker-compose.selftest.yml on top (18 of 18 checks,
+# a stand-in provider). Never deployed or used by a customer, and never started with an
+# operator's own deploy/tine.env. The image of an earlier Dockerfile was built and run
+# once the same day. See docs/DEPLOY.md.
 #
 # Before the first start, and before "docker compose build" (every compose command
 # stops with "env file ... not found" until deploy/tine.env exists):

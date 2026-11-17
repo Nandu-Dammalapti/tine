@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tine.checks import prepare_checks, read_checks
+from tine.checks import check_matches, prepare_checks, read_checks
 
 
 def tasks():
@@ -88,3 +88,24 @@ def test_multitenant_evidence_requires_separate_experiments():
     checks = pd.DataFrame(columns=["task_id", "model", "passed"])
     with pytest.raises(ValueError, match="one nonempty tenant"):
         prepare_checks(checks, mixed, ["cheap"])
+
+
+def test_check_matches_reads_the_optional_column_for_the_same_rows_and_keeps_unknowns_apart():
+    frame = pd.DataFrame({"tenant": ["team-a", "team-a", "team-a", "team-b"], "task_id": ["NA", "001", "NA", "001"],
+                          "model": ["cheap", "cheap", "other", "cheap"], "passed": [True, False, True, True],
+                          "matches_frontier": ["false", "", "1.0", "true"]})
+    matches = check_matches(frame, tasks(), ["cheap", "other", "frontier"])
+    # Aligned like the pass matrix; another tenant's row and a missing row say nothing.
+    assert matches.shape == prepare_checks(frame, tasks(), ["cheap", "other", "frontier"])[0].shape
+    assert matches.tolist() == [[False, True, None], [None, None, None]]
+    typed = frame.assign(matches_frontier=[True, None, np.nan, False])
+    assert check_matches(typed, tasks(), ["cheap", "other"]).tolist() == [[True, None], [None, None]]
+    # Checks written before the column existed have none, and say so.
+    assert check_matches(frame.drop(columns="matches_frontier"), tasks(), ["cheap"]) is None
+    with pytest.raises(ValueError, match="matches_frontier"):
+        check_matches(frame.assign(matches_frontier="maybe"), tasks(), ["cheap"])
+    with pytest.raises(ValueError, match="Duplicate"):
+        check_matches(pd.concat([frame, frame]), tasks(), ["cheap"])
+    # The pass matrix does not depend on the column.
+    assert (prepare_checks(frame, tasks(), ["cheap", "other"])[0]
+            == prepare_checks(frame.drop(columns="matches_frontier"), tasks(), ["cheap", "other"])[0]).all()

@@ -1,0 +1,91 @@
+run,epsilon,order,requests,runs,reads_per_run,old_rule_warns_at_any_read,new_baseline_warns_at_any_read,new_baseline_warns_or_notices_at_any_read,new_default_warns_at_any_read,old_rule_warns_at_the_last_read,new_baseline_warns_at_the_last_read,new_baseline_warns_or_notices_at_the_last_read,new_default_warns_at_the_last_read
+MMLU-Pro first pilot,0.04,recorded order,297,1,6,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.04,shuffled,297,400,6,0.285,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.04,resampled,1000,400,20,0.43,0.0,0.0025,0.0,0.05,0.0,0.0,0.0
+MMLU-Pro first pilot,0.04,resampled,3000,400,60,0.4025,0.0,0.0025,0.0,0.005,0.0,0.0,0.0
+MMLU-Pro first pilot,0.04,resampled,10000,200,20,0.105,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.04,"recorded order, read after every request",297,1,297,1,0,0,0,,,,
+MMLU-Pro long-1..5,0.04,recorded order,1500,1,30,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MMLU-Pro long-1..5,0.04,shuffled,1500,400,30,0.8225,0.0,0.005,0.0,0.0,0.0,0.0,0.0
+MMLU-Pro long-1..5,0.04,resampled,1000,400,20,0.755,0.0,0.025,0.0,0.3425,0.0,0.0025,0.0
+MMLU-Pro long-1..5,0.04,resampled,3000,400,60,0.8125,0.0,0.0425,0.0,0.335,0.0,0.0125,0.0
+MMLU-Pro long-1..5,0.04,resampled,10000,200,20,0.725,0.0,0.07,0.0,0.21,0.0,0.035,0.0
+MMLU-Pro long-1..5,0.04,"recorded order, read after every request",1500,1,1500,1,0,0,0,,,,
+MedQA,0.04,recorded order,200,1,4,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MedQA,0.04,shuffled,200,400,4,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MedQA,0.04,resampled,1000,400,20,0.0025,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MedQA,0.04,resampled,3000,400,60,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MedQA,0.04,resampled,10000,200,20,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MedQA,0.04,"recorded order, read after every request",200,1,200,0,0,0,0,,,,
+ARC-Challenge,0.04,recorded order,200,1,4,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+ARC-Challenge,0.04,shuffled,200,400,4,0.3775,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+ARC-Challenge,0.04,resampled,1000,400,20,0.5775,0.0,0.0,0.0,0.17,0.0,0.0,0.0
+ARC-Challenge,0.04,resampled,3000,400,60,0.6225,0.0,0.0,0.0,0.0625,0.0,0.0,0.0
+ARC-Challenge,0.04,resampled,10000,200,20,0.34,0.0,0.0,0.0,0.01,0.0,0.0,0.0
+ARC-Challenge,0.04,"recorded order, read after every request",200,1,200,1,0,0,0,,,,
+FinQA exact,0.04,recorded order,200,1,4,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA exact,0.04,shuffled,200,400,4,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA exact,0.04,resampled,1000,400,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA exact,0.04,resampled,3000,400,60,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA exact,0.04,resampled,10000,200,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA exact,0.04,"recorded order, read after every request",200,1,200,1,0,0,0,,,,
+FinQA by value,0.04,recorded order,200,1,4,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA by value,0.04,shuffled,200,400,4,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+FinQA by value,0.04,resampled,1000,400,20,1.0,0.0,0.0,0.0125,1.0,0.0,0.0,0.0025
+FinQA by value,0.04,resampled,3000,400,60,1.0,0.0,0.0,0.03,1.0,0.0,0.0,0.0075
+FinQA by value,0.04,resampled,10000,200,20,1.0,0.0,0.0,0.04,1.0,0.0,0.0,0.02
+FinQA by value,0.04,"recorded order, read after every request",200,1,200,1,0,0,0,,,,
+MATH-500 exact,0.04,recorded order,100,1,2,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MATH-500 exact,0.04,shuffled,100,400,2,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MATH-500 exact,0.04,resampled,1000,400,20,0.9725,0.0,0.0,0.0,0.9175,0.0,0.0,0.0
+MATH-500 exact,0.04,resampled,3000,400,60,0.9975,0.0,0.0,0.0,0.995,0.0,0.0,0.0
+MATH-500 exact,0.04,resampled,10000,200,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MATH-500 exact,0.04,"recorded order, read after every request",100,1,100,1,0,0,0,,,,
+MATH-500 by value,0.04,recorded order,100,1,2,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MATH-500 by value,0.04,shuffled,100,400,2,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MATH-500 by value,0.04,resampled,1000,400,20,0.1125,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MATH-500 by value,0.04,resampled,3000,400,60,0.09,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MATH-500 by value,0.04,resampled,10000,200,20,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MATH-500 by value,0.04,"recorded order, read after every request",100,1,100,0,0,0,0,,,,
+IT tickets,0.04,recorded order,300,1,6,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+IT tickets,0.04,shuffled,300,400,6,1.0,0.005,0.0575,0.0,1.0,0.0025,0.0025,0.0
+IT tickets,0.04,resampled,1000,400,20,1.0,0.5475,0.85,0.0,1.0,0.425,0.7925,0.0
+IT tickets,0.04,resampled,3000,400,60,1.0,0.975,1.0,0.0,1.0,0.955,1.0,0.0
+IT tickets,0.04,resampled,10000,200,20,1.0,1.0,1.0,0.0,1.0,1.0,1.0,0.0
+IT tickets,0.04,"recorded order, read after every request",300,1,300,1,0,0,0,,,,
+xRouteBench test part,0.04,recorded order,1414,1,29,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.04,shuffled,1414,400,29,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.04,resampled,1000,400,20,0.8425,0.0,0.0,0.0,0.5425,0.0,0.0,0.0
+xRouteBench test part,0.04,resampled,3000,400,60,0.905,0.0,0.0025,0.0,0.545,0.0,0.0,0.0
+xRouteBench test part,0.04,resampled,10000,200,20,0.915,0.0,0.0,0.0,0.675,0.0,0.0,0.0
+xRouteBench test part,0.04,"recorded order, read after every request",1414,1,1414,1,0,0,0,,,,
+xRouteBench choose part,0.04,recorded order,1922,1,39,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+xRouteBench choose part,0.04,shuffled,1922,400,39,0.84,0.0,0.0025,0.0,0.0,0.0,0.0,0.0
+xRouteBench choose part,0.04,resampled,1000,400,20,0.74,0.0,0.0,0.0,0.355,0.0,0.0,0.0
+xRouteBench choose part,0.04,resampled,3000,400,60,0.83,0.0,0.005,0.0,0.3125,0.0,0.0,0.0
+xRouteBench choose part,0.04,resampled,10000,200,20,0.695,0.0,0.0,0.0,0.225,0.0,0.0,0.0
+xRouteBench choose part,0.04,"recorded order, read after every request",1922,1,1922,1,0,0,0,,,,
+MMLU-Pro first pilot,0.02,recorded order,297,1,6,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.02,shuffled,297,400,6,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.02,resampled,1000,400,20,1.0,0.0,0.0,0.0,0.9875,0.0,0.0,0.0
+MMLU-Pro first pilot,0.02,resampled,3000,400,60,1.0,0.0025,0.0025,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.02,resampled,10000,200,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro first pilot,0.02,"recorded order, read after every request",297,1,297,1,0,0,0,,,,
+MMLU-Pro long-1..5,0.02,recorded order,1500,1,30,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro long-1..5,0.02,shuffled,1500,400,30,1.0,0.0,0.005,0.0,1.0,0.0,0.0,0.0
+MMLU-Pro long-1..5,0.02,resampled,1000,400,20,1.0,0.01,0.03,0.0,1.0,0.0025,0.0125,0.0
+MMLU-Pro long-1..5,0.02,resampled,3000,400,60,1.0,0.0075,0.045,0.0,1.0,0.0,0.01,0.0
+MMLU-Pro long-1..5,0.02,resampled,10000,200,20,1.0,0.0,0.13,0.0,1.0,0.0,0.055,0.0
+MMLU-Pro long-1..5,0.02,"recorded order, read after every request",1500,1,1500,1,0,0,0,,,,
+xRouteBench test part,0.02,recorded order,1414,1,29,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.02,shuffled,1414,400,29,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.02,resampled,1000,400,20,1.0,0.0,0.005,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.02,resampled,3000,400,60,1.0,0.0,0.0025,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.02,resampled,10000,200,20,1.0,0.0,0.005,0.0,1.0,0.0,0.0,0.0
+xRouteBench test part,0.02,"recorded order, read after every request",1414,1,1414,1,0,0,0,,,,
+xRouteBench choose part,0.02,recorded order,1922,1,39,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench choose part,0.02,shuffled,1922,400,39,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench choose part,0.02,resampled,1000,400,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench choose part,0.02,resampled,3000,400,60,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench choose part,0.02,resampled,10000,200,20,1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0
+xRouteBench choose part,0.02,"recorded order, read after every request",1922,1,1922,1,0,0,0,,,,
