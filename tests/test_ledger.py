@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import patch
 
-from tine.ledger import HOLDOUT_MIN_REQUESTS, HoldoutCostError, Ledger, holdout_estimate, request_fingerprint
+from tine.ledger import (DEFAULT_LEDGER_PATH, HOLDOUT_MIN_REQUESTS, HoldoutCostError, Ledger, backup_ledger,
+                         holdout_estimate, request_fingerprint)
 
 
 def row(ledger, tenant="a", **overrides):
@@ -642,3 +643,142 @@ def test_the_checks_column_is_added_to_an_older_ledger_and_keeps_check_records(t
         with pytest.raises(ValueError, match="checks"):
             row(migrated, checks=broken)
     migrated.close()
+
+
+def test_a_backup_under_an_open_writer_holds_every_committed_row_in_one_file(tmp_path):
+    import shutil
+    import sqlite3
+
+    path = tmp_path / "live" / "ledger.sqlite3"
+    ledger = Ledger(path)  # stays open, as the proxy's does
+    ids = sorted(row(ledger, cost_usd=0.25) for _ in range(3))
+    # What an operator hits: the rows are still in the WAL, so the main file alone has no tables.
+    assert path.with_name("ledger.sqlite3-wal").stat().st_size > 0
+    naive = tmp_path / "naive" / "ledger.sqlite3"
+    naive.parent.mkdir()
+    shutil.copy(path, naive)
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        sqlite3.connect(naive).execute("SELECT COUNT(*) FROM requests")
+
+    writer = sqlite3.connect(path, isolation_level=None)  # a write in flight, not committed
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE requests SET model='half-written'")
+    output = tmp_path / "out" / "copy.sqlite3"
+    result = backup_ledger(path, output)
+    assert result == {"ledger": str(path), "output": str(output), "bytes": output.stat().st_size,
+                      "rows": {"requests": 3, "outcome_events": 0}}
+    writer.execute("COMMIT")
+    writer.close()
+    late = row(ledger)  # the backup neither blocked the ledger nor changed it
+    assert ledger.get("a", late)["model"] == "frontier" and ledger.get("a", ids[0])["model"] == "half-written"
+
+    # One file, private, with a rollback journal: readable where nothing can be written.
+    assert [item.name for item in output.parent.iterdir()] == ["copy.sqlite3"]
+    assert output.stat().st_mode & 0o777 == 0o600 and output.read_bytes()[18:20] == b"\x01\x01"
+    output.parent.chmod(0o500)
+    try:
+        copy = sqlite3.connect(f"{output.as_uri()}?mode=ro", uri=True)
+        rows = copy.execute("SELECT request_id, model, cost_usd FROM requests ORDER BY request_id").fetchall()
+        copy.close()
+        assert [item.name for item in output.parent.iterdir()] == ["copy.sqlite3"]
+    finally:
+        output.parent.chmod(0o700)
+    assert rows == [(request_id, "frontier", 0.25) for request_id in ids]  # the committed snapshot only
+    ledger.close()
+
+
+def test_a_backup_never_replaces_a_file_unasked_or_the_ledger_itself(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger)
+    output = tmp_path / "out" / "copy.sqlite3"
+    output.parent.mkdir()
+    output.write_text("an earlier backup", encoding="utf-8")
+    output.chmod(0o644)
+    with pytest.raises(FileExistsError, match="--force"):
+        backup_ledger(path, output)
+    assert output.read_text(encoding="utf-8") == "an earlier backup"
+    assert backup_ledger(path, output, force=True)["rows"]["requests"] == 1
+    assert output.stat().st_mode & 0o777 == 0o600
+    for force in (False, True):
+        with pytest.raises(ValueError, match="the ledger itself"):
+            backup_ledger(path, path, force=force)
+    assert ledger.get("a", request_id) is not None
+
+    # A source that is not a ledger leaves nothing behind, and a missing one is not created.
+    other = tmp_path / "other.sqlite3"
+    with sqlite3.connect(other) as database:
+        database.execute("CREATE TABLE notes (text TEXT)")
+    text = tmp_path / "notes.txt"
+    text.write_text("not a database, and long enough to have a header to read. " * 4, encoding="utf-8")
+    for source, error in ((other, ValueError), (text, sqlite3.DatabaseError),
+                          (tmp_path / "missing.sqlite3", FileNotFoundError)):
+        with pytest.raises(error):
+            backup_ledger(source, tmp_path / "out" / "second.sqlite3")
+    assert not (tmp_path / "missing.sqlite3").exists()
+    with pytest.raises(IsADirectoryError):
+        backup_ledger(path, tmp_path / "out")
+    with pytest.raises(OSError, match="Cannot write in .*notes.txt .*put the copy where files can be written"):
+        backup_ledger(path, text / "copy.sqlite3")  # as on the container's read-only root
+    assert [item.name for item in output.parent.iterdir()] == ["copy.sqlite3"]
+    ledger.close()
+
+
+def test_backup_ledger_command_reads_the_ledger_the_proxy_does(tmp_path, monkeypatch, capsys):
+    import json
+
+    from tine.__main__ import main
+    from tine.proxy import ProxyConfig
+
+    path, other = tmp_path / "ledger.sqlite3", tmp_path / "other.sqlite3"
+    ledger = Ledger(path)
+    row(ledger)
+    Ledger(other).close()
+    output = tmp_path / "copy.sqlite3"
+    monkeypatch.setenv("TINE_LEDGER_PATH", str(path))
+    main(["backup-ledger", "--output", str(output)])
+    assert json.loads(capsys.readouterr().out)["rows"]["requests"] == 1
+    with pytest.raises(SystemExit) as stopped:
+        main(["backup-ledger", "--output", str(output)])
+    assert "tine backup-ledger:" in str(stopped.value) and "already exists" in str(stopped.value)
+    closed = other.read_bytes()
+    main(["backup-ledger", "--ledger", str(other), "--output", str(output), "--force"])
+    assert json.loads(capsys.readouterr().out)["rows"]["requests"] == 0
+    # A ledger nobody has open is not changed; only an empty -wal and a -shm appear beside it.
+    assert other.read_bytes() == closed and other.with_name("other.sqlite3-wal").stat().st_size == 0
+    # With neither given it looks where the proxy would, and names the path it tried.
+    monkeypatch.delenv("TINE_LEDGER_PATH")
+    monkeypatch.chdir(tmp_path)
+    assert ProxyConfig.__dataclass_fields__["ledger_path"].default == DEFAULT_LEDGER_PATH
+    with pytest.raises(SystemExit) as stopped:
+        main(["backup-ledger", "--output", str(tmp_path / "none.sqlite3")])
+    assert f"No ledger file at {DEFAULT_LEDGER_PATH}" in str(stopped.value)
+    ledger.close()
+
+
+def test_backup_ledger_command_writes_only_beside_its_output(tmp_path):
+    """As in the container: the working directory cannot be written, there is no home or
+    temporary directory, and another process has the ledger open."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    path = tmp_path / "data" / "ledger.sqlite3"
+    ledger = Ledger(path)
+    row(ledger)
+    root = tmp_path / "root"
+    root.mkdir(mode=0o500)
+    environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(Path(__file__).parents[1]),
+                   "PYTHONDONTWRITEBYTECODE": "1", "TINE_LEDGER_PATH": str(path),
+                   "HOME": "/nonexistent", "TMPDIR": "/nonexistent", "SQLITE_TMPDIR": "/nonexistent"}
+    done = subprocess.run(
+        [sys.executable, "-m", "tine", "backup-ledger", "--output", str(path.with_name("copy.sqlite3"))],
+        cwd=root, env=environment, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert '"requests": 1' in done.stdout and list(root.iterdir()) == []
+    assert sorted(item.name for item in path.parent.iterdir()) == [
+        "copy.sqlite3", "ledger.sqlite3", "ledger.sqlite3-shm", "ledger.sqlite3-wal"]
+    ledger.close()

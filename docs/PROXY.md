@@ -11,7 +11,7 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_TENANT_KEYS` | JSON object mapping incoming proxy tokens to tenant IDs |
 | `TINE_OPENAI_API_KEY` / `TINE_ANTHROPIC_API_KEY` | Provider credentials; configure only the providers you use |
 | `TINE_OPENAI_FRONTIER_MODEL` / `TINE_ANTHROPIC_FRONTIER_MODEL` | Exact frontier model name for each provider |
-| `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3` |
+| `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3`. To copy it while the proxy runs, use `python -m tine backup-ledger --output PATH` ([REPORT.md](REPORT.md)): the main file copied alone can lack the newest rows |
 | `TINE_LEDGER_REQUIRED` | `1` or `true` (any case) returns 503 instead of an answer the ledger could not record. Default off |
 | `TINE_OPENAI_BASE_URL` / `TINE_ANTHROPIC_BASE_URL` | Optional API-compatible upstreams; defaults are official HTTPS endpoints. Every model a policy names for that provider is called here (see One base URL per provider) |
 | `TINE_TIMEOUT_SECONDS` | Upstream timeout, default 30 |
@@ -452,7 +452,8 @@ load shadow mode adds; it cannot stop real traffic alone from reaching the limit
 
 The same report as a page to send to a customer:
 `python scripts/savings_report.py --ledger LEDGER --tenant TENANT --policy POLICY.json --output report.html`
-([REPORT.md](REPORT.md)). `--note` adds one line under the headline.
+([REPORT.md](REPORT.md)). `--note` adds one line under the headline. `POLICY.json` can be the
+`TINE_SHADOW_POLICIES` or `TINE_ROUTE_POLICIES` file itself: the script takes the tenant's policy from it.
 
 ### The spending cap
 

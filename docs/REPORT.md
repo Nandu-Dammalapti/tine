@@ -2,6 +2,27 @@
 
 `scripts/savings_report.py` writes one tenant's savings report as a single self-contained HTML file. It builds the same two reports the proxy serves (`GET /v1/savings` from `Ledger.report`, `GET /v1/shadow` from `ShadowStore.report`) and hands them to `tine.report_page.render`. The page adds almost no arithmetic: every cost, saving and share is one the reports computed.
 
+## Getting the ledger out of a running container
+
+The ledger is a SQLite file in WAL mode. While the proxy runs, the newest rows are in `ledger.sqlite3-wal`, beside the main file. A copy of `/data/ledger.sqlite3` alone can lack rows. On the first real container run it had no tables at all.
+
+Make the copy with the package's own command, then copy that one file out:
+
+```bash
+docker compose exec tine python -m tine backup-ledger --output /data/ledger-backup.sqlite3
+docker compose cp tine:/data/ledger-backup.sqlite3 ./ledger-backup.sqlite3
+```
+
+- The command reads the ledger at `TINE_LEDGER_PATH`, or the file given with `--ledger`. With neither it looks where the proxy would, `artifacts/ledger.sqlite3`.
+- It uses SQLite's online backup API through a read-only connection, so the proxy keeps running and writing. The copy is one snapshot: every committed row and no half-written one.
+- The copy is a single file with mode 600 and no `-wal` or `-shm` file beside it. `scripts/savings_report.py --ledger` reads it as it is. It prints the row counts of the copy.
+- It refuses to replace an existing file unless `--force` is given, and never writes over the ledger itself. The ledger file is not changed. Run on a ledger that no process has open, it leaves an empty `-wal` file and a `-shm` file beside it.
+- It writes only in the output's directory: a temporary file there, renamed when complete. Under the container's read-only root that leaves `/data` and `/tmp`. Use `/data`: `/tmp` is a tmpfs, and `docker cp` cannot read a file from a tmpfs.
+- The copy stays on the volume until you remove it or replace it with `--force`, and the volume needs room for it. It holds prompts and responses: protect it like the ledger.
+- Given the main file copied alone, `scripts/savings_report.py` stops with "it has no requests table" and names this command.
+
+Status: on 2026-11-17 the command was run in the locally built image with this code mounted over the image's copy, under the compose file's restrictions (read-only root, `/tmp` as tmpfs, uid 10001, no capabilities) and with no network. A stand-in process kept the ledger open and wrote to it; the proxy itself was not running. `docker exec` and `docker cp` were used: the `docker compose` forms above were not run. The backup to `/data` copied out complete, the plain copy of the main file had no tables, and `docker cp` from `/tmp` failed as said above. It was also run outside Docker on a copy of the first container run's ledger (40 requests). No customer has used it.
+
 ## Usage
 
 ```bash
@@ -14,13 +35,15 @@ python scripts/savings_report.py --report-json saved.json --tenant TENANT --note
 | `--ledger` | ledger SQLite file; opened read-only |
 | `--report-json` | JSON with a `shadow_report` and/or `ledger_report` object, in place of a ledger |
 | `--tenant` | tenant the page is for; a saved report or policy for another tenant is refused |
-| `--policy` | frozen policy JSON to describe on the page |
+| `--policy` | policy JSON to describe on the page: one frozen policy, or the file the proxy reads (`TINE_ROUTE_POLICIES` or `TINE_SHADOW_POLICIES`) |
+| `--provider` | with the proxy's policies file: which of the tenant's policies to describe, when it has one for more than one provider |
 | `--generated-at` | time to print on the page; default is now, in UTC |
 | `--note` | one line shown under the headline, for example where the figures came from |
 | `--output` | HTML file to write |
 
-- `--ledger` opens the SQLite file read-only and never runs the `Ledger` or `ShadowStore` constructors, which would change the file. A ledger with no shadow table gives no shadow section.
+- `--ledger` opens the SQLite file read-only and never runs the `Ledger` or `ShadowStore` constructors, which would change the file. A ledger with no shadow table gives no shadow section. For a ledger in a running container, make the copy as described above.
 - `--report-json` reads saved reports, such as the output of `scripts/shadow_replay.py` or saved `GET /v1/savings` and `GET /v1/shadow` responses. No model is called and nothing is sent anywhere.
+- `--policy` takes either one frozen policy (the output of `tine freeze-policy`) or the proxy's own policies file, which maps tenant to provider to policy ([PROXY.md](PROXY.md)). From the proxy's file the script describes `--tenant`'s policy. If that tenant has a policy for more than one provider, name one with `--provider`; without it the script stops and lists the providers. A tenant or provider the file does not hold is refused with the tenants or providers it does hold. `--provider` with a single policy file is refused. The ledger and shadow figures are the tenant's on every provider, whichever policy is described.
 - With `--ledger` and `--policy`, the script compares the policy with the digest stored on each shadow row. If any shadowed request ran with a different policy, it adds a note to the page and prints a warning.
 - With `--policy`, it warns on stderr when the policy file was edited after freezing, and refuses a policy with malformed guarantee numbers ([POLICY.md](POLICY.md)). A policy for another tenant is refused with "The policy file names tenant ...".
 - With `--ledger` and `--policy`, the shadow report checks accepted answers that differ from the frontier's, as a share of the shadowed requests whose answer was compared or sent to the frontier, against that policy's epsilon (the drift check in [PROXY.md](PROXY.md)). Without `--policy` there is no drift check. With `--report-json` the warning appears only if the saved report holds one.
@@ -65,4 +88,5 @@ python scripts/savings_report.py --report-json saved.json --tenant TENANT --note
 
 ```bash
 pytest tests/test_report_page.py
+pytest tests/test_ledger.py -k backup
 ```
