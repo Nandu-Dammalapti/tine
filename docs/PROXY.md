@@ -108,6 +108,19 @@ shadow mode or an estimate, never a measurement, and no fee should rest on it.
     restart.
 - `requests.route_skip_reason` (text, nullable) says why a request went past its route policy
   untried, for example because it carried tools (see Routing through a policy).
+- `requests.checks_json` (JSON text, nullable) keeps the named checks a route policy ran for the
+  request, in order. `Ledger.get` returns it decoded as `checks`. There is no HTTP endpoint that reads
+  one request; read the ledger row. Each entry has:
+  - `check` (the check's name), `checked_model` (the model whose answer it read; null for a stage
+    skipped before any model answered), `passed`, `cost_usd`, and `reason`, `error` and `status` when
+    there are any. `model` is the stage's first model, as before.
+  - `steps`: what each step decided, in order: `type` (`webhook` or `judge`), `passed`, `cost_usd`,
+    and `reason`, `error` and `status` when there are any. Steps after the first rejection did not run
+    and are not listed. A check cut off by the route deadline has no `steps`.
+  - It is `[]` when the policy ran but no named check did (an agreement or unchecked stage), and NULL
+    when no route policy ran, when its run raised an error, for cache hits, and for rows written
+    before the column existed.
+  - No request text, answer or patch is stored in it.
 - Every outcome update is appended to the `outcome_events` table: `event_id`, `tenant`, `request_id`,
   `created_at`, `outcome_sequence`, `fields_json` and `previous_json`. `fields_json` holds the fields
   the PATCH set, plus `baseline_source` when it set a baseline. `previous_json` holds what those fields
@@ -209,6 +222,14 @@ More fields of `GET /v1/shadow`:
   texts are compared`. It is `{}` for a tenant without a shadow policy.
 - `sent_to_frontier_for_tools`: sampled requests that defined tools and went to the frontier untried
   (see Routing through a policy). They are counted inside `shadowed_requests`.
+- `check_step_rejections`: check name to step type to the number of times a step of that type turned
+  an answer down, for example `{"tests+judge": {"webhook": 3, "judge": 5}}`. A step that failed (an
+  error or timeout) counts, because a check fails closed. A stage skipped before any model answered
+  has no steps and is counted in `check_rejection_reasons` instead. Runs stored before steps were kept
+  are not counted. `{}` when there are none.
+- Each check entry in `shadow_runs.calls_json` keeps `checked_model` (the model whose answer it read)
+  and `steps`, as in the ledger's `checks_json` (see Audit trail). Its `model` stays
+  `check:<name>`.
 - `check_rejection_reasons`: reason (`request_too_long`, `response_too_long`) to the number of shadow
   check records with it; `{}` when there are none. A shadowed request whose stages were all skipped
   still counts in `shadowed_requests`, at shadow cost $0 and not accepted (the frontier would answer).
@@ -398,8 +419,8 @@ What the ledger records for a routed request:
   baseline supplied later through the outcome endpoint replaces the estimate. It is then recorded as
   `caller` and reported with the caller-supplied figures, never as measured (see Where a baseline
   comes from).
-- `policy_sha256` and `route_stage` name the policy file and the stage behind the row (see Audit
-  trail).
+- `policy_sha256` and `route_stage` name the policy file and the stage behind the row, and
+  `checks_json` which answers the named checks read and what each step decided (see Audit trail).
 - If the frontier cannot be reached after the policy escalated, the 502 row still records what the
   cheaper attempts and checks cost.
 
@@ -449,10 +470,12 @@ order, all of which must pass.
 ]}
 ```
 
-- `webhook`: the proxy POSTs `{"tenant", "provider", "model", "request", "response"}` to a URL the
-  operator controls and reads back `{"passed": true|false, "cost_usd": optional}`. This is how a
-  tenant's own tests are run: beside their repository, on their infrastructure. **The proxy never
-  executes model-written code.** `bearer_env` names an environment variable holding a token to send; the
+- `webhook`: the proxy POSTs `{"tenant", "provider", "model", "request_id", "mode", "request",
+  "response"}` to a URL the operator controls. `request_id` is the proxy's id for the request (the
+  `x-tine-request-id` header and the ledger row) and `mode` is `"shadow"` or `"route"`, so a run on
+  the customer's side can be matched with the proxy's records. It reads back
+  `{"passed": true|false, "cost_usd": optional}`. This is how a tenant's own tests are run: beside
+  their repository, on their infrastructure. **The proxy never executes model-written code.** `bearer_env` names an environment variable holding a token to send; the
   token is never written to the configuration. `timeout_seconds` defaults to 60 and may be at most 600.
   A `cost_usd` that is not a usable amount (negative, `NaN`, infinite, or above one million dollars)
   makes that check's cost unknown. It is never added to a total.

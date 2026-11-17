@@ -106,8 +106,8 @@ Leaves, to destinations you configure:
 - **A judge check sends the request's user text and a cheaper model's response to a Claude model**
   through the Anthropic base URL and key you configured.
 - **A webhook check sends the full request and the cheaper model's response to the URL in your checks
-  file**, together with the tenant id, the provider and the model name, and with the bearer token you
-  named. Point it only at your own infrastructure. If you point it somewhere else, that is where the
+  file**, together with the tenant id, the provider, the model name, the proxy's request id and
+  whether the proxy is shadowing or routing, and with the bearer token you named. Point it only at your own infrastructure. If you point it somewhere else, that is where the
   data goes. Three rules for `bearer_env`, enforced at startup: it may not name a `TINE_*` variable,
   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; a webhook that is sent a token must use an `https://` url,
   loopback included; and one token variable may be sent for one tenant only. The example
@@ -313,8 +313,8 @@ Run one container at a time: PROXY.md asks that all writers restart together on 
 one container that is automatic.
 
 Upgrading a ledger written by an earlier version adds the `baseline_source`,
-`policy_sha256`, `route_stage` and `route_skip_reason` columns to `requests`, `skip_reason` to
-`shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
+`policy_sha256`, `route_stage`, `route_skip_reason` and `checks_json` columns to `requests`,
+`skip_reason` to `shadow_runs`, and the `outcome_events` and `shadow_counts` tables. Existing baselines get a source
 by this rule:
 
 - an estimated baseline becomes `estimated`;
@@ -323,8 +323,8 @@ by this rule:
   it.
 
 So verified savings from before the upgrade usually move to the caller-supplied figures. Older rows
-have no `policy_sha256` or `route_stage`, earlier outcome updates are not in `outcome_events`, and
-shadow coverage counts start at the upgrade.
+have no `policy_sha256`, `route_stage` or `checks_json`, older shadow runs have no check steps,
+earlier outcome updates are not in `outcome_events`, and shadow coverage counts start at the upgrade.
 
 ## Checked without Docker
 

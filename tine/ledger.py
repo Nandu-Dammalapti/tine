@@ -133,7 +133,8 @@ class Ledger:
                     route_skip_reason TEXT,
                     baseline_source TEXT,
                     policy_sha256 TEXT,
-                    route_stage TEXT
+                    route_stage TEXT,
+                    checks_json TEXT
                 )"""
             )
             self._db.execute(
@@ -167,6 +168,9 @@ class Ledger:
                 if name not in columns:
                     # Older rows do not say which policy, if any, served them.
                     self._db.execute(f"ALTER TABLE requests ADD COLUMN {name} TEXT")
+            if "checks_json" not in columns:
+                # Older rows did not keep the checks a route policy ran: unknown, not none.
+                self._db.execute("ALTER TABLE requests ADD COLUMN checks_json TEXT")
             # Append-only history of outcome updates: what each one set, and what it replaced.
             self._db.execute(
                 """CREATE TABLE IF NOT EXISTS outcome_events (
@@ -234,6 +238,7 @@ class Ledger:
         baseline_source: str | None = None,
         policy_sha256: str | None = None,
         route_stage: int | str | None = None,
+        checks: list[dict[str, Any]] | None = None,
     ) -> str:
         """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
         was worked out, not measured: the frontier model was not called for this
@@ -244,7 +249,10 @@ class Ledger:
         out, a baseline is ``estimated`` when so marked and ``proxy_measured`` otherwise.
         ``policy_sha256`` and ``route_stage`` trace a request a route policy ran on: the
         digest of the policy file and the index of the stage that answered, or
-        ``"frontier"``. The stage is stored as text."""
+        ``"frontier"``. The stage is stored as text. ``checks`` lists the named checks
+        the route policy ran for this request (``tine.policy.run_stages_async``): which
+        model's answer each read and what each step decided. It holds no request or
+        response text; None means no policy's stages ran or their record was lost."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
         if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
@@ -264,6 +272,8 @@ class Ledger:
             raise ValueError("route_stage must be a stage index, 'frontier' or None")
         if success is not None and not isinstance(success, bool):
             raise ValueError("success must be bool or None")
+        if checks is not None and (not isinstance(checks, list) or not all(isinstance(run, dict) for run in checks)):
+            raise ValueError("checks must be a list of check records or None")
         if route_skip_reason is not None and (not isinstance(route_skip_reason, str) or not route_skip_reason):
             raise ValueError("route_skip_reason must be a nonempty string or None")
         for name, value in (
@@ -317,6 +327,7 @@ class Ledger:
             "baseline_source": baseline_source,
             "policy_sha256": policy_sha256,
             "route_stage": None if route_stage is None else str(route_stage),
+            "checks_json": None if checks is None else json.dumps(checks, allow_nan=False),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
@@ -342,6 +353,9 @@ class Ledger:
         result["request_body"] = json.loads(result.pop("request_json"))
         raw_response = result.pop("response_json")
         result["response_body"] = json.loads(raw_response) if raw_response else None
+        # A ledger opened read-only may predate the column.
+        raw_checks = result.pop("checks_json", None)
+        result["checks"] = json.loads(raw_checks) if raw_checks is not None else None
         result["success"] = (
             None if result["success"] is None else bool(result["success"])
         )
