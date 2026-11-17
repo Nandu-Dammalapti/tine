@@ -1,0 +1,4 @@
+model,replies,by_batch,accuracy,reader_match_rate,cut_off_at_max_tokens,mean_input_tokens,mean_output_tokens,mean_cost_usd,total_cost_usd,mean_cost_at_direct_prices_usd,probe_latency_p50_s
+claude-haiku-5-5,1000,980,0.796,1.0,0,2317.4,91.8,0.000141,0.1414,0.000278,0.86
+claude-sonnet-5-5,1000,980,0.803,1.0,0,2317.4,56.8,0.002651,2.6512,0.005203,1.03
+claude-opus-5-5,1000,980,0.82,1.0,0,2317.4,48.9,0.005222,5.2216,0.010247,1.8
