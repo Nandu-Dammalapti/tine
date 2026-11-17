@@ -14,7 +14,9 @@ What the report can and cannot say:
   request. Equal answers are evidence for exact-answer work (a label, a number, a
   choice); they are not a test of correctness, and for free-form text two right
   answers rarely match. The quality guarantee comes from the policy's own
-  certification, not from this comparison.
+  certification, not from this comparison. Answers are compared the way the policy's
+  agreement compares them: exactly, or by value with ``answer_compare: "math"``
+  (``tine.policy.canonical_answer``).
 - Shadow calls cost money on the customer's account. That spend is reported and
   capped. The cap counts known costs: it is held in memory per tenant, a run in
   flight reserves room under it, and calls whose cost is not known are counted
@@ -26,6 +28,12 @@ What the report can and cannot say:
   has stopped; a streamed request is never shadowed. Each of these is counted per
   tenant, and the report gives the share of sampled requests that were shadowed, so
   the projection says what it left out.
+- Shadow calls share the provider account's rate limit with the customer's real
+  traffic. When a provider refuses a call for its rate limit or load (429, 529), on a
+  shadow run or on real traffic, shadow mode pauses on that provider (``ShadowLimits``)
+  and the sampled requests that arrive meanwhile are skipped and counted. A run that
+  was refused part way is stored apart and left out of the projection: it does not show
+  what the policy would do.
 - When too many accepted cheaper answers differ from the frontier's answer (as a
   share of the shadowed requests, more than the policy's quality limit, on at least
   ``DRIFT_MIN_COMPARED`` compared answers), the report carries a warning: such
@@ -49,11 +57,12 @@ import json
 import math
 import re
 import sqlite3
-from collections import Counter
+import time
+from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
 
-from tine.policy import BUILT_IN_CHECKS, known_cost, run_stages_async, same_answer, validate_policy
+from tine.policy import BUILT_IN_CHECKS, answer_mode, known_cost, run_stages_async, same_answer, validate_policy
 
 SHADOW_SCOPE = (
     "sampled requests answered by the frontier model; the policy's cheaper stages were run in the "
@@ -65,7 +74,22 @@ SHADOW_SCOPE = (
 DRIFT_MIN_COMPARED = 30
 # What became of a sampled request that has no shadow row, counted per tenant
 # (``ShadowStore.count``). A shadowed request is counted by its row.
-COUNTED = ("skipped_busy", "skipped_stopped", "failed", "streamed")
+COUNTED = ("skipped_busy", "skipped_stopped", "failed", "streamed", "skipped_rate_limited", "skipped_rate_cap")
+# A provider reply that says the account is at its rate limit (429) or the provider is
+# overloaded (529). The provider refused the request before doing any work and does
+# not bill it.
+LIMIT_STATUSES = (429, 529)
+# How long shadow mode pauses on a provider that refused a call without saying how long
+# to wait: the first pause, doubled for each pause in a row, up to the longest.
+PAUSE_FIRST_SECONDS = 30.0
+PAUSE_MAX_SECONDS = 600.0
+# A retry-after header above this is read as this, so that a malformed one cannot stop
+# shadow mode for good.
+RETRY_AFTER_MAX_SECONDS = 3600.0
+# The skip reason of a shadow run in which a provider refused a call (429 or 529) or a
+# call was not sent because shadow mode had paused. Its row keeps what was spent; the
+# report leaves it out of the projection and counts it as ``rate_limited_runs``.
+RATE_LIMITED_REASON = "rate_limited: a provider refused a shadow call (429 or 529), so the run is left out"
 
 
 def sampled(request_id: str, rate: float) -> bool:
@@ -94,6 +118,16 @@ class NoAnswer(Exception):
     def __init__(self, cost_usd: float | None) -> None:
         super().__init__("the reply holds no answer")
         self.cost_usd = cost_usd
+
+
+class ShadowPaused(Exception):
+    """A shadow call not sent, because shadow mode had paused on its provider. Nothing
+    was spent on it."""
+
+    cost_usd = 0.0
+
+    def __init__(self) -> None:
+        super().__init__("shadow mode is paused on this provider")
 
 
 def _blocks(provider: str, payload: Any) -> tuple[list, list, Any]:
@@ -214,9 +248,136 @@ def _known_sum(values) -> float | None:
 
 def shadow_entries(outcome: dict) -> list[dict]:
     """Every call and check of one shadow run as costed entries, in the form they are
-    stored. A cost that is not a usable amount is stored as unknown."""
+    stored. A cost that is not a usable amount is stored as unknown, except that a
+    provider call refused for its rate limit or load, or never sent because shadow
+    mode had paused, cost nothing (``refused``)."""
     entries = [*outcome["calls"], *({**run, "model": f"check:{run['check']}"} for run in outcome.get("checks", []))]
-    return [{**entry, "cost_usd": known_cost(entry.get("cost_usd"))} for entry in entries]
+    costed = [{**entry, "cost_usd": known_cost(entry.get("cost_usd"))} for entry in entries]
+    return [{**entry, "cost_usd": known_cost(entry.get("known_cost_usd")) or 0.0}
+            if entry["cost_usd"] is None and refused(entry) else entry for entry in costed]
+
+
+def refused(entry: dict) -> bool:
+    """Whether a stored call, or the judge step that ended a check, was refused by the
+    provider for its rate limit or load (429, 529) or not sent because shadow mode had
+    paused. A webhook is the customer's own service, not a provider call: its 429 is a
+    failure like any other."""
+    if "check" in entry:
+        steps = entry.get("steps")
+        last = steps[-1] if isinstance(steps, list) and steps and isinstance(steps[-1], dict) else {}
+        return last.get("type") == "judge" and (last.get("status") in LIMIT_STATUSES
+                                                or last.get("error") == "judge ShadowPaused")
+    return entry.get("status") in LIMIT_STATUSES or entry.get("error") == "ShadowPaused"
+
+
+def most_calls(policy: dict, checks: dict) -> int:
+    """The most provider calls one shadow run of ``policy`` can make: each stage model
+    once, and each judge step of each stage's named check. Webhooks are not counted."""
+    models = {model for stage in policy["stages"] for model in stage["models"]}
+    judges = sum(step.get("type") == "judge" for stage in policy["stages"] for step in checks.get(stage["check"], []))
+    return len(models) + judges
+
+
+def retry_after_seconds(value: Any) -> float | None:
+    """A provider's ``retry-after`` header in seconds, or None when it is absent or not a
+    number of seconds (an HTTP date is not read)."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return min(seconds, RETRY_AFTER_MAX_SECONDS) if math.isfinite(seconds) and seconds >= 0 else None
+
+
+class ShadowLimits:
+    """When shadow mode holds back so that it never competes with real traffic.
+
+    Rate limits belong to the provider organisation, so shadow calls and the customer's
+    real calls draw on the same ones. Two things are kept here, in memory:
+
+    - A pause per provider. A 429 or 529 from the provider, on a shadow call or on real
+      traffic, pauses shadow mode on that provider for every tenant: the proxy calls
+      each provider with one key. The pause lasts as long as the reply's
+      ``retry-after`` asks (seconds, at least one), or else 30 seconds, doubled for each
+      pause in a row up to 10 minutes. A shadow run that ends with no call refused
+      resets the doubling. Nothing is retried.
+    - With ``max_calls_per_minute``, a cap per tenant on shadow provider calls started in
+      any 60 seconds. A run reserves the most calls it can make when it starts and gives
+      back the ones it did not make when it ends.
+
+    ``clock`` gives the time in seconds since the epoch; tests pass their own.
+    """
+
+    def __init__(self, max_calls_per_minute: int | None = None, clock=time.time) -> None:
+        self.max_calls_per_minute = max_calls_per_minute
+        self._clock = clock
+        self._pauses: dict[str, dict] = {}
+        self._calls: dict[str, deque] = {}
+
+    def limited(self, provider: str, status: int, retry_after: Any, where: str) -> bool:
+        """Pause shadow mode on ``provider`` after it refused a call with ``status``.
+        ``where`` says which call, for the report. True when a new pause starts; a
+        refusal during a pause only lengthens it, when its retry-after asks for longer."""
+        now = self._clock()
+        pause = self._pauses.get(provider, {"until": now, "in_a_row": 0})
+        ongoing = pause["until"] > now
+        in_a_row = pause["in_a_row"] if ongoing else pause["in_a_row"] + 1
+        asked = retry_after_seconds(retry_after)
+        wait = asked if asked is not None else min(PAUSE_FIRST_SECONDS * 2 ** (in_a_row - 1), PAUSE_MAX_SECONDS)
+        until = now + max(wait, 1.0)
+        if ongoing and until <= pause["until"]:
+            return False
+        how = (f"the reply asked to wait {asked:g} seconds" if asked is not None
+               else f"no retry-after, so {wait:g} seconds (pause {in_a_row} in a row)")
+        self._pauses[provider] = {"until": until, "in_a_row": in_a_row,
+                                  "reason": f"{where} got HTTP {status} from {provider}; {how}"}
+        return not ongoing
+
+    def paused(self, provider: str) -> dict | None:
+        """The pause in force on ``provider``, or None."""
+        pause = self._pauses.get(provider)
+        return pause if pause is not None and pause["until"] > self._clock() else None
+
+    def succeeded(self, provider: str) -> None:
+        """A shadow run on ``provider`` ended with no call refused: the next pause starts
+        again at the shortest. A pause in force is left as it is."""
+        pause = self._pauses.get(provider)
+        if pause is not None and self.paused(provider) is None:
+            pause["in_a_row"] = 0
+
+    def _window(self, tenant: str) -> deque:
+        window = self._calls.setdefault(tenant, deque())
+        while window and window[0][0] <= self._clock() - 60:
+            window.popleft()
+        return window
+
+    def reserve(self, tenant: str, calls: int) -> list | None:
+        """Hold room for a run of at most ``calls`` provider calls under the tenant's cap.
+        None when the cap has no room; otherwise a reservation for ``release``."""
+        if self.max_calls_per_minute is None:
+            return [self._clock(), 0]
+        window = self._window(tenant)
+        if sum(held for _, held in window) + calls > self.max_calls_per_minute:
+            return None
+        reservation = [self._clock(), calls]
+        window.append(reservation)
+        return reservation
+
+    def release(self, reservation: list, made: int) -> None:
+        """The run ended having made ``made`` calls: give back the rest of its room."""
+        reservation[1] = min(reservation[1], made)
+
+    def report(self, tenant: str, providers) -> dict:
+        """The pause on each of ``providers`` and the tenant's call cap, for ``GET /v1/shadow``."""
+        now = self._clock()
+        pauses = {}
+        for provider in sorted(providers):
+            pause = self.paused(provider)
+            pauses[provider] = None if pause is None else {
+                "paused_until": datetime.fromtimestamp(pause["until"], timezone.utc).isoformat(),
+                "seconds_left": round(pause["until"] - now, 3), "reason": pause["reason"]}
+        capped = self.max_calls_per_minute is not None
+        return {"shadow_paused": pauses, "shadow_max_calls_per_minute": self.max_calls_per_minute,
+                "shadow_calls_last_minute": sum(held for _, held in self._window(tenant)) if capped else None}
 
 
 def _known_part(entry: dict) -> float:
@@ -269,10 +430,13 @@ class ShadowStore:
     def record(self, *, request_id: str, tenant: str, provider: str, policy: dict, outcome: dict,
                frontier_answer: str | None, frontier_cost_usd: float | None, skip_reason: str | None = None) -> None:
         """Store one shadow run. ``skip_reason`` marks a request the policy would have
-        sent to the frontier without trying its stages; ``outcome`` then has no calls."""
+        sent to the frontier without trying its stages; ``outcome`` then has no calls.
+        The accepted answer is compared with the frontier's the way the policy's
+        agreement compares answers (``answer_compare``)."""
         matches = None
         if outcome["accepted"] and outcome.get("comparable", True):
-            matches = int(frontier_answer is not None and same_answer([outcome["answer"], frontier_answer]))
+            matches = int(frontier_answer is not None
+                          and same_answer([outcome["answer"], frontier_answer], answer_mode(policy)))
         spent = shadow_entries(outcome)
         digest = hashlib.sha256(json.dumps(policy, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         with self._ledger._lock, self._ledger._db:
@@ -287,8 +451,10 @@ class ShadowStore:
 
     def count(self, tenant: str, name: str) -> None:
         """Count one sampled request that has no row of its own: it was skipped
-        (``skipped_busy``, ``skipped_stopped``), its run failed before its row was
-        written (``failed``), or it was streamed (``streamed``)."""
+        (``skipped_busy``, ``skipped_stopped``, ``skipped_rate_limited`` while shadow
+        mode was paused on a provider, ``skipped_rate_cap`` over the per-minute call
+        cap), its run failed before its row was written (``failed``), or it was
+        streamed (``streamed``)."""
         if name not in COUNTED:
             raise ValueError(f"Not a shadow count: {name!r}")
         with self._ledger._lock, self._ledger._db:
@@ -400,6 +566,11 @@ class ShadowStore:
             rows = self._ledger._db.execute(
                 f"SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json,{skipped} "
                 "FROM shadow_runs WHERE tenant=?", (tenant,)).fetchall()
+        # What every run spent counts, but a run in which a provider refused a call does
+        # not show what the policy would do, so it is left out of everything else.
+        calls = [entry for row in rows for entry in json.loads(row["calls_json"])]
+        limited = sum(row["skip_reason"] == RATE_LIMITED_REASON for row in rows)
+        rows = [row for row in rows if row["skip_reason"] != RATE_LIMITED_REASON]
         accepted = [row for row in rows if row["accepted"]]
         compared = [row for row in accepted if row["matches_frontier"] is not None]
         matching = sum(row["matches_frontier"] == 1 for row in compared)
@@ -409,7 +580,6 @@ class ShadowStore:
         # frontier where no cheaper answer was accepted.
         policy_cost = math.fsum(row["shadow_cost_usd"] + (0.0 if row["accepted"] else row["frontier_cost_usd"])
                                 for row in known)
-        calls = [entry for row in rows for entry in json.loads(row["calls_json"])]
         return {
             "tenant": tenant, "shadowed_requests": len(rows),
             # Included in shadowed_requests, as requests the policy sends to the frontier.
@@ -438,7 +608,7 @@ class ShadowStore:
             # Which step of each named check rejected: a step that failed counts, since a
             # check fails closed. Runs stored before steps were kept are not counted.
             "check_step_rejections": step_rejections(calls),
-            **coverage(len(rows), self.counts(tenant)),
+            **coverage(len(rows), self.counts(tenant), rate_limited_runs=limited),
             # Requests the policy sends to the frontier lose nothing against it; accepted
             # answers that were not compared cannot be told either way and are left out.
             **drift(len(compared), len(compared) - matching, epsilon, min_compared,
@@ -477,14 +647,17 @@ def _why_unknown(entry: dict) -> str:
     return f"{entry.get('model')}: {why}"
 
 
-def coverage(shadowed: int, counts: dict[str, int] | None) -> dict[str, Any]:
+def coverage(shadowed: int, counts: dict[str, int] | None, rate_limited_runs: int = 0) -> dict[str, Any]:
     """What became of the sampled requests: how many were shadowed, and why the rest
     were not.
 
     ``sampled_requests`` counts the sampled requests a shadow run could have taken
     (answered by the frontier without streaming) once their run ended or was skipped:
-    the ``shadowed`` ones, which have a row, and the skipped and failed ones, which
-    are counted. ``shadow_coverage`` is the share of them that were shadowed. Busy
+    the ``shadowed`` ones, which have a row, the skipped and failed ones, which are
+    counted, and the ``rate_limited_runs``, whose rows are left out of the projection.
+    Requests skipped while shadow mode was paused on a provider are
+    ``skipped_rate_limited``; those over the per-minute call cap are
+    ``skipped_rate_cap``. ``shadow_coverage`` is the share that were shadowed. Busy
     periods lose more of their sample, so a coverage below one means the projection
     leans to quieter ones. Streamed requests are counted apart: they were sampled,
     but shadow mode cannot run them. The counts start when a ledger is first opened
@@ -492,11 +665,14 @@ def coverage(shadowed: int, counts: dict[str, int] | None) -> dict[str, Any]:
     """
     if counts is None:
         return dict.fromkeys(("sampled_requests", "skipped_busy", "skipped_stopped", "failed_shadow_runs",
+                              "skipped_rate_limited", "skipped_rate_cap", "rate_limited_runs",
                               "streamed_not_shadowed", "shadow_coverage"))
-    sampled = shadowed + counts["skipped_busy"] + counts["skipped_stopped"] + counts["failed"]
+    sampled = (shadowed + counts["skipped_busy"] + counts["skipped_stopped"] + counts["failed"]
+               + counts["skipped_rate_limited"] + counts["skipped_rate_cap"] + rate_limited_runs)
     return {"sampled_requests": sampled, "skipped_busy": counts["skipped_busy"],
             "skipped_stopped": counts["skipped_stopped"], "failed_shadow_runs": counts["failed"],
-            "streamed_not_shadowed": counts["streamed"],
+            "skipped_rate_limited": counts["skipped_rate_limited"], "skipped_rate_cap": counts["skipped_rate_cap"],
+            "rate_limited_runs": rate_limited_runs, "streamed_not_shadowed": counts["streamed"],
             "shadow_coverage": shadowed / sampled if sampled else None}
 
 

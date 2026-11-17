@@ -22,6 +22,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 import numpy as np
 
@@ -42,6 +43,9 @@ DIGEST_FIELD = "content_sha256"
 FREEZE_UNCHANGED = "matches the digest written when it was frozen"
 FREEZE_EDITED = "edited after freezing"
 FREEZE_NO_DIGEST = "no digest (frozen before digests)"
+# How agreement compares answers (``canonical_answer``). A policy without the field
+# compares them exactly, as every policy frozen before the field existed did.
+ANSWER_COMPARE_MODES = ("exact", "math")
 
 
 def known_cost(value) -> float | None:
@@ -71,7 +75,7 @@ def _stage(name: str, single_check: str) -> dict:
 def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float = 0.05, seed: int = 42,
                   fractions=(0.4, 0.3, 0.3), max_length: int = 3, top_k: int = 8,
                   single_check: str = "none", shortlist: str = "savings", tenant: str | None = None,
-                  answer_pattern: str | None = None) -> dict:
+                  answer_pattern: str | None = None, answer_compare: str | None = None) -> dict:
     """Choose and certify one chain, and describe it as data.
 
     Tasks are split by ``seed`` into choose / certify / test parts. The chain is
@@ -95,6 +99,9 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
     is the regular expression the proxy reads a comparable answer with (the last
     match, its first group if it has one). It must read the same answer the recorded
     answers behind ``checks`` held, or agreement live is not the agreement measured.
+    ``answer_compare`` is how two answers are compared (``canonical_answer``); it must
+    be the comparison ``checks`` were measured with (``scripts/agreement_pairs.py
+    --answer-compare``). None writes nothing, which means ``exact``.
 
     The digest of the policy's content is written to ``provenance`` last, so a file
     edited afterwards can be told apart (``freeze_state``). It is not a signature:
@@ -112,6 +119,8 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
         raise ValueError("tenant must be a nonempty name")
     if answer_pattern is not None:
         check_answer_pattern(answer_pattern)
+    if answer_compare is not None and answer_compare not in ANSWER_COMPARE_MODES:
+        raise ValueError(f"answer_compare must be one of {list(ANSWER_COMPARE_MODES)}")
     epsilon = _probability(epsilon, "epsilon", open_interval=True)
     delta = _probability(delta, "delta", open_interval=True)
     frame, tasks, excluded = complete_tasks(frame, frontier)
@@ -152,6 +161,7 @@ def freeze_policy(frame, frontier: str, checks, *, epsilon: float, delta: float 
         "task_type": str(tasks.task_type.iloc[0]),
         "frontier": frontier, "stages": [_stage(models[index], single_check) for index in chain],
         **({"answer_pattern": answer_pattern} if answer_pattern is not None else {}),
+        **({"answer_compare": answer_compare} if answer_compare is not None else {}),
         "guarantee": {
             "epsilon": epsilon, "delta": delta, "certified": bool(chain),
             "statement": ("With confidence 1 - delta, on tasks drawn like the certify tasks, the share of tasks "
@@ -255,7 +265,14 @@ def validate_policy(policy: dict) -> dict:
             check_answer_pattern(policy["answer_pattern"])
         except ValueError:
             raise ValueError("A policy's answer_pattern must be a valid, nonempty regular expression") from None
+    if policy.get("answer_compare") is not None and policy["answer_compare"] not in ANSWER_COMPARE_MODES:
+        raise ValueError(f"A policy's answer_compare must be one of {list(ANSWER_COMPARE_MODES)}")
     return policy
+
+
+def answer_mode(policy: dict) -> str:
+    """How ``policy``'s agreement compares answers: its ``answer_compare``, else exact."""
+    return policy.get("answer_compare") or "exact"
 
 
 def _fraction(value, *, open_interval: bool = False) -> bool:
@@ -265,20 +282,98 @@ def _fraction(value, *, open_interval: bool = False) -> bool:
     return 0 < value < 1 if open_interval else 0 <= value <= 1
 
 
-def same_answer(answers) -> bool:
-    """True when every answer is present and equal after collapsing whitespace. The
-    words recorded answers use for "no answer" count as missing, as they did when
-    agreement was measured."""
-    cleaned = {" ".join(answer.split()) if isinstance(answer, str) else None for answer in answers}
-    return len(cleaned) == 1 and not cleaned & {None, "", *NO_ANSWER_WORDS}
+# What ``canonical_answer``'s math mode drops, in order: notation that does not
+# change an answer's value.
+_TEXT = re.compile(r"\\text\{([^{}]*)\}")
+_MATH_DROPS = (
+    re.compile(r"\\(?:left|right)(?![A-Za-z])"),  # \left( and \right), not \rightarrow
+    re.compile(r"\^\{\\circ\}|\^\\circ"),  # degree signs
+    re.compile(r"\\[!,; ]"),  # thin, medium and thick spaces, and a backslash space
+    re.compile(r"\\%|%"),  # percent signs, escaped or not
+    re.compile(r"\\\$"),  # escaped dollar signs
+)
+_DFRAC = re.compile(r"\\[dt]frac(?![A-Za-z])")
+_PLAIN_NUMBER = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+-]?\.\d+")
 
 
-def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = None) -> dict:
+def canonical_answer(answer, mode: str = "exact") -> str | None:
+    r"""The form of ``answer`` that agreement compares, or None for no answer.
+
+    ``exact`` collapses runs of whitespace to one space and changes nothing else.
+
+    ``math`` is for answers written as LaTeX, such as the content of ``\boxed{...}``.
+    It unwraps ``\text{...}``; drops ``\left`` and ``\right``, the spaces ``\!``,
+    ``\,``, ``\;`` and ``\ ``, degree signs (``^\circ``, ``^{\circ}``), percent signs
+    (``\%``, ``%``) and escaped dollar signs (``\$``); writes ``\dfrac`` and
+    ``\tfrac`` as ``\frac``; and removes all whitespace, ``$`` at either end and a
+    trailing ``.``. If what is left is a plain decimal number (commas allowed between
+    groups of three digits), it is written in one exact form: ``14.50``, ``14.5\%``
+    and ``$14.5$`` all become ``14.5``, and ``1,234`` becomes ``1234``. Numbers are
+    compared exactly, never within a tolerance: agreement means the same value.
+
+    Math mode does not catch the same value in two notations (``0.5`` and
+    ``\frac{1}{2}``, ``\frac12`` and ``\frac{1}{2}``, ``9.9\%`` and ``0.099``,
+    ``1e3`` and ``1000``), units written differently or on one side only (``5`` and
+    ``5\text{ cm}``), reordered terms (``x+1`` and ``1+x``), or equivalent
+    expressions in general. Because it drops percent signs, ``50\%`` and ``50`` count
+    as the same answer, and because it removes spaces, the list ``1, 234`` reads as
+    the number ``1234``.
+
+    In either mode the words recorded answers use for "no answer" count as missing,
+    as they did when agreement was measured.
+    """
+    if mode not in ANSWER_COMPARE_MODES:
+        raise ValueError(f"answer comparison must be one of {list(ANSWER_COMPARE_MODES)}")
+    if not isinstance(answer, str):
+        return None
+    text = " ".join(answer.split())
+    if not text or text in NO_ANSWER_WORDS:
+        return None
+    if mode == "exact":
+        return text
+    unwrapped = None
+    while unwrapped != text:  # innermost first, so nested \text{} unwraps too
+        unwrapped, text = text, _TEXT.sub(r"\1", text)
+    for pattern in _MATH_DROPS:
+        text = pattern.sub("", text)
+    text = _DFRAC.sub(r"\\frac", text)
+    text = "".join(text.split()).strip("$")
+    if text.endswith("."):
+        text = text[:-1].strip("$")
+    if _PLAIN_NUMBER.fullmatch(text):
+        try:
+            value = Decimal(text.replace(",", ""))
+        except InvalidOperation:  # the pattern admits only plain numbers
+            value = None
+        if value is not None:
+            text = "0" if value == 0 else format(value.normalize(), "f")
+    return text if text and text not in NO_ANSWER_WORDS else None
+
+
+def same_answer(answers, mode: str = "exact") -> bool:
+    """True when every answer is present and all have the same ``canonical_answer``
+    in ``mode``. The default, exact, compares after collapsing whitespace only."""
+    cleaned = {canonical_answer(answer, mode) for answer in answers}
+    return len(cleaned) == 1 and None not in cleaned
+
+
+def _agreement(policy: dict, agree):
+    """The agreement test a run of ``policy`` uses: ``agree`` if the caller gave one,
+    else answers compared the way the policy names (``answer_mode``)."""
+    if agree is not None:
+        return agree
+    mode = answer_mode(policy)
+    return lambda answers: same_answer(answers, mode)
+
+
+def run_policy(policy: dict, call, *, agree=None, checks: dict | None = None) -> dict:
     """Run one request through ``policy``.
 
     ``call(model)`` performs the request on that model and returns a mapping with
     ``answer`` (the comparable final answer, or None if there is none) and
-    ``cost_usd``; it may carry anything else, such as the full response. A cheaper
+    ``cost_usd``; it may carry anything else, such as the full response. Agreement
+    compares answers as the policy's ``answer_compare`` says, unless ``agree`` is
+    given. A cheaper
     model that raises is treated as having no answer and the stage is abandoned. A
     frontier failure is raised to the caller: there is nothing left to fall back to.
 
@@ -298,6 +393,7 @@ def run_policy(policy: dict, call, *, agree=same_answer, checks: dict | None = N
     estimate charges it each time, so live cost can only be lower on that account.
     """
     validate_policy(policy)
+    agree = _agreement(policy, agree)
     checks = checks or {}
     missing = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS) - set(checks))
     if missing:
@@ -411,7 +507,7 @@ def _step(step: dict) -> dict:
             **_status(step.get("status"))}
 
 
-async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dict | None = None,
+async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | None = None,
                            deadline_seconds: float | None = None) -> dict:
     """The cheaper stages of ``policy`` for one request, for an asynchronous caller.
 
@@ -440,6 +536,7 @@ async def run_stages_async(policy: dict, call, *, agree=same_answer, checks: dic
     import inspect
 
     validate_policy(policy)
+    agree = _agreement(policy, agree)
     checks = checks or {}
     missing = sorted({stage["check"] for stage in policy["stages"]} - set(BUILT_IN_CHECKS) - set(checks))
     if missing:

@@ -227,6 +227,11 @@ What the cap does and does not do:
   proxy. `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT` (optional, unset by default) limits them for each
   tenant as well, so one busy tenant cannot take every slot. A sampled request that arrives while a
   limit is full is not shadowed; `GET /v1/shadow` counts it as `skipped_busy`.
+- Rate limits belong to the provider organisation, so shadow calls and your real calls share them.
+  When a provider answers 429 or 529, on a shadow call or on your real traffic, shadow mode pauses on
+  that provider and `GET /v1/shadow` counts the skipped requests as `skipped_rate_limited`. Your real
+  requests are passed through as before. `TINE_SHADOW_MAX_CALLS_PER_MINUTE` (optional) also caps the
+  shadow calls each tenant may start in a minute. See Shadow mode in PROXY.md.
 - It does not limit the frontier calls your traffic makes anyway. It limits only the extra calls.
 - Set a budget alert on the provider account as well. The cap is application code that has never run
   against a real bill.

@@ -89,11 +89,11 @@ says. It is not new evidence of quality.
 
 None of this has run on real traffic. The code path was tested with stand-ins only, not
 with recorded SWE-bench data. Not built: nightly retraining per customer, distillation, a
-production datastore, streaming under a policy, and a way to measure the saving under live
-routing (that needs a random share of requests always sent to the frontier). Paid model
-calls so far total $71.38: $47.73 for judge measurements ($12.69 in
+production datastore and streaming under a policy. A random frontier holdout to measure
+the saving under live routing is now built and was used once with real models (below).
+Paid model calls so far total $131.38: $47.73 for judge measurements ($12.69 in
 `2026-11-14-api-judge/README.md`, $31.02 in `2026-11-16-judge-probes/README.md` and $4.02
-in `2026-11-17-judge-prompt/README.md`) and $23.65 for the live pilot below.
+in `2026-11-17-judge-prompt/README.md`) and $23.65 and $60.00 for the two live pilots below.
 
 **A live pilot with real models** (`2026-11-17-live-pilot/README.md`). Three current
 Claude models answered MMLU-Pro questions, as stand-in exact-answer traffic, through
@@ -105,6 +105,20 @@ on the same token was never accepted but cost 31% more than Opus alone. Tine's o
 `/v1/savings` reported no saving for the routed run, since that needs a frontier
 holdout. Public benchmark questions, one afternoon, the proxy run in-process: not
 customer evidence.
+
+**The live pilot on four more kinds of traffic** (`2026-11-17-live-pilot-more/README.md`).
+The same setup on MedQA, ARC-Challenge, FinQA and MATH-500, each as one customer. A policy
+certified at 4% on each (none at 2%, with certify sets of about 400 or 165). In shadow mode
+on new questions the loss against Opus was 0.5-2.5%. Routed live with a random 30%
+frontier holdout, the measured saving was 56% on MedQA (95% interval 49-64%), 97% on ARC,
+where Haiku alone certified (97-98%), and 18% on FinQA (5-32%). The saving follows how
+close the cheaper models are to Opus: FinQA, where Haiku gets 64% right against Opus's
+79%, saves least. Comparing answers by value (`--answer-compare math`) raised MATH-500's
+projected saving from 44.5% to 60.5% at the same 1.0% loss. Shadow calls sharing one
+account's rate limits with real traffic caused 19-45% of real requests to be refused
+until the runs were made sequential; the proxy now pauses shadow mode on a 429. `tine
+serve` ran as a real process for the first time and served 40 routed requests over HTTP.
+Public benchmarks, one afternoon, small holdout groups: not customer evidence.
 
 ## 5. What we do not know yet
 

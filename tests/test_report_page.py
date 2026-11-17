@@ -799,6 +799,32 @@ def test_the_page_shows_what_the_sample_left_out_beside_the_projection():
     assert "Sampled requests" not in text_of(render(None, old, tenant="acme", generated_at="now"))
 
 
+def test_the_page_shows_when_shadow_mode_held_back_for_the_providers_rate_limit():
+    store = add_shadow_rows(Ledger())
+    for name, times in (("skipped_rate_limited", 2), ("skipped_rate_cap", 1)):
+        for _ in range(times):
+            store.count("acme", name)
+    reason = "real traffic got HTTP 429 from openai; the reply asked to wait 30 seconds"
+    report = {**store.report("acme"), "shadow_paused": {
+        "anthropic": None, "openai": {"paused_until": "2026-11-17T12:00:30+00:00", "seconds_left": 30.0,
+                                      "reason": reason}}}
+    assert headline_sentences(None, report)[1] == (
+        "Shadow mode ran on 4 of 7 sampled requests (57.1%); the rest were skipped (2 while shadow mode was paused "
+        "for the provider's rate limit and 1 over the shadow call cap per minute), so busy periods count for less "
+        "than they should.")
+    text = text_of(render(None, report, tenant="acme", generated_at="now"))
+    for expected in ("Skipped while shadow mode was paused for the provider's rate limit 2",
+                     "Skipped over the shadow call cap per minute 1",
+                     "Shadow runs left out because the provider refused a call (429 or 529) 0",
+                     "Paused for a provider's rate limit when the report was read anthropic: not paused; openai: "
+                     f"paused until 2026-11-17T12:00:30+00:00, because {reason}"):
+        assert expected in text, expected
+    # A report from before these counts, or one read from the ledger (no pause state), shows no such rows.
+    old = {key: value for key, value in report.items()
+           if key not in ("skipped_rate_limited", "skipped_rate_cap", "rate_limited_runs", "shadow_paused")}
+    assert "rate limit" not in text_of(render(None, old, tenant="acme", generated_at="now"))
+
+
 def test_cli_checks_differing_answers_against_the_described_policys_limit(tmp_path):
     path = tmp_path / "ledger.sqlite3"
     ledger = Ledger(path)
