@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """A live pilot with real models, as one customer would run it (results/2026-11-17-live-pilot).
 
-``sample``     Disjoint question sets from the local MMLU-Pro and Arena-Hard copies.
+``sample``     Disjoint question sets from the local MMLU-Pro and Arena-Hard copies. Prints
+               how the benchmark's own recorded models scored on each set, and warns when
+               a set is easier or harder than the first. ``--compare`` does the same for
+               set files that already exist.
 ``ask``        Ask models a set directly (the customer's graded history). Paid; capped.
                Writes canonical outcomes and an answers CSV for scripts/agreement_pairs.py.
                ``--batch`` sends the same requests through Anthropic's Message Batches API
@@ -43,12 +46,19 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tine.judge import ANTHROPIC_PRICES, estimate_input_tokens  # noqa: E402
-from tine.shadow import extract_answer  # noqa: E402
+from tine.shadow import RATE_LIMITED_REASON, extract_answer  # noqa: E402
 
 ANSWER_PATTERN = r"Answer:\s*\**\s*\$?\(?([A-J])\b"
 # The content of the last \boxed{...}, with up to two levels of braces inside it.
 BOXED_PATTERN = r"\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}"
 TASK_TYPE = "mmlupro-live"
+# A request whose wall-clock time is this much longer than its time on the monotonic
+# clock ran while the machine was asleep or the process was stopped: the monotonic
+# clock stands still then, and the proxy times requests with it.
+SUSPENDED_SECONDS = 5.0
+# Two question sets whose mean recorded scores differ by this many standard errors are
+# reported as an uneven draw.
+UNEVEN_Z = 2.0
 TENANT = "live-pilot"
 SETS = {"calibrate": 1000, "shadow": 300, "live": 200}
 # Each benchmark: where its records are, how the proxy reads an answer, how an answer
@@ -128,17 +138,63 @@ def _records(folder: Path) -> list[dict]:
     return json.loads(files[0].read_text())["records"]
 
 
+def _model_folder(bench: Path, dataset: str) -> Path:
+    """The folder of one model's results for a benchmark; every model's file has the
+    same questions and keys."""
+    folder = bench / DATASETS[dataset]["folder"]
+    if not list(folder.glob("*.json")):
+        folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
+    return folder
+
+
+def recorded_scores(bench: Path, sets: dict[str, list[dict]]) -> dict:
+    """How the benchmark's own recorded models scored on each question set.
+
+    A set's figure is the mean, over its questions, of the share of the archive's models
+    that got the question right. It says how hard the set is before any money is spent:
+    a history that is harder than the questions that follow certifies a policy on
+    different work. ``uneven`` names each set whose mean differs by ``UNEVEN_Z`` standard
+    errors or more from the first set of the same benchmark, which should be the history.
+    Sets with questions the archive does not hold (free text, the tickets) are left out."""
+    by_dataset: dict[str, dict[str, float]] = {}
+
+    def score(question: dict) -> float | None:
+        dataset = _dataset(question)
+        if question.get("ground_truth") is None or not DATASETS.get(dataset, {}).get("folder"):
+            return None
+        if dataset not in by_dataset:
+            found: dict[str, list[float]] = {}
+            for folder in sorted(path for path in _model_folder(bench, dataset).parent.iterdir() if path.is_dir()):
+                for record in _records(folder) if list(folder.glob("*.json")) else []:
+                    if record.get("score") is not None:
+                        found.setdefault(str(record["index"]), []).append(float(record["score"]))
+            by_dataset[dataset] = {index: sum(values) / len(values) for index, values in found.items()}
+        return by_dataset[dataset].get(question["task_id"].rsplit(":", 1)[-1])
+
+    means, spread, first_of, uneven = {}, {}, {}, []
+    for name, questions in sets.items():
+        scores = [score(question) for question in questions]
+        if not scores or any(value is None for value in scores):
+            continue
+        mean = sum(scores) / len(scores)
+        variance = sum((value - mean) ** 2 for value in scores) / max(len(scores) - 1, 1)
+        means[name], spread[name] = round(mean, 4), variance / len(scores)
+        first = first_of.setdefault(frozenset(map(_dataset, questions)), name)
+        gap, error = mean - means[first], (spread[name] + spread[first]) ** 0.5
+        if name != first and error > 0 and abs(gap) / error >= UNEVEN_Z:
+            uneven.append(f"{name} is {abs(gap) * 100:.1f} points {'easier' if gap > 0 else 'harder'} than {first} "
+                          f"for the benchmark's recorded models ({gap / error:+.1f} standard errors)")
+    return {"mean_recorded_score": means, "uneven": uneven}
+
+
 def sample_dataset(bench: Path, output: Path, dataset: str, *, seed: int = 0) -> dict:
     """Disjoint calibrate / shadow / live sets from one more benchmark."""
     config = DATASETS[dataset]
     if config["folder"] is None:
         raise SystemExit(f"{dataset} is not in the benchmark archive; see scripts/ticket_pilot_prep.py")
-    folder = bench / config["folder"]
-    if not list(folder.glob("*.json")):
-        folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
     questions = [{"task_id": f"{dataset}:{r['index']}", "prompt": r["prompt"], "ground_truth": str(r["ground_truth"]),
                   "dataset": dataset}
-                 for r in _records(folder) if str(r.get("ground_truth") or "").strip()]
+                 for r in _records(_model_folder(bench, dataset)) if str(r.get("ground_truth") or "").strip()]
     random.Random(seed).shuffle(questions)
     output.mkdir(parents=True, exist_ok=True)
     counts, start = {}, 0
@@ -637,7 +693,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                 async with gate:
                     if recorder.spent >= max_cost_usd:
                         return
-                    started, retries = time.time(), 0
+                    started, started_monotonic, retries = time.time(), time.monotonic(), 0
                     # As a customer's app would: a rate-limited or overloaded reply is retried
                     # after a pause. Each try is a new request to the proxy with its own ledger row.
                     for attempt in range(6):
@@ -655,6 +711,8 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                            "answer": extract_answer("anthropic", response.json(), recorder.pattern)
                            if response.status_code < 400 else None,
                            "client_seconds_including_shadow": round(time.time() - started, 2),
+                           # The same wait on the clock that stands still while the machine sleeps.
+                           "client_monotonic_seconds": round(time.monotonic() - started_monotonic, 2),
                            "client_retries": retries}
                     # The proxy has written the ledger row, and in shadow mode finished the shadow
                     # run, by the time its reply is back here: the row is complete and is kept now.
@@ -663,7 +721,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                                routing_cost_usd=entry.get("routing_cost_usd"), latency_ms=entry.get("latency_ms"),
                                holdout=entry.get("holdout"))
                     shadowed = ledger._db.execute(
-                        "SELECT accepted, stage, served_by, matches_frontier, shadow_cost_usd "
+                        "SELECT accepted, stage, served_by, matches_frontier, shadow_cost_usd, skip_reason "
                         "FROM shadow_runs WHERE request_id=?", (request_id,)).fetchone() if mode == "shadow" else None
                     row.update(dict(shadowed) if shadowed else {})
                     run.append("request", row)
@@ -680,7 +738,12 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
 
 
 def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
-    """Grade what the proxy did against the known answers."""
+    """Grade what the proxy did against the known answers.
+
+    In shadow mode the share accepted, the loss and the gain are over the requests the
+    proxy shadowed (``shadowed_graded``). A request it did not shadow (busy, paused or
+    stopped) and a run it left out because a provider refused a shadow call say nothing
+    about the policy, so they are not counted as requests the policy turned down."""
     truth = {q["task_id"]: q.get("ground_truth") for q in questions}
     dataset_of = {q["task_id"]: _dataset(q) for q in questions}
     prompt_of = {q["task_id"]: q["prompt"] for q in questions}
@@ -696,6 +759,9 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
             policy_answer = r["answer"]
         rows.append({"task_id": r["task_id"], "freetext": gold is None, "accepted": bool(r.get("accepted"))
                      if result["mode"] == "shadow" else r.get("ledger_model") != frontier,
+                     # Shadow mode: the policy ran on this request and the run was kept.
+                     "shadowed": result["mode"] != "shadow" or (
+                         r.get("accepted") is not None and r.get("skip_reason") != RATE_LIMITED_REASON),
                      # A frontier call with no readable answer is wrong; no frontier call is unknown.
                      "holdout": bool(r.get("holdout")),
                      "frontier_right": None if gold is None or (prompt, frontier) not in answers
@@ -708,15 +774,18 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
     graded = [row for row in rows if not row["freetext"]]
     free = [row for row in rows if row["freetext"]]
     known = [row for row in graded if row["frontier_right"] is not None]
+    shadowed = [row for row in graded if row["shadowed"]]
+    compared = [row for row in known if row["shadowed"]]
     summary = {"mode": result["mode"], "requests": len(rows), "graded": len(graded), "freetext": len(free),
-               "accepted_share_graded": _share(r["accepted"] for r in graded),
+               **({"shadowed_graded": len(shadowed)} if result["mode"] == "shadow" else {}),
+               "accepted_share_graded": _share(r["accepted"] for r in shadowed),
                "freetext_accepted": sum(r["accepted"] for r in free),
                "policy_accuracy": _share(r["policy_right"] for r in graded)}
     if known:
         summary.update(frontier_accuracy=_share(r["frontier_right"] for r in known),
-                       loss_rate=_share(r["frontier_right"] and not r["policy_right"] for r in known),
-                       gain_rate=_share(r["policy_right"] and not r["frontier_right"] for r in known),
-                       compared=len(known))
+                       loss_rate=_share(r["frontier_right"] and not r["policy_right"] for r in compared),
+                       gain_rate=_share(r["policy_right"] and not r["frontier_right"] for r in compared),
+                       compared=len(compared))
     held = [r for r in graded if r["holdout"]]
     if held:
         routed = [r for r in graded if not r["holdout"]]
@@ -734,6 +803,13 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
     if latencies:
         summary.update(caller_latency_p50_s=round(float(np.percentile(latencies, 50)) / 1000, 2),
                        caller_latency_p95_s=round(float(np.percentile(latencies, 95)) / 1000, 2))
+    # Wall-clock time beyond the monotonic clock's: the machine slept, or the process was
+    # stopped, while these requests waited. The proxy's own latency does not include it.
+    gaps = [r["client_seconds_including_shadow"] - r["client_monotonic_seconds"] for r in result["requests"]
+            if r.get("client_monotonic_seconds") is not None]
+    if any(gap > SUSPENDED_SECONDS for gap in gaps):
+        summary.update(suspended_seconds=round(max(gaps), 1),
+                       suspended_requests=sum(gap > SUSPENDED_SECONDS for gap in gaps))
     calls = result["calls"]
     summary["provider_calls"] = len(calls)
     summary["provider_errors"] = sum(c["status"] >= 400 for c in calls)
@@ -779,7 +855,10 @@ def main(argv=None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     pick = commands.add_parser("sample")
     pick.add_argument("--bench-dir", type=Path, required=True, help="extracted bench-release folder")
-    pick.add_argument("--output", type=Path, required=True)
+    pick.add_argument("--output", type=Path, help="folder for the new sets; required unless --compare")
+    pick.add_argument("--compare", type=Path, nargs="+", metavar="SET.jsonl",
+                      help="sample nothing: print the mean recorded benchmark score of these existing sets, "
+                           "the history first, and warn when a later one is easier or harder than it")
     pick.add_argument("--dataset", choices=sorted(name for name in DATASETS if DATASETS[name]["folder"]),
                       help="sample one more benchmark instead of the original MMLU-Pro and free-text sets. "
                            "The tickets sets are not sampled here: scripts/ticket_pilot_prep.py makes them")
@@ -850,8 +929,22 @@ def main(argv=None) -> None:
         print(json.dumps(published, indent=2, default=str))
         return
     if args.command == "sample":
-        print(json.dumps(sample_dataset(args.bench_dir, args.output, args.dataset) if args.dataset
-                         else sample(args.bench_dir, args.output)))
+        if args.compare:
+            paths = args.compare
+        elif args.output is None:
+            parser.error("sample needs --output (or --compare)")
+        else:
+            counts = (sample_dataset(args.bench_dir, args.output, args.dataset) if args.dataset
+                      else sample(args.bench_dir, args.output))
+            print(json.dumps(counts))
+            prefix = f"{args.dataset}-" if args.dataset else ""
+            paths = [args.output / f"{prefix}{name}.jsonl" for name in counts if name != "probe"]
+        scores = recorded_scores(args.bench_dir, {path.stem: [json.loads(line) for line in
+                                                               path.read_text().splitlines() if line]
+                                                  for path in paths})
+        print(json.dumps(scores, indent=2))
+        for line in scores["uneven"]:
+            print(f"Warning: {line}. Figures from these sets are not like for like.", file=sys.stderr)
     elif args.command == "ask":
         import os
 

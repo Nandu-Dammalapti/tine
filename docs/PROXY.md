@@ -14,7 +14,7 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3`. To copy it while the proxy runs, use `python -m tine backup-ledger --output PATH` ([REPORT.md](REPORT.md)): the main file copied alone can lack the newest rows |
 | `TINE_LEDGER_REQUIRED` | `1` or `true` (any case) returns 503 instead of an answer the ledger could not record. Default off |
 | `TINE_OPENAI_BASE_URL` / `TINE_ANTHROPIC_BASE_URL` | Optional API-compatible upstreams; defaults are official HTTPS endpoints. Every model a policy names for that provider is called here (see One base URL per provider) |
-| `TINE_TIMEOUT_SECONDS` | Upstream timeout, default 30 |
+| `TINE_TIMEOUT_SECONDS` | How long a provider may take over one reply, in seconds. Default 600. A reply that takes longer is a 502 with no retry. It was 30 until 2026-11-17: in the live pilots 12 of about 3,600 frontier replies through the proxy took longer than that (up to 53 seconds). Connecting to the provider is given 10 seconds, or this value if it is lower |
 | `TINE_MODEL_PRICES` | Explicit USD-per-million token rates keyed by `provider:model`. Optional, except that shadow sampling needs a price for every stage model and judge model of a shadow policy |
 | `TINE_VERIFIED_CACHE` | `true` by default; cache requires an explicit successful outcome |
 | `TINE_MAX_BODY_BYTES` | Largest request body on the provider routes, in bytes. Default 10485760 (10 MB). Larger gets 413 (see Request limits) |
@@ -531,7 +531,8 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
   reply as it was written, not the rewritten answer.
 - `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
-  `TINE_TIMEOUT_SECONDS`. When it runs out the request goes to the frontier.
+  30 seconds, or `TINE_TIMEOUT_SECONDS` if that is shorter. When it runs out the request goes to the
+  frontier.
 - `TINE_AUDIT_RATE`: the share of requests held out for the frontier, between 0 and 1. Default 0, off
   (see Measuring the saving under live routing).
 

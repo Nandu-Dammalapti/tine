@@ -42,6 +42,18 @@ from .shadow import (
 
 log = logging.getLogger("tine.proxy")
 
+# How long a provider may take over one reply, unless TINE_TIMEOUT_SECONDS says otherwise.
+# Ten minutes, as the providers' own client libraries allow: in the live pilots 12 of about
+# 3,600 frontier replies took longer than the 30 seconds this used to be, and each of
+# those would have been a 502.
+DEFAULT_TIMEOUT_SECONDS = 600.0
+# Reaching the provider at all is given less: an address that does not answer should
+# fail in seconds, not after the time a long reply is allowed.
+CONNECT_TIMEOUT_SECONDS = 10.0
+# What a route policy's cheaper stages may add to one request when no deadline is set.
+# This was the upstream timeout while that was 30 seconds, and stays there.
+DEFAULT_ROUTE_DEADLINE_SECONDS = 30.0
+
 
 def _finite_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -80,7 +92,7 @@ class ProxyConfig:
     openai_base_url: str = "https://api.openai.com"
     anthropic_base_url: str = "https://api.anthropic.com"
     ledger_path: str = "artifacts/ledger.sqlite3"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     allowed_models: dict[str, list[str]] = field(default_factory=dict)
     prices: dict[str, dict[str, float]] = field(default_factory=dict)
     verified_cache: bool = True
@@ -116,7 +128,8 @@ class ProxyConfig:
     # skipped and counted as skipped_rate_cap.
     shadow_max_calls_per_minute: int | None = None
     # How long a route policy's cheaper stages may take together before the request
-    # goes to the frontier. None means timeout_seconds.
+    # goes to the frontier. None means DEFAULT_ROUTE_DEADLINE_SECONDS, or timeout_seconds
+    # if that is shorter.
     route_deadline_seconds: float | None = None
     # When true, a request whose ledger row cannot be written gets a 503 instead of an
     # answer that would go unrecorded.
@@ -159,7 +172,7 @@ class ProxyConfig:
                 "TINE_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
             ),
             ledger_path=os.environ.get("TINE_LEDGER_PATH", "artifacts/ledger.sqlite3"),
-            timeout_seconds=float(os.environ.get("TINE_TIMEOUT_SECONDS", "30")),
+            timeout_seconds=float(os.environ.get("TINE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
             allowed_models=json.loads(os.environ.get("TINE_ALLOWED_MODELS", "{}")),
             prices=json.loads(os.environ.get("TINE_MODEL_PRICES", "{}")),
             verified_cache=os.environ.get("TINE_VERIFIED_CACHE", "true").lower() == "true",
@@ -599,13 +612,14 @@ def create_app(
     config = config or ProxyConfig.from_env()
     config.validate()
     store = ledger if ledger is not None else Ledger(config.ledger_path)
-    upstream = client if client is not None else httpx.AsyncClient(timeout=config.timeout_seconds)
+    timeout = httpx.Timeout(config.timeout_seconds, connect=min(config.timeout_seconds, CONNECT_TIMEOUT_SECONDS))
+    upstream = client if client is not None else httpx.AsyncClient(timeout=timeout)
     # Everything a policy does (cheaper stages, webhooks, judge calls, in shadow mode
     # and in live routing) uses connections of its own. A slow webhook or cheap model
     # can then use up only these, never the ones that carry frontier requests.
     own_side = policy_client is None and client is None
     side = (policy_client if policy_client is not None
-            else client if client is not None else httpx.AsyncClient(timeout=config.timeout_seconds))
+            else client if client is not None else httpx.AsyncClient(timeout=timeout))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -634,7 +648,7 @@ def create_app(
     shadow_running = 0
     shadow_running_by_tenant: dict[str, int] = {}
     route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
-                      else config.timeout_seconds)
+                      else min(config.timeout_seconds, DEFAULT_ROUTE_DEADLINE_SECONDS))
     # One line per loaded policy, so an operator can see which policy runs on which
     # tenant's traffic, of what kind, and how its answers are read.
     for label, policies in (("shadow", config.shadow_policies), ("route", config.route_policies)):

@@ -2,7 +2,36 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+
+def freeze_notes(policy: dict) -> list[str]:
+    """What to read beside a new policy's bound: one line with the held-out loss and
+    the losses seen against the losses allowed, then a warning for each sign that the
+    certificate has no margin. The counts are read from the policy's own figures. A
+    chain that passed has a low count on the certify part by selection; the test part
+    played no role in the choice, so its loss is the one to expect."""
+    from tine.calibration import clopper_pearson_upper
+    from tine.planning import max_failures
+
+    guarantee, estimate = policy["guarantee"], policy["estimate"]
+    if not policy["stages"]:
+        return []
+    epsilon, certify, test = guarantee["epsilon"], guarantee["certify_tasks"], estimate["test_tasks"]
+    seen = round(guarantee["certify_degradation_rate"] * certify)
+    allowed = max_failures(certify, epsilon, guarantee["delta"])
+    lost = round(estimate["degradation_rate"] * test)
+    upper = clopper_pearson_upper(lost, test, 0.05)
+    notes = [f"Held-out test part: {lost} of {test} tasks lost ({lost / test:.2%}, 95% upper bound {upper:.2%}). "
+             f"Certify part: {seen} of {certify} lost, {allowed} allowed at epsilon {epsilon:.2%}."]
+    if lost / test > epsilon:
+        notes.append(f"Warning: the held-out loss ({lost / test:.2%}) is above epsilon ({epsilon:.2%}). "
+                     "Quote the held-out loss beside the bound.")
+    if seen >= allowed:
+        notes.append(f"Warning: the certify part used every loss it was allowed ({seen} of {allowed}). "
+                     "One more loss would not have certified; this certificate has no margin.")
+    return notes
 
 
 def main(argv=None):
@@ -197,6 +226,8 @@ def main(argv=None):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
         print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))
+        for line in freeze_notes(policy):
+            print(line, file=sys.stderr if line.startswith("Warning") else sys.stdout)
         print(f"Policy: {args.output}")
     elif args.command == "combine-outcomes":
         from tine.data import combine_outcomes, read_outcomes, write_outcomes

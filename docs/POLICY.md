@@ -48,6 +48,16 @@ When it differs, the outcomes' tenant is kept in `provenance.outcomes_tenant`. D
 edit `tenant` by hand: it shows as an edit. `freeze-policy` refuses an epsilon of 0
 or 1. Without the new flags the output is unchanged apart from the digest field.
 
+After the JSON the command prints one line to read beside the bound: the losses on
+the held-out test part with their 95% upper bound, and the losses seen on the certify
+part against the number the limit allowed. It warns on stderr when the held-out loss
+is above epsilon, or when the certify part used every loss it was allowed. A chain
+that passed has a low count on the certify part partly by selection, so quote the
+held-out loss with the bound. The first live pilot's 2% policy shows why: it passed
+with 4 losses of 4 allowed, lost 2.5% on its test part and 2.4% on new questions
+(`results/2026-11-17-live-pilot`). The line is printed only; the policy file does not
+store these counts yet.
+
 ### The freeze digest
 
 `provenance.content_sha256` is the SHA-256 of the policy's canonical JSON

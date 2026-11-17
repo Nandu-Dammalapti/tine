@@ -444,3 +444,121 @@ def test_worst_case_counts_text_that_is_not_plain_english_higher():
     messages = build_messages(case, "verdict")
     assert worst_case_cost(case, model="claude-opus-5-5", max_tokens=0) == pytest.approx(
         estimate_input_tokens(messages[0]["content"] + messages[1]["content"]) * 4.0 / 1e6)
+
+
+def test_requests_the_proxy_did_not_shadow_are_not_counted_as_turned_down(tmp_path, monkeypatch):
+    """Haiku refuses its shadow call on the second question with a 429. The proxy leaves
+    that run out and holds shadow mode back, so the last two requests are never
+    shadowed. One request was shadowed and accepted: the share accepted is 1 of 1, not
+    1 of 4, and the loss is over that one request."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "claude-haiku-5-5" and body["messages"][-1]["content"] == "Question 1?":
+            return httpx.Response(429, json={"type": "error", "error": {"type": "rate_limit_error"}})
+        return provider(request)
+    result = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0, concurrency=1,
+                                                  ledger_path=tmp_path / "l.db", inner=httpx.MockTransport(limited)))
+    rows = {row["task_id"]: row for row in result["requests"]}
+    assert all(row["status"] == 200 for row in rows.values()) and rows["q0"]["accepted"] == 1
+    assert rows["q1"]["skip_reason"] == live_pilot.RATE_LIMITED_REASON and rows["q1"]["accepted"] == 0
+    assert "accepted" not in rows["q2"] and "accepted" not in rows["q3"]
+    assert result["shadow_report"]["rate_limited_runs"] == 1 and result["shadow_report"]["skipped_rate_limited"] == 2
+    scored = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")
+    summary = scored["summary"]
+    assert (summary["graded"], summary["shadowed_graded"], summary["compared"]) == (4, 1, 1)
+    assert (summary["accepted_share_graded"], summary["loss_rate"], summary["gain_rate"]) == (1.0, 0.0, 0.0)
+    assert [row["shadowed"] for row in scored["rows"]] == [True, False, False, False]
+    # A loss on a request that was shadowed still counts, and one that was not cannot.
+    wrong = {**result, "calls": [{**call, "answer": "C"} if call["model"] == "claude-haiku-5-5" else call
+                                 for call in result["calls"]]}
+    assert live_pilot.score_proxy(wrong, QUESTIONS, "claude-opus-5-5")["summary"]["loss_rate"] == 1.0
+    # Routed runs have no shadow rows: every request counts, as before. Only the one
+    # request that reached the frontier can be compared with it.
+    routed = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="route", max_cost_usd=1.0,
+                                                  ledger_path=tmp_path / "r.db", inner=httpx.MockTransport(provider)))
+    summary = live_pilot.score_proxy(routed, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert "shadowed_graded" not in summary and (summary["accepted_share_graded"], summary["compared"]) == (0.75, 1)
+
+
+def test_time_the_machine_slept_through_is_reported_beside_the_run(tmp_path, monkeypatch):
+    """The laptop slept for 106 seconds during one paid run: the wall clock moved on and
+    the monotonic clock, which the proxy times requests with, did not."""
+    import time
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    asleep = {"seconds": 0.0}
+    monkeypatch.setattr(live_pilot, "time", SimpleNamespace(
+        time=lambda: time.time() + asleep["seconds"], monotonic=time.monotonic, sleep=time.sleep))
+
+    def sleepy(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "claude-opus-5-5" and body["messages"][-1]["content"] == "Question 2?":
+            asleep["seconds"] += 106.0
+        return provider(request)
+    result = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0, concurrency=1,
+                                                  ledger_path=tmp_path / "l.db", inner=httpx.MockTransport(sleepy)))
+    rows = {row["task_id"]: row for row in result["requests"]}
+    assert rows["q2"]["client_seconds_including_shadow"] >= 106.0 and rows["q2"]["client_monotonic_seconds"] < 5.0
+    assert rows["q2"]["latency_ms"] < 5000  # the ledger's latency does not see the sleep
+    summary = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert summary["suspended_requests"] == 1 and 105.0 <= summary["suspended_seconds"] <= 107.0
+    # No sleep, or a result recorded before the monotonic time was kept: nothing is reported.
+    awake = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0,
+                                                 ledger_path=tmp_path / "a.db", inner=httpx.MockTransport(provider)))
+    assert "suspended_seconds" not in live_pilot.score_proxy(awake, QUESTIONS, "claude-opus-5-5")["summary"]
+    old = {**result, "requests": [{key: value for key, value in row.items() if key != "client_monotonic_seconds"}
+                                  for row in result["requests"]]}
+    assert "suspended_seconds" not in live_pilot.score_proxy(old, QUESTIONS, "claude-opus-5-5")["summary"]
+
+
+def bench_with_scores(tmp_path, monkeypatch, scores_by_model):
+    """A two-set medqa archive: 40 questions, each model's score per question index."""
+    monkeypatch.setitem(live_pilot.DATASETS, "medqa", {**live_pilot.DATASETS["medqa"],
+                                                       "sets": {"calibrate": 20, "shadow": 20}})
+    for model, scores in scores_by_model.items():
+        folder = tmp_path / "bench" / "medqa" / "test" / model
+        folder.mkdir(parents=True)
+        (folder / "run.json").write_text(json.dumps({"records": [
+            {"index": index, "prompt": f"Question {index}?", "ground_truth": "B", "score": scores[index]}
+            for index in range(40)]}))
+    return tmp_path / "bench"
+
+
+def test_sample_prints_how_hard_each_set_is_and_warns_about_an_uneven_draw(tmp_path, monkeypatch, capsys):
+    import random
+
+    order = list(range(40))
+    random.Random(0).shuffle(order)  # the draw sample_dataset makes: the first 20 are the history
+    history = set(order[:20])
+    # Model a solves everything; model b solves the later set and half of the history.
+    half = set(order[:10])
+    bench = bench_with_scores(tmp_path, monkeypatch, {
+        "model-a": [1.0] * 40, "model-b": [0.0 if index in half else 1.0 for index in range(40)]})
+    live_pilot.main(["sample", "--bench-dir", str(bench), "--output", str(tmp_path / "sets"), "--dataset", "medqa"])
+    printed = capsys.readouterr()
+    counts, scores = (json.loads(part) for part in printed.out.replace("}\n{", "}\x00{").split("\x00"))
+    assert counts == {"calibrate": 20, "shadow": 20}
+    drawn = {json.loads(line)["task_id"] for line in (tmp_path / "sets" / "medqa-calibrate.jsonl").read_text().splitlines()}
+    assert drawn == {f"medqa:{index}" for index in history}
+    assert scores["mean_recorded_score"] == {"medqa-calibrate": 0.75, "medqa-shadow": 1.0}
+    assert len(scores["uneven"]) == 1 and "medqa-shadow is 25.0 points easier than medqa-calibrate" in scores["uneven"][0]
+    assert printed.err.startswith("Warning: medqa-shadow is 25.0 points easier") and "not like for like" in printed.err
+    # --compare reads sets that exist, the history first, and samples nothing.
+    live_pilot.main(["sample", "--bench-dir", str(bench), "--compare", str(tmp_path / "sets" / "medqa-shadow.jsonl"),
+                     str(tmp_path / "sets" / "medqa-calibrate.jsonl")])
+    printed = capsys.readouterr()
+    assert "medqa-calibrate is 25.0 points harder than medqa-shadow" in printed.err
+    with pytest.raises(SystemExit) as refused:
+        live_pilot.main(["sample", "--bench-dir", str(bench)])
+    assert refused.value.code == 2 and "--output" in capsys.readouterr().err
+
+
+def test_an_even_draw_and_sets_outside_the_archive_give_no_warning(tmp_path, monkeypatch):
+    bench = bench_with_scores(tmp_path, monkeypatch, {"model-a": [1.0, 0.0] * 20, "model-b": [1.0] * 40})
+    sets = {"history": [{"task_id": f"medqa:{index}", "ground_truth": "B", "dataset": "medqa"} for index in range(20)],
+            "later": [{"task_id": f"medqa:{index}", "ground_truth": "B", "dataset": "medqa"} for index in range(20, 40)],
+            "freetext": FREE, "tickets": [{"task_id": "tickets:1", "ground_truth": "A", "dataset": "tickets"}]}
+    assert live_pilot.recorded_scores(bench, sets) == {"mean_recorded_score": {"history": 0.75, "later": 0.75},
+                                                       "uneven": []}

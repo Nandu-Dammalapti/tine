@@ -623,6 +623,27 @@ def test_a_stalled_stage_gives_way_to_the_frontier_at_the_route_deadline():
             create_app(config(**changes), ledger=Ledger())
 
 
+def test_the_route_deadline_stays_at_30_seconds_when_the_upstream_timeout_is_longer(monkeypatch):
+    """The upstream timeout's default went from 30 seconds to ten minutes. What routing
+    may add to a request did not: without a deadline of its own it is 30 seconds, or
+    the upstream timeout when that is shorter."""
+    import tine.proxy
+
+    deadlines = []
+
+    async def recording(*args, deadline_seconds=None, **options):
+        deadlines.append(deadline_seconds)
+        return await run_stages(*args, deadline_seconds=deadline_seconds, **options)
+    run_stages = tine.proxy.run_stages_async
+    monkeypatch.setattr(tine.proxy, "run_stages_async", recording)
+    answers = {"small-a": "42", "small-b": "42"}
+    for changes in ({}, {"timeout_seconds": 4.0}, {"timeout_seconds": 4.0, "route_deadline_seconds": 12.5},
+                    {"route_deadline_seconds": 90.0}):
+        response, _ = ask(config(route_policies={"a": {"openai": AGREE}}, **changes), world(answers, []))
+        assert response.headers["x-tine-route"] == "stage-0"
+    assert config().timeout_seconds == 600.0 and deadlines == [30.0, 4.0, 12.5, 90.0]
+
+
 def test_the_judge_is_not_asked_about_text_it_would_only_see_part_of():
     """The judge reads at most 12,000 characters of request and 20,000 of answer. Longer
     text would be cut without a word, so the judge is not asked and the answer is rejected.
