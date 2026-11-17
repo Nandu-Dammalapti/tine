@@ -9,6 +9,7 @@ import pytest
 from tine.cascade import run_cascade_experiment
 from tine.checks import read_checks
 from tine.data import read_outcomes
+from tine.policy import canonical_answer
 
 spec = importlib.util.spec_from_file_location(
     "tine_agreement", Path(__file__).parents[1] / "scripts" / "agreement_pairs.py")
@@ -248,6 +249,55 @@ def test_singles_are_offered_unchecked_and_answers_can_come_from_a_csv(tmp_path)
     pd.DataFrame([{"task_id": task_id, "model": model, "answer": answer or ""}
                   for (task_id, model), answer in recorded().items()]).to_csv(path, index=False)
     assert agreement.answers_from_csv(path) == recorded()
+
+
+def test_math_comparison_agrees_by_value_and_the_default_keeps_every_result(tmp_path):
+    """The same answers compared exactly and by value: exact reproduces what this
+    script always did, math also accepts one value written two ways."""
+    written = {"cheap": [r"14.5\%", r"\dfrac{1}{2}", "7", "3", "1,234"],
+               "small": ["14.50", r"\frac{1}{2}", "7", "4", "1234"],
+               "tiny": ["14.5", "0.5", "8", "3", "None"],
+               "big": ["14.5", r"\frac{1}{2}", "7", "3", "1234"]}
+    answers = {(f"quiz:test:{index}", model): agreement.normalize(answer)
+               for model, values in written.items() for index, answer in enumerate(values, 1)}
+    # Graded by value against the frontier, which is right on every task here.
+    frame = pd.DataFrame([
+        {"tenant": "t", "task_id": f"quiz:test:{index}", "prompt": f"Question {index}?", "task_type": "quiz",
+         "model": model, "success": canonical_answer(answer, "math") == canonical_answer(written["big"][index - 1],
+                                                                                         "math"),
+         "cost_usd": COSTS[model], "input_tokens": 10, "output_tokens": 5}
+        for model, values in written.items() for index, answer in enumerate(values, 1)])
+    exact_frame, exact_checks, exact = agreement.build_pairs(frame, answers, "big")
+    default_frame, default_checks, _ = agreement.build_pairs(frame, answers, "big", answer_compare="exact")
+    assert exact["answer_compare"] == "exact" and exact_checks == default_checks
+    assert exact_frame.equals(default_frame)
+    passed = {(row["task_id"], row["model"]): row["passed"] for row in exact_checks}
+    assert [passed[(f"quiz:test:{n}", "cheap+small")] for n in range(1, 6)] == [False, False, True, False, False]
+    _, math_checks, by_value = agreement.build_pairs(frame, answers, "big", answer_compare="math")
+    passed = {(row["task_id"], row["model"]): row["passed"] for row in math_checks}
+    assert [passed[(f"quiz:test:{n}", "cheap+small")] for n in range(1, 6)] == [True, True, True, False, True]
+    # A fraction and a decimal are not read as one value; a missing answer never agrees.
+    assert passed[("quiz:test:2", "cheap+tiny")] is False and passed[("quiz:test:5", "small+tiny")] is False
+    assert by_value["answer_compare"] == "math" and by_value["agreement_rate"]["cheap+small"] == 0.8
+    with pytest.raises(ValueError, match="answer_compare"):
+        agreement.build_pairs(frame, answers, "big", answer_compare="numeric")
+    # The command line takes the same choice.
+    source, csv_answers = tmp_path / "outcomes.jsonl", tmp_path / "answers.csv"
+    frame.to_json(source, orient="records", lines=True)
+    pd.DataFrame([{"task_id": task_id, "model": model, "answer": answer or ""}
+                  for (task_id, model), answer in answers.items()]).to_csv(csv_answers, index=False)
+    common = ["--input", str(source), "--answers", str(csv_answers), "--frontier", "big"]
+    for mode, expected in (("exact", 1), ("math", 4)):
+        checks = tmp_path / f"{mode}.csv"
+        agreement.main([*common, "--output", str(tmp_path / f"{mode}.jsonl"), "--checks", str(checks),
+                        "--answer-compare", mode])
+        rows = pd.read_csv(checks)
+        assert rows[rows.model == "cheap+small"].passed.sum() == expected
+    agreement.main([*common, "--output", str(tmp_path / "default.jsonl"), "--checks", str(tmp_path / "default.csv")])
+    assert (tmp_path / "default.csv").read_text() == (tmp_path / "exact.csv").read_text()
+    with pytest.raises(SystemExit):
+        agreement.main([*common, "--output", str(tmp_path / "bad.jsonl"), "--checks", str(tmp_path / "bad.csv"),
+                        "--answer-compare", "numeric"])
 
 
 def test_grade_conflicts_can_be_counted_as_wrong_instead_of_refused():

@@ -301,6 +301,11 @@ traffic, without changing anything the tenant sees. It is off unless configured.
   To compare whole replies on purpose, set the pattern `(?s).+`. A shadow policy with agreement stages
   and no reader still starts, but logs a WARNING and `GET /v1/shadow` shows it: whole reply texts are
   then compared, and free text almost never agrees.
+- A policy's `answer_compare` says how two answers are compared once they are read: `exact` (the
+  default, also when the field is absent) or `math`, by value after dropping LaTeX notation such as
+  `\%` and `\dfrac` ([POLICY.md](POLICY.md), Comparing answers). It is used both for agreement
+  between cheaper models and for comparing an accepted answer with the frontier's (`matches_frontier`
+  and the drift check). There is no environment setting for it: it is part of what was frozen.
 
 **One tenant token per task type.** The proxy does not read `task_type`: every request on a tenant's
 token, for that provider, goes through the tenant's one policy. With one token for mixed traffic, a
@@ -312,7 +317,7 @@ the policy was not certified on.
 
 At startup the proxy logs one INFO line (logger `tine.proxy`) per loaded shadow and route policy:
 tenant, provider, `task_type`, number of cheaper stages, the answer reader and where it comes from,
-and the state of the freeze digest ([POLICY.md](POLICY.md)). A WARNING line is logged for a policy
+how answers are compared (`answers compared exact` or `math`), and the state of the freeze digest ([POLICY.md](POLICY.md)). A WARNING line is logged for a policy
 with agreement stages and no reader, and for a file edited after freezing. `tine serve` attaches an
 INFO handler to the `tine` logger only (format `LEVEL:     name: message`).
 
@@ -335,8 +340,9 @@ tenant: `on`, or `stopped` with the reason.
 More fields of `GET /v1/shadow`:
 
 - `policies`: provider to `{task_type, cheaper_stages, answer_reader: {answer_pattern, source},
-  freeze_digest, warning?}`. `source` is `policy file`, `TINE_ANSWER_PATTERN`, or `none: whole reply
-  texts are compared`. It is `{}` for a tenant without a shadow policy.
+  answer_compare, freeze_digest, warning?}`. `source` is `policy file`, `TINE_ANSWER_PATTERN`, or
+  `none: whole reply texts are compared`. `answer_compare` is `exact` or `math`. It is `{}` for a
+  tenant without a shadow policy.
 - `sent_to_frontier_for_tools`: sampled requests that defined tools and went to the frontier untried
   (see Routing through a policy). They are counted inside `shadowed_requests`.
 - `check_step_rejections`: check name to step type to the number of times a step of that type turned
@@ -471,7 +477,9 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
   agreement stage and no reader at all: "route_policies: tenant '<t>''s <provider> policy has agreement
   stages but no answer reader, so whole reply texts would be compared. Freeze it with 'tine
   freeze-policy --answer-pattern REGEX', or set TINE_ANSWER_PATTERN". Policies with only named checks,
-  or with `none`, need no reader.
+  or with `none`, need no reader. Agreement compares the answers it reads as the policy's
+  `answer_compare` says, as in shadow mode. With `math` the caller is served the first cheaper model's
+  reply as it was written, not the rewritten answer.
 - `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
   `TINE_TIMEOUT_SECONDS`. When it runs out the request goes to the frontier.

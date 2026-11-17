@@ -85,6 +85,10 @@ def main(argv=None):
     freeze.add_argument("--answer-pattern", metavar="REGEX",
                         help="How the proxy reads a comparable answer from a reply for agreement stages: the last "
                              "match, its first group if it has one. Must read what the recorded answers held")
+    freeze.add_argument("--answer-compare", choices=("exact", "math"),
+                        help="How agreement compares two answers: exact text (the default, not written), or math, "
+                             "by value after dropping LaTeX notation (docs/POLICY.md). Must be the comparison the "
+                             "checks were measured with (scripts/agreement_pairs.py --answer-compare)")
     freeze.add_argument("--output", required=True, type=Path, help="Policy JSON")
     combine = commands.add_parser("combine-outcomes", help="Pool outcome files into one calibration group")
     combine.add_argument("--input", type=Path, nargs="+", required=True)
@@ -182,7 +186,7 @@ def main(argv=None):
                                max_length=args.max_length, fractions=tuple(args.fractions),
                                shortlist=args.shortlist,
                                single_check=args.single_check, tenant=args.tenant,
-                               answer_pattern=args.answer_pattern)
+                               answer_pattern=args.answer_pattern, answer_compare=args.answer_compare)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
         print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))

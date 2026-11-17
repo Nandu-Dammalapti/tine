@@ -314,6 +314,33 @@ def test_a_shadow_policy_without_a_reader_runs_but_says_so(caplog):
     assert report.json()["policies"] == {}
 
 
+BOXED = r"\\boxed\{(.+)\}"
+
+
+@pytest.mark.parametrize("mode", ["exact", "math"])
+def test_shadow_agreement_and_the_frontier_comparison_use_the_policys_answer_comparison(mode, caplog):
+    """FinQA-style replies: the same value written three ways. Exact comparison sees
+    three answers; math comparison sees one."""
+    caplog.set_level(logging.INFO, logger="tine.proxy")
+    policy = {**POLICY, "answer_pattern": BOXED, **({"answer_compare": mode} if mode == "math" else {})}
+    replies = {"frontier": r"So \boxed{14.5}", "small-a": r"The answer is \boxed{14.5\%}", "small-b": r"\boxed{14.50}"}
+    _, report, _ = ask(config(shadow_policies={"a": {"openai": policy}}), serve(replies, []))
+    body = report.json()
+    assert body["policies"]["openai"]["answer_compare"] == mode
+    assert any(f"answers compared {mode}" in record.getMessage() for record in caplog.records)
+    if mode == "exact":
+        assert body["policy_would_accept"] == 0 and body["accepted_compared_with_frontier"] == 0
+    else:
+        assert body["policy_would_accept"] == 1 and body["accepted_matching_frontier"] == 1
+    # By value, an accepted answer that is a different number still differs from the frontier's.
+    replies = {**replies, "frontier": r"\boxed{15}"}
+    _, report, _ = ask(config(shadow_policies={"a": {"openai": policy}}), serve(replies, []))
+    if mode == "math":
+        body = report.json()
+        assert body["policy_would_accept"] == 1 and body["accepted_compared_with_frontier"] == 1
+        assert body["accepted_matching_frontier"] == 0
+
+
 def test_a_policy_edited_after_freezing_still_loads_and_is_marked(caplog):
     frozen = {**POLICY, "answer_pattern": r"(\w)", "provenance": {"seed": 42}}
     frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)
