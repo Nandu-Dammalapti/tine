@@ -156,6 +156,11 @@ Do not treat this as a production service.
 - **The ledger fails open by default.** When a row cannot be written the answer is still served, marked
   `x-tine-ledger: unavailable`. Set `TINE_LEDGER_REQUIRED=1` (or `true`) to return 503 instead, so no
   answer goes out unrecorded. It is commented out in `deploy/tine.env.example` under "Ledger".
+- **Request limits are basic.** A body over `TINE_MAX_BODY_BYTES` (default 10 MB) gets 413.
+  `TINE_DENIED_FIELDS` and `TINE_ANTHROPIC_BETA_ALLOWLIST` are off until set, and refuse listed request
+  fields and unlisted `anthropic-beta` values with 400. Nothing refused is stored in the ledger. There
+  is no rate limit. Tested with stand-ins only; see Request limits in PROXY.md. They are commented out
+  in `deploy/tine.env.example` under "Request limits".
 - **No metrics or structured logs.** Only `/health` and the container's log output.
 - **Never run on real traffic.** Shadow mode, routing through a policy and named checks have been
   tested with stand-in providers and recorded answers only. See PROXY.md for the limits of each.

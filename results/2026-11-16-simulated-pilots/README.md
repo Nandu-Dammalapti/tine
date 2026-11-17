@@ -148,10 +148,11 @@ Teams are named H (Helpwise), P (Patchwork), N (Northbridge), Q (Quill) and B (B
 | 12 | Fixed: `baseline_source`; only proxy-measured baselines count as verified; caller-supplied ones are reported apart and cannot overwrite a measured one. |
 | 13 | Fixed: `/health` checks the stages, load errors name the variable and path, and DEPLOY.md has "Turn routing off". Policies are still read only at startup. |
 | 14 | Fixed for `TINE_LEDGER_REQUIRED`, `policy_sha256`, `route_stage` and `outcome_events`. No HTTP endpoint for the history. |
-| 15 | Not started. |
+| 15 | Partly fixed: opt-in `TINE_DENIED_FIELDS` (per provider, top-level fields refused with 400) and `TINE_ANTHROPIC_BETA_ALLOWLIST`; PROXY.md says an egress firewall cannot block tools the provider runs. Field overrides and denied tool types are not built, and shadow mode still repeats tool calls. Tested with stand-ins only. |
 | 16 | Fixed: the judged stage is skipped before the cheap call, with reason `request_too_long` in shadow runs; the request shape is documented. The reason is not stored under live routing. |
 | 17 | Not started (tool requests skip agreement policies only). |
-| 18 to 20 | Not started. |
+| 18 and 19 | Not started. |
+| 20 | Partly fixed: `TINE_MAX_BODY_BYTES` (default 10 MB) refuses a larger body with 413 before anything is sent or stored. Retention and erasure are not built or documented. Tested with stand-ins only. |
 | 21 | Documented: JUDGE.md says the recommended check is not certified; PROXY.md and JUDGE.md state the webhook contract. |
 | 22 | Fixed in EVIDENCE.md, README.md and results/README.md. |
 | 23 | Open. The demo pages are local files that git ignores and were not regenerated; the checked-in replay JSON still predates the recount. |

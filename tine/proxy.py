@@ -120,6 +120,13 @@ class ProxyConfig:
     # every row a route policy ran for. None for a configuration built in code: the
     # proxy then hashes the policies' canonical JSON.
     route_policies_sha256: str | None = None
+    # Request limits, checked before anything is sent upstream or stored. A body over
+    # max_body_bytes gets 413. denied_fields (provider -> top-level field names) and
+    # anthropic_beta_allowlist (None: forward any anthropic-beta value) are opt-in and
+    # get 400.
+    max_body_bytes: int = 10_485_760
+    denied_fields: dict[str, list[str]] = field(default_factory=dict)
+    anthropic_beta_allowlist: list[str] | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -130,6 +137,7 @@ class ProxyConfig:
         shadow_policies, _ = _json_file("TINE_SHADOW_POLICIES")
         # Hashed from the same bytes that are parsed, so the digest is of what runs.
         route_policies, route_bytes = _json_file("TINE_ROUTE_POLICIES")
+        betas = os.environ.get("TINE_ANTHROPIC_BETA_ALLOWLIST")
         return cls(
             tenant_keys=json.loads(os.environ.get("TINE_TENANT_KEYS", "{}")),
             openai_api_key=os.environ.get("TINE_OPENAI_API_KEY", ""),
@@ -163,6 +171,10 @@ class ProxyConfig:
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
             ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
+            max_body_bytes=int(os.environ.get("TINE_MAX_BODY_BYTES", "10485760")),
+            denied_fields=json.loads(os.environ.get("TINE_DENIED_FIELDS", "{}")),
+            anthropic_beta_allowlist=([value.strip() for value in betas.split(",") if value.strip()]
+                                      if betas else None),
         )
 
     def checks_for(self, tenant: str) -> dict[str, list]:
@@ -189,6 +201,20 @@ class ProxyConfig:
             for provider, models in self.allowed_models.items()
         ):
             raise ValueError("TINE_ALLOWED_MODELS must map provider names to lists of nonempty model names")
+        if isinstance(self.max_body_bytes, bool) or not isinstance(self.max_body_bytes, int) or self.max_body_bytes < 1:
+            raise ValueError("TINE_MAX_BODY_BYTES must be a whole number of at least 1")
+        if not isinstance(self.denied_fields, dict) or any(
+            provider not in {"openai", "anthropic"}
+            or not isinstance(names, list)
+            or any(not isinstance(name, str) or not name for name in names)
+            for provider, names in self.denied_fields.items()
+        ):
+            raise ValueError("TINE_DENIED_FIELDS must map provider names to lists of nonempty field names")
+        if self.anthropic_beta_allowlist is not None and (
+                not isinstance(self.anthropic_beta_allowlist, list)
+                or any(not isinstance(value, str) or not value or value != value.strip() or "," in value
+                       for value in self.anthropic_beta_allowlist)):
+            raise ValueError("TINE_ANTHROPIC_BETA_ALLOWLIST must be a list of nonempty anthropic-beta values")
         for base in (self.openai_base_url, self.anthropic_base_url):
             try:
                 if not isinstance(base, str):
@@ -677,13 +703,34 @@ def create_app(
         except Exception:
             count_safely(identity, "failed")
 
+    async def read_body(request: Request) -> bytes:
+        # Refused by its declared length when it has one, and otherwise as soon as more
+        # than the limit has arrived, so an oversized body is never held in memory whole.
+        limit = config.max_body_bytes
+        too_large = HTTPException(status_code=413, detail=f"Request body is larger than {limit} bytes")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise too_large
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                raise too_large
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     async def forward(request: Request, provider: str, identity: str):
+        raw = await read_body(request)
         try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError):
+            body = json.loads(raw)
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise HTTPException(status_code=400, detail="Request must be JSON") from None
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise HTTPException(status_code=400, detail="A messages array is required")
+        denied = sorted(set(body) & set(config.denied_fields.get(provider, [])))
+        if denied:
+            raise HTTPException(status_code=400,
+                                detail=f"This proxy does not accept the request field(s): {', '.join(denied)}")
         try:
             json.dumps(body, allow_nan=False, ensure_ascii=False).encode("utf-8")
         except UnicodeEncodeError:
@@ -719,6 +766,13 @@ def create_app(
                 headers.get("anthropic-beta", "").encode("ascii")
             except UnicodeEncodeError:
                 raise HTTPException(status_code=400, detail="Provider protocol headers must contain ASCII text") from None
+            if config.anthropic_beta_allowlist is not None and "anthropic-beta" in headers:
+                refused = sorted({value.strip() for value in headers["anthropic-beta"].split(",") if value.strip()}
+                                 - set(config.anthropic_beta_allowlist))
+                if refused:
+                    raise HTTPException(status_code=400,
+                                        detail=f"This proxy does not forward the anthropic-beta value(s): "
+                                               f"{', '.join(refused)}")
             path = "/v1/messages"
         url = _upstream_url(getattr(config, f"{provider}_base_url"), path)
         # Only non-secret settings that affect request semantics enter the key.

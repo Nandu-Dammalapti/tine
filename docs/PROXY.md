@@ -17,6 +17,9 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_TIMEOUT_SECONDS` | Upstream timeout, default 30 |
 | `TINE_MODEL_PRICES` | Explicit USD-per-million token rates keyed by `provider:model`. Optional, except that shadow sampling needs a price for every stage model and judge model of a shadow policy |
 | `TINE_VERIFIED_CACHE` | `true` by default; cache requires an explicit successful outcome |
+| `TINE_MAX_BODY_BYTES` | Largest request body on the provider routes, in bytes. Default 10485760 (10 MB). Larger gets 413 (see Request limits) |
+| `TINE_DENIED_FIELDS` | Optional JSON object of provider names and arrays of top-level request fields refused with 400. Unset: none |
+| `TINE_ANTHROPIC_BETA_ALLOWLIST` | Optional comma-separated `anthropic-beta` values that may be forwarded; others get 400. Unset or empty: all forwarded |
 
 Never commit credentials or paste provider keys into notebook cells. The app refuses startup without configured tenant keys. Clients use their **proxy tenant token**, not the provider key, in `Authorization: Bearer ...`; Anthropic clients can use `x-api-key` for that proxy token. Outbound requests use the server's provider credential. A caller-supplied tenant header cannot select a tenant.
 
@@ -126,6 +129,34 @@ shadow mode or an estimate, never a measurement, and no fee should rest on it.
   streamed requests (the stream is closed before any byte is relayed). The 502 for an unreachable
   upstream is unchanged, since no answer is served. Shadow runs do not start for a request that got a
   503.
+
+### Request limits
+
+Three limits apply to `POST /v1/chat/completions` and `POST /v1/messages`. Each is checked after the
+tenant token and before the verified cache, a policy, shadow mode or any provider call.
+
+- `TINE_MAX_BODY_BYTES` is on by default at 10485760 bytes (10 MB). A body with a larger
+  `Content-Length` gets 413 before it is read. A body without one is read until it passes the limit,
+  then refused with 413. A body of exactly the limit is accepted. Set a whole number of at least 1.
+  The limit does not cover `PATCH /v1/outcomes/{request_id}`, whose body is a few fixed fields.
+- `TINE_DENIED_FIELDS` is off unless set. It is a JSON object like `TINE_ALLOWED_MODELS`, for example
+  `{"openai": ["store"], "anthropic": ["mcp_servers", "container"]}`. A request that has a listed
+  top-level field gets 400 naming the field, whatever its value, so `"store": false` is refused too.
+  Only top-level keys are checked. A field listed for one provider is still forwarded to the other.
+  An unknown provider, a string in place of an array or an empty name stops startup. Tools that the
+  provider runs on its own side, such as `mcp_servers`, reach their targets from the provider's
+  network, so an egress firewall around the proxy cannot block them. Deny the field here instead.
+- `TINE_ANTHROPIC_BETA_ALLOWLIST` is off unless set. It is a comma-separated list of `anthropic-beta`
+  values. The request's header is split on commas and trimmed, and if any value is not on the list the
+  request gets 400 naming the refused values. A request without the header is unaffected. Unset or
+  empty forwards every value, as before. It applies to `/v1/messages` only.
+
+What is stored for a refused request: nothing. The 413 and 400 are returned before a ledger row,
+cache entry or shadow count is written, and the response has no `x-tine-request-id`. The refusal
+appears only in the server's access log, as the line uvicorn writes for every request (client address,
+method, path, status). The body and headers are not logged.
+
+These limits were built and tested with stand-in providers. No real customer has used them.
 
 ### One base URL per provider
 
