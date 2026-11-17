@@ -876,3 +876,130 @@ def test_a_caller_cannot_replace_the_costs_the_proxy_recorded_beside_a_measured_
     assert [response.status_code for response in refused] == [409, 409]
     assert all("recorded" in response.json()["detail"] for response in refused)
     assert after["verified_savings_usd"] == 0.0 and row["cost_usd"] == pytest.approx(0.2)
+
+
+def run_many(app_config, handler, bodies, *, patch=None):
+    """Send several requests through one proxy; return each response with its ledger
+    row, the savings report, and the reply to an optional outcome PATCH of the first."""
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            ledger = Ledger()
+            app = create_app(app_config, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+                replies = [await client.post("/v1/chat/completions", headers=headers, json=body) for body in bodies]
+                rows = [ledger.get("a", reply.headers["x-tine-request-id"]) for reply in replies]
+                patched = (await client.patch(f"/v1/outcomes/{rows[0]['request_id']}", headers=headers, json=patch)
+                           if patch is not None else None)
+                savings = (await client.get("/v1/savings", headers=headers)).json()
+                return replies, rows, savings, patched
+    return asyncio.run(scenario())
+
+
+QUESTION = {"model": "frontier", "messages": [{"role": "user", "content": "q"}]}
+AGREEING = {"small-a": "42", "small-b": "42", "frontier": "42"}
+
+
+def test_without_an_audit_rate_no_request_is_held_out_or_marked():
+    response, row = ask(config(route_policies={"a": {"openai": AGREE}}), world(AGREEING, []))
+    assert response.headers["x-tine-route"] == "stage-0" and row["holdout"] is None
+    _, _, savings, _ = run_many(config(route_policies={"a": {"openai": AGREE}}), world(AGREEING, []), [QUESTION])
+    assert savings["holdout_estimate"] is None
+
+
+def test_a_held_out_request_skips_the_policy_and_is_served_and_measured_by_the_frontier():
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": AGREE}}, audit_rate=1.0), world(AGREEING, seen))
+    assert seen == ["frontier"] and response.json() == chat("42")
+    assert response.headers["x-tine-route"] == "holdout" and response.headers["x-tine-model"] == "frontier"
+    assert row["holdout"] == 1 and row["model"] == "frontier"
+    assert row["cost_usd"] == pytest.approx(0.2) and row["routing_cost_usd"] == 0.0
+    assert row["baseline_cost_usd"] == pytest.approx(0.2) and row["baseline_source"] == "proxy_measured"
+    # It names the policy it was held out from; no stage ran, so it has none.
+    assert len(row["policy_sha256"]) == 64 and row["route_stage"] is None and row["route_skip_reason"] is None
+    # A request with tools is held out like any other, so both groups see the same traffic.
+    tools = {**QUESTION, "tools": [{"type": "function", "function": {"name": "lookup"}}]}
+    _, row = ask(config(route_policies={"a": {"openai": AGREE}}, audit_rate=1.0), world(AGREEING, []), body=tools)
+    assert row["holdout"] == 1 and row["route_skip_reason"] is None
+
+
+def test_every_request_the_policy_could_serve_is_in_one_group_chosen_from_its_request_id():
+    from tine.shadow import sampled
+
+    tools = {**QUESTION, "tools": [{"type": "function", "function": {"name": "lookup"}}]}
+    replies, rows, savings, _ = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=0.5),
+                                         world(AGREEING, []), [QUESTION] * 40 + [tools] * 4)
+    for reply, row in zip(replies, rows):
+        held = sampled(f"holdout:{row['request_id']}", 0.5)
+        assert row["holdout"] == int(held)
+        assert reply.headers["x-tine-route"] == ("holdout" if held else
+                                                 "frontier" if row["route_skip_reason"] else "stage-0")
+    held = sum(row["holdout"] for row in rows)
+    assert 0 < held < len(rows)
+    estimate = savings["holdout_estimate"]
+    assert estimate["holdout_requests"] == held and estimate["routed_requests"] == len(rows) - held
+    # Requests the policy could not serve are in neither group.
+    _, rows, _, _ = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=1.0,
+                                    allowed_models={"openai": ["small-a"]}),
+                             world(AGREEING, []), [{**QUESTION, "stream": True}, {**QUESTION, "model": "small-a"}])
+    assert [row["holdout"] for row in rows] == [None, None]
+
+
+def test_the_holdout_estimate_reaches_the_savings_endpoint_with_its_interval(monkeypatch):
+    """Thirty requests held out and thirty routed, half of each easy (the cheap models
+    agree: $0.002 answer and $0.004 routing) and half hard (they disagree and the
+    frontier answers: $0.20 plus $0.006 routing). A held-out request costs $0.20."""
+    from tine.shadow import sampled
+
+    held, routed = [], []
+    for number in range(1000):
+        name = f"request-{number}"
+        (held if sampled(f"holdout:{name}", 0.5) else routed).append(name)
+    ids = iter(held[:30] + routed[:30])
+    monkeypatch.setattr("tine.proxy.uuid.uuid4", lambda: next(ids))
+
+    def handler(request):
+        sent = json.loads(request.content)
+        hard = sent["messages"][0]["content"] == "hard"
+        return httpx.Response(200, json=chat("41" if hard and sent["model"] == "small-a" else "42"))
+    bodies = [{**QUESTION, "messages": [{"role": "user", "content": "hard" if number % 2 else "easy"}]}
+              for number in range(60)]
+    replies, rows, savings, _ = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=0.5), handler,
+                                         bodies)
+    assert [row["holdout"] for row in rows] == [1] * 30 + [0] * 30
+    assert {reply.headers["x-tine-route"] for reply in replies[30:]} == {"stage-0", "frontier"}
+    estimate = savings["holdout_estimate"]
+    assert estimate["holdout_requests"] == 30 == estimate["routed_requests"]
+    assert estimate["routed_mean_cost_usd"] == pytest.approx(0.106)
+    assert estimate["holdout_mean_cost_usd"] == pytest.approx(0.2)
+    assert estimate["saving_fraction"] == pytest.approx(0.47)
+    # Held-out costs do not vary, so the half-width is 1.96 * sd(routed) / sqrt(30) / $0.20.
+    half = 1.959964 * (0.01 * 30 / 29 / 30) ** 0.5 / 0.2
+    assert estimate["saving_fraction_low"] == pytest.approx(0.47 - half, abs=1e-6)
+    assert estimate["saving_fraction_high"] == pytest.approx(0.47 + half, abs=1e-6)
+    assert savings["savings_scope"].endswith("holdout_estimate compares the two groups")
+
+
+
+def test_the_caller_cannot_set_the_costs_of_a_request_in_the_holdout_comparison():
+    for rate in (1.0, 1e-12):
+        _, _, _, patched = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=rate),
+                                    world(AGREEING, []), [QUESTION], patch={"success": True, "cost_usd": 0.0})
+        assert patched.status_code == 409 and "holdout" in patched.json()["detail"]
+        _, _, _, patched = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=rate),
+                                    world(AGREEING, []), [QUESTION], patch={"success": True})
+        assert patched.status_code == 200
+
+
+@pytest.mark.parametrize("rate", [-0.1, 1.5, float("nan"), True])
+def test_the_audit_rate_must_be_a_share(rate):
+    with pytest.raises(ValueError, match="audit_rate"):
+        create_app(config(audit_rate=rate), ledger=Ledger())
+
+
+def test_the_audit_rate_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    monkeypatch.delenv("TINE_AUDIT_RATE", raising=False)
+    assert ProxyConfig.from_env().audit_rate == 0.0
+    monkeypatch.setenv("TINE_AUDIT_RATE", "0.05")
+    assert ProxyConfig.from_env().audit_rate == 0.05

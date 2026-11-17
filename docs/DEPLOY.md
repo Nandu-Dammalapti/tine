@@ -253,9 +253,13 @@ New ledger rows then have no `route_stage`. When you change the file instead of 
 `policy_sha256` on new rows changes with it, so the ledger shows which file served each request.
 
 Routing (`TINE_ROUTE_POLICIES`) changes what callers receive. Leave it unset until the shadow report
-and PROXY.md have been read. Under live routing the saving cannot be measured: that needs a random
-share of requests always sent to the frontier, which is not built (PROXY.md, Measuring the saving
-under live routing). A tenant's provider can have a shadow policy or a route policy, not both.
+and PROXY.md have been read. Under live routing the saving is measured only with a frontier holdout:
+`TINE_AUDIT_RATE` (default 0, off) sends that share of the requests a policy could serve to the
+frontier, and `GET /v1/savings` then compares the two groups' mean cost per request, with a 95%
+interval, in `holdout_estimate` (PROXY.md, Measuring the saving under live routing). It is an estimate
+from a random sample, it does not measure quality, and held-out requests cost the frontier's price.
+Built and tested with stand-ins only. A tenant's provider can have a shadow policy or a route policy,
+not both.
 `TINE_ROUTE_DEADLINE_SECONDS` is how long a route policy's cheaper stages may take together for one
 request before it goes to the frontier. It defaults to `TINE_TIMEOUT_SECONDS`. Raise it to cover the
 test run when a stage's check runs tests.

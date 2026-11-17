@@ -16,7 +16,10 @@ A saving measured against the frontier model's measured cost is never mixed with
 whose baseline was estimated: the ledger reports them apart and so does the page. Under
 live routing the frontier's cost is measured only for requests that escalated to it,
 so when confirmed successes are left out of the measured saving the headline says so
-and points to the estimated and projected figures, each labelled as what it is.
+and points to the estimated and projected figures, each labelled as what it is. When
+the ledger holds a frontier holdout estimate with a figure, that is the measured saving
+under routing: it leads the headline with its interval, and the other figures follow
+it, still apart.
 
 Four rules it holds to:
 
@@ -180,6 +183,46 @@ def _saving_clause(saving: Any, fraction: Any, *, word: str, against: str) -> st
     return f"{article} {word} of {_money_with_share(amount, fraction)}"
 
 
+def _holdout(ledger: dict | None) -> dict | None:
+    """The ledger's frontier holdout estimate, or None when the report has none."""
+    estimate = _get(ledger, "holdout_estimate")
+    return estimate if isinstance(estimate, dict) else None
+
+
+def _interval(estimate: dict) -> str:
+    """The interval on the holdout saving. Both ends are rounded down."""
+    low, high = _number(estimate.get("saving_fraction_low")), _number(estimate.get("saving_fraction_high"))
+    if low is None or high is None:
+        return NOT_KNOWN
+    return f"{percent(low, rounding='down')} to {percent(high, rounding='down')}"
+
+
+def _confidence(estimate: dict) -> str:
+    confidence = _number(estimate.get("confidence"))
+    return "the" if confidence is None else percent(confidence, digits=0)
+
+
+def _holdout_sentence(ledger: dict | None) -> str | None:
+    """The holdout saving as a sentence with its interval, or None when the report has
+    no holdout figure (no holdout, or too few requests in a group)."""
+    estimate = _holdout(ledger)
+    saving = _number(_get(estimate, "saving_fraction"))
+    if saving is None:
+        return None
+    routed, held = _whole(estimate.get("routed_requests")), _whole(estimate.get("holdout_requests"))
+    interval = f"{_confidence(estimate)} interval for the saving: {_interval(estimate)}"
+    if saving > 0:
+        result = (f"routed requests cost {percent(saving, rounding='down')} less per request than requests held out "
+                  f"for the frontier model ({interval})")
+    elif saving < 0:
+        result = (f"routed requests cost {percent(-saving, rounding='up')} more per request than requests held out "
+                  f"for the frontier model, so there is no saving ({interval})")
+    else:
+        result = f"routed requests cost the same per request as requests held out for the frontier model ({interval})"
+    return (f"Measured under routing, from a random frontier holdout: {result}, on {_plural(routed, 'routed request')} "
+            f"and {count(held)} held out. It is an estimate from a random sample, and it does not measure quality.")
+
+
 def _estimated(ledger: dict | None) -> int | None:
     """Confirmed successes whose baseline was estimated, not measured."""
     return _whole(_get(ledger, "estimated_baseline_requests"))
@@ -288,7 +331,11 @@ def _live_headline(ledger: dict, shadow: dict | None) -> list[str]:
         lead = (f"The measured saving covers only {count(comparable)} of "
                 f"{_plural(successes, 'confirmed successful request')}, those whose frontier cost was measured.")
         measured = f"On them, {costs}"
-        if _estimated(ledger):
+        if _holdout_sentence(ledger):
+            why = ("Under live routing the frontier model's cost is measured only for requests that escalated to "
+                   "it or were held out, so this figure leaves out the requests cheaper models answered and is not "
+                   "the policy's saving; the holdout figure above is the measured saving under routing.")
+        elif _estimated(ledger):
             why = ("Under live routing the frontier model's cost is measured only for requests that escalated to "
                    "it, so this figure leaves out the requests cheaper models answered and is not the policy's "
                    "saving.")
@@ -335,8 +382,10 @@ def headline_sentences(ledger_report: dict | None, shadow_report: dict | None) -
     """The headline as plain-text sentences. The first is the page's title line; the
     rest qualify it and are shown directly beneath it.
 
-    Measured routing comes before a shadow projection, because a projection is the
-    weaker claim, and both come before a saving on estimated baselines. When the
+    A frontier holdout estimate with a figure leads: it is the measured saving under
+    routing, from a random sample. Measured routing comes before a shadow projection,
+    because a projection is the weaker claim, and both come before a saving on
+    estimated baselines. When the
     measured saving leaves out confirmed successes, the sentences say so and point to
     the estimated and projected figures. When neither report has anything to stand
     on, the sentence says so instead of showing a zero.
@@ -349,6 +398,16 @@ def headline_sentences(ledger_report: dict | None, shadow_report: dict | None) -
 
 
 def _headline_figures(ledger_report: dict | None, shadow_report: dict | None) -> list[str]:
+    holdout = _holdout_sentence(ledger_report)
+    if holdout and not _live(ledger_report) and not _shadow_has_data(shadow_report):
+        # The other figures would only say that no saving can be stated yet.
+        estimated = _estimated_sentence(ledger_report)
+        return [holdout, *([estimated] if estimated else [])]
+    figures = _other_figures(ledger_report, shadow_report)
+    return [holdout, *figures] if holdout else figures
+
+
+def _other_figures(ledger_report: dict | None, shadow_report: dict | None) -> list[str]:
     coverage = _coverage_sentence(shadow_report)
     if _live(ledger_report):
         sentences = _live_headline(ledger_report, shadow_report)
@@ -547,6 +606,40 @@ def _estimated_saving(ledger: dict) -> str:
     return f"{money(saving)} (estimated, not measured)"
 
 
+def _holdout_table(ledger: dict) -> str:
+    """The frontier holdout comparison, or nothing when the report has none."""
+    estimate = _holdout(ledger)
+    if estimate is None:
+        return ""
+    least = _whole(estimate.get("min_requests_per_group"))
+    saving = _number(estimate.get("saving_fraction"))
+    if saving is None:
+        least_text = "a minimum number of" if least is None else f"{least:,}"
+        shown = f"not shown until each group has {least_text} requests with known costs"
+    elif saving < 0:
+        shown = f"{percent(saving, rounding='down')}: routing cost more"
+    else:
+        shown = percent(saving, rounding="down")
+    pairs = [
+        ("Routed requests with known costs", count(estimate.get("routed_requests"))),
+        ("Held-out requests with known costs", count(estimate.get("holdout_requests"))),
+        ("Left out because a cost is not known, routed", count(estimate.get("routed_unknown_cost_requests"))),
+        ("Left out because a cost is not known, held out", count(estimate.get("holdout_unknown_cost_requests"))),
+        ("Mean cost per routed request, answer and routing", money(estimate.get("routed_mean_cost_usd"))),
+        ("Mean cost per held-out request, the frontier model", money(estimate.get("holdout_mean_cost_usd"))),
+        ("Saving per request, measured from the holdout", shown),
+        (f"{_confidence(estimate).capitalize()} interval for the saving",
+         _interval(estimate) if saving is not None else NOT_KNOWN),
+    ]
+    method = estimate.get("method")
+    how = (f"<p class=\"small\">How the interval is worked out: {_esc(method)}.</p>"
+           if isinstance(method, str) and method.strip() else "")
+    return ("<p>A random share of the requests the policy could have served skipped it and went to the frontier "
+            "model. Comparing their mean cost with that of the routed requests measures the saving of routing. "
+            "It is an estimate from a random sample, and it says nothing about quality.</p>"
+            f"{_rows(pairs, 'Measured under routing: random frontier holdout')}{how}")
+
+
 def _ledger_section(ledger: dict | None) -> str:
     if not isinstance(ledger, dict) or not _ledger_has_requests(ledger):
         return ""
@@ -610,6 +703,7 @@ def _ledger_section(ledger: dict | None) -> str:
             "successful, whose answer and routing costs are known, and whose baseline, the frontier model's cost, "
             "was measured.</p>"
             f"{''.join(notes)}{_rows(requests, 'Requests')}"
+            f"{_holdout_table(ledger)}"
             f"{_rows(measured, 'Measured against the frontier model')}"
             f"{_rows(estimated, unmeasured)}"
             "<p class=\"small\">An estimated baseline is the returned answer's token counts at the frontier model's "
@@ -750,6 +844,13 @@ def _caveats(ledger: dict | None, shadow: dict | None, policy: dict | None) -> l
             "does not verify them. The caller cannot replace a baseline the proxy measured, or a cost it recorded "
             "on such a request.",
         ]
+        if _holdout(ledger) is not None:
+            items.append(
+                "<strong>The holdout saving is an estimate from a random sample.</strong> It compares the mean cost "
+                "per request of routed requests with that of requests held out for the frontier model, so it assumes "
+                "the two groups are alike; choosing them at random is what makes them so. Its interval is a normal "
+                "approximation. It does not measure quality: whether the routed answers were as good as the frontier "
+                "model's is not part of it.")
         if "estimated_baseline_requests" not in ledger:
             items.append(
                 "<strong>This ledger report does not say how many baselines were estimated.</strong> It may come "
@@ -775,6 +876,7 @@ def _scope_notes(ledger: dict | None, shadow: dict | None, policy: dict | None) 
     sources = [("Shadow report", _get(shadow, "scope")), ("Ledger", _get(ledger, "scope")),
                ("Ledger costs", _get(ledger, "cost_scope")), ("Ledger savings", _get(ledger, "savings_scope")),
                ("Ledger estimated baselines", _get(ledger, "estimated_baseline_scope")),
+               ("Ledger holdout estimate", _get(_holdout(ledger), "scope")),
                ("Policy estimate", _get(estimate, "scope"))]
     return [(label, text) for label, text in sources if isinstance(text, str) and text.strip()]
 
