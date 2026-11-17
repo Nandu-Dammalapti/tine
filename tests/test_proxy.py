@@ -43,6 +43,16 @@ def run(coroutine):
     ({"openai_base_url": "https://example.com:invalid"}, "base URLs"),
     ({"openai_base_url": "https://example.com:99999"}, "base URLs"),
     ({"openai_base_url": None}, "base URLs"),
+    ({"max_body_bytes": 0}, "TINE_MAX_BODY_BYTES"),
+    ({"max_body_bytes": True}, "TINE_MAX_BODY_BYTES"),
+    ({"max_body_bytes": 1.5}, "TINE_MAX_BODY_BYTES"),
+    ({"denied_fields": ["store"]}, "TINE_DENIED_FIELDS"),
+    ({"denied_fields": {"openai": "store"}}, "TINE_DENIED_FIELDS"),
+    ({"denied_fields": {"openai": [""]}}, "TINE_DENIED_FIELDS"),
+    ({"denied_fields": {"gemini": ["store"]}}, "TINE_DENIED_FIELDS"),
+    ({"anthropic_beta_allowlist": "a,b"}, "TINE_ANTHROPIC_BETA_ALLOWLIST"),
+    ({"anthropic_beta_allowlist": [""]}, "TINE_ANTHROPIC_BETA_ALLOWLIST"),
+    ({"anthropic_beta_allowlist": ["a,b"]}, "TINE_ANTHROPIC_BETA_ALLOWLIST"),
 ])
 def test_invalid_configuration_fails_before_opening_ledger(changes, field, monkeypatch):
     def unexpected_ledger(*args, **kwargs):
@@ -803,3 +813,132 @@ def test_invalid_protocol_header_returns_client_error(header):
                                              headers=[(b"x-api-key", b"tenant-token-a"), (header, b"\xff")])
                 assert response.status_code == 400
     run(scenario())
+
+
+def ledger_rows(ledger):
+    return ledger._db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+
+
+def test_request_limits_are_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    for name in ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES",
+                 "TINE_MAX_BODY_BYTES", "TINE_DENIED_FIELDS", "TINE_ANTHROPIC_BETA_ALLOWLIST"):
+        monkeypatch.delenv(name, raising=False)
+    default = ProxyConfig.from_env()
+    assert default.max_body_bytes == 10_485_760
+    assert default.denied_fields == {} and default.anthropic_beta_allowlist is None
+    monkeypatch.setenv("TINE_MAX_BODY_BYTES", "2048")
+    monkeypatch.setenv("TINE_DENIED_FIELDS", '{"openai": ["store"], "anthropic": ["mcp_servers", "container"]}')
+    monkeypatch.setenv("TINE_ANTHROPIC_BETA_ALLOWLIST", " beta-a , beta-b,")
+    loaded = ProxyConfig.from_env()
+    loaded.validate()
+    assert loaded.max_body_bytes == 2048
+    assert loaded.denied_fields == {"openai": ["store"], "anthropic": ["mcp_servers", "container"]}
+    assert loaded.anthropic_beta_allowlist == ["beta-a", "beta-b"]
+    monkeypatch.setenv("TINE_ANTHROPIC_BETA_ALLOWLIST", "")
+    assert ProxyConfig.from_env().anthropic_beta_allowlist is None
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_an_oversized_body_gets_413_before_the_provider_or_the_ledger(chunked):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json={"choices": []})
+
+    def payload(size):
+        body = json.dumps({"messages": [{"role": "user", "content": ""}]}).encode()
+        return body.replace(b'""', b'"' + b"x" * (size - len(body)) + b'"')
+
+    async def chunks(data):
+        for start in range(0, len(data), 100):
+            yield data[start:start + 100]
+
+    async def scenario():
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(max_body_bytes=1000), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                for size, status in ((1001, 413), (1000, 200)):
+                    data = payload(size)
+                    assert len(data) == size
+                    response = await client.post(
+                        "/v1/chat/completions", content=chunks(data) if chunked else data,
+                        headers={"authorization": "Bearer tenant-token-a", "content-type": "application/json"},
+                    )
+                    assert response.status_code == status
+                    if status == 413:
+                        assert "1000 bytes" in response.json()["detail"]
+                        assert not calls and ledger_rows(ledger) == 0
+        assert len(calls) == 1 and ledger_rows(ledger) == 1
+
+    run(scenario())
+
+
+def test_denied_fields_get_400_per_provider_and_are_not_recorded():
+    calls = []
+
+    def provider(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [], "content": []})
+
+    async def scenario():
+        ledger = Ledger()
+        cfg = config(denied_fields={"openai": ["store"], "anthropic": ["mcp_servers", "container"]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(cfg, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                openai = {"authorization": "Bearer tenant-token-a"}
+                anthropic = {"x-api-key": "tenant-token-a"}
+                for path, body, headers in (
+                    ("/v1/chat/completions", {"messages": [], "store": False}, openai),
+                    ("/v1/messages", {"messages": [], "mcp_servers": []}, anthropic),
+                    ("/v1/messages", {"messages": [], "container": "c", "mcp_servers": [{}]}, anthropic),
+                ):
+                    response = await client.post(path, json=body, headers=headers)
+                    assert response.status_code == 400
+                    assert all(name in response.json()["detail"] for name in body if name != "messages")
+                assert not calls and ledger_rows(ledger) == 0
+                # A field denied for one provider is still forwarded to the other.
+                response = await client.post("/v1/messages", json={"messages": [], "store": True}, headers=anthropic)
+                assert response.status_code == 200
+                response = await client.post("/v1/chat/completions", json={"messages": [], "container": "c"},
+                                             headers=openai)
+                assert response.status_code == 200
+        assert [body.get("store", body.get("container")) for body in calls] == [True, "c"]
+        assert ledger_rows(ledger) == 2
+
+    run(scenario())
+
+
+def test_anthropic_beta_allowlist_refuses_other_values_and_unset_forwards_all():
+    seen = []
+
+    def provider(request):
+        seen.append(request.headers.get("anthropic-beta"))
+        return httpx.Response(200, json={"content": []})
+
+    async def scenario(allowlist, values):
+        ledger = Ledger()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(anthropic_beta_allowlist=allowlist), ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                statuses = []
+                for value in values:
+                    headers = {"x-api-key": "tenant-token-a"}
+                    if value is not None:
+                        headers["anthropic-beta"] = value
+                    response = await client.post("/v1/messages", json={"messages": []}, headers=headers)
+                    statuses.append(response.status_code)
+                    if response.status_code == 400:
+                        assert "beta-c" in response.json()["detail"]
+                        assert "beta-a" not in response.json()["detail"]
+                return statuses, ledger_rows(ledger)
+
+    values = [None, "beta-a", "beta-a, beta-b", "beta-a,beta-c", "beta-c"]
+    assert run(scenario(["beta-a", "beta-b"], values)) == ([200, 200, 200, 400, 400], 3)
+    assert seen == [None, "beta-a", "beta-a, beta-b"]
+    seen.clear()
+    assert run(scenario(None, values)) == ([200] * 5, 5)
+    assert seen == values
