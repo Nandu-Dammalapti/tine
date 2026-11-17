@@ -1,11 +1,15 @@
 # Tine development proxy.
-# NOT YET BUILT BY A DOCKER DAEMON, and not every step below has been run.
+# NOT YET BUILT BY A DOCKER DAEMON IN THIS FORM. An earlier version, without the
+# lock-file constraints, was built and run once on 2026-11-17 (docs/DEPLOY.md). Not
+# every step below has been run.
 # Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes
 # requirements.txt, a pip dry-run resolve of its lines for Linux (nothing was
 # installed), the image's command (on 127.0.0.1, not 0.0.0.0), the health check
 # command, requests and a stop.
-# Not run: the base image, the pip install itself, the two COPY steps, the
-# user-creation step (groupadd, useradd, chown, chmod), USER and VOLUME.
+# Not run in their present form: the COPY that now brings requirements-dev.lock, and
+# the pip install with that lock as constraints. The base image, the COPY of tine/, the
+# user-creation step (groupadd, useradd, chown, chmod), USER and VOLUME are unchanged
+# from the image that was built once.
 # docs/DEPLOY.md, "Checked without Docker", says what that covers and what it does not.
 #
 # The base image is pinned by tag. For a real deployment pin it by digest as well

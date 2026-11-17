@@ -2,7 +2,7 @@
 
 The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_SHADOW_MAX_CALLS_PER_MINUTE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
 
-To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). No Docker daemon has built or run the image yet, and not every step of its Dockerfile has been run. Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop. Not run: the base image, the `pip install` itself, the two `COPY` steps, the user-creation step (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME`.
+To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). No Docker daemon has built or run the image from the files as they now stand; an earlier Dockerfile was built once on 2026-11-17 and its container served 40 paid requests. Not every step of the Dockerfile as it is now has been run. Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop. Not run in their present form: the `COPY` that now brings `requirements-dev.lock`, and the `pip install` with that lock as constraints. The base image, the `COPY` of `tine/`, the user-creation step (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME` are unchanged from the image that was built once.
 
 Use the activated Python environment from the README. Configure these variables through your shell's secure configuration or environment settings:
 
@@ -32,8 +32,8 @@ python -m tine serve --host 127.0.0.1 --port 8000
 A configuration the proxy refuses ends the command with one line, `tine serve: the configuration was
 refused.` and the reason, and exit status 1. A variable whose value cannot be read is named in it, for
 example `TINE_MODEL_PRICES is not valid JSON (...)` or `TINE_TIMEOUT_SECONDS must be a number, with no
-unit or other text`; the value itself is never printed. A numeric or JSON variable set to nothing
-means its default.
+unit or other text`; the value itself is never printed. A number, a JSON value or a switch set to
+nothing means its default. An empty `TINE_LEDGER_PATH` or base URL is refused.
 
 On SIGTERM or Ctrl-C the proxy lets requests in flight finish for 20 seconds, then cuts what is still
 open, streams included, and closes the ledger. `--shutdown-seconds N` changes the 20. Measured with a

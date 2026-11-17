@@ -652,11 +652,11 @@ def test_docker_compose_reads_the_env_example_as_these_tests_do(tmp_path):
 
 def test_deploy_doc_states_what_was_not_done():
     text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
-    # No daemon had built the image when this was written. This sentence, the same claim at
-    # the top of the Dockerfile and both compose files, and docs/PROXY.md change together
-    # when someone has built it.
-    assert "No Docker daemon has built or run the image yet" in text
-    assert "NOT YET BUILT BY A DOCKER DAEMON" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    # No daemon had built these files as they stand when this was written. This sentence, the
+    # same claim at the top of the Dockerfile and both compose files, and docs/PROXY.md change
+    # together when someone has built them.
+    assert "No Docker daemon has built or run these files as they now stand" in text
+    assert "NOT YET BUILT BY A DOCKER DAEMON IN THIS FORM" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
     for name in ("docker-compose.yml", "docker-compose.selftest.yml"):
         assert "BY A DOCKER DAEMON" in (ROOT / name).read_text(encoding="utf-8"), name
     assert "This script has not been run against a real Docker daemon" in text
@@ -665,13 +665,55 @@ def test_deploy_doc_states_what_was_not_done():
         assert name in text, name
 
 
-# Which Dockerfile steps were run by hand outside Docker, and which were not. The three
-# files that say it use these words. Both sentences go when a daemon has built the image.
+# The files that speak of the image. An image of the Dockerfile as it was before the
+# lock-file constraints was built once, on 2026-11-17, and its container served 40 paid
+# requests; the files as they now stand have not been built.
+IMAGE_STATE_FILES = ("docs/DEPLOY.md", "docs/PROXY.md", "docs/REPORT.md", "docs/ARCHITECTURE_STATUS.md", "README.md",
+                     "AGENTS.md", "results/README.md", "Dockerfile", "docker-compose.yml")
+
+
+def test_no_file_says_both_that_the_image_was_never_built_and_that_it_was_run():
+    """One merge left DEPLOY.md saying that no daemon had built or run the image, and, on
+    the same page, that a backup was taken "in the first locally built image". Each
+    statement now says which image it is about: the earlier one, or these files."""
+    for name in IMAGE_STATE_FILES:
+        words = plain_words((ROOT / name).read_text(encoding="utf-8"))
+        for claim in (r"image has (?:never|not) been built or run", r"built or run the image yet",
+                      r"has never been built or run", r"locally built image", r"earlier build of the image",
+                      r"BY A DOCKER DAEMON(?! IN THIS FORM)"):
+            assert not re.search(claim, words), (name, claim)
+        assert re.search(r"earlier (?:Dockerfile|version|image)", words), name
+    deploy = plain_words((ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8"))
+    assert "built the image once, on 2026-11-17" in deploy and "served 40 paid requests" in deploy
+    assert "Not checked on the files as they are now, by anything:" in deploy
+    # The one change to the build since that image: the lock file as constraints.
+    install = [arguments for name, arguments in dockerfile_instructions() if name == "RUN" and "pip install" in arguments]
+    assert len(install) == 1 and "-c /app/requirements-dev.lock" in install[0]
+
+
+def test_deploy_doc_does_not_say_routing_was_tested_with_stand_ins_only():
+    """Shadow mode, routing through agreement policies and the holdout have run with real
+    models on benchmark questions (results/2026-11-17-live-pilot-more), once in a
+    container. The named checks have not."""
+    text = plain_words((ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8"))
+    assert "Never run on real traffic" not in text and "Built and tested with stand-ins only" not in text
+    start = text.index("Never run on a customer's traffic.")
+    claim = text[start:start + 500]
+    assert "results/2026-11-17-live-pilot-more" in claim
+    assert "Named checks (a tests webhook, a judge call) have been tested with stand-ins only" in claim
+    assert ("run with real models on 40 benchmark questions (results/2026-11-17-live-pilot-more); never on a "
+            "customer's traffic") in text
+
+
+# Which Dockerfile steps were run by hand outside Docker, and which have not been run as
+# they now are. The three files that say it use these words. Both sentences go when a
+# daemon has built the image from the files as they stand.
 RUN_BY_HAND = ("Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes requirements.txt, "
                "a pip dry-run resolve of its lines for Linux (nothing was installed), the image's command "
                "(on 127.0.0.1, not 0.0.0.0), the health check command, requests and a stop.")
-NOT_RUN = ("Not run: the base image, the pip install itself, the two COPY steps, the user-creation step "
-           "(groupadd, useradd, chown, chmod), USER and VOLUME.")
+NOT_RUN = ("Not run in their present form: the COPY that now brings requirements-dev.lock, and the pip install "
+           "with that lock as constraints. The base image, the COPY of tine/, the user-creation step "
+           "(groupadd, useradd, chown, chmod), USER and VOLUME are unchanged from the image that was built once.")
 
 
 def plain_words(text: str) -> str:
@@ -683,13 +725,14 @@ def plain_words(text: str) -> str:
 def test_the_steps_run_by_hand_are_stated_the_same_everywhere(name):
     """These files once said that each step of the Dockerfile was run by hand. The
     dependency step was a dry run, and the COPY, user, USER and VOLUME steps need a
-    daemon: nothing ran them."""
+    daemon. One built them once, before the first COPY and the install took the lock
+    file: nothing has run those two as they are now."""
     words = plain_words((ROOT / name).read_text(encoding="utf-8"))
     assert RUN_BY_HAND in words and NOT_RUN in words
     assert words.index(RUN_BY_HAND) < words.index(NOT_RUN)
     for claim in (r"each step[^.]*\brun by hand", r"its steps were run by hand", r"every step[^.]*\bwas run\b"):
         assert not re.search(claim, words, flags=re.IGNORECASE), claim
-    assert re.search(r"not every step [^.]* has been run", words)
+    assert re.search(r"[Nn]ot every step [^.]* has been run", words)
 
 
 def test_the_steps_named_as_not_run_are_the_dockerfiles():
@@ -762,8 +805,9 @@ def test_deploy_doc_gives_the_local_test_in_order():
     # Requests through the container are paid, and the page says so where it shows the command.
     paid = section.index("--yes-paid")
     assert "paid calls" in section[paid:paid + 400].lower()
-    # The image was not built when this was written. The sentence goes when someone has built it.
-    assert "has still not been built" in section
+    # The image of these files was not built when this was written. The sentence goes when
+    # someone has built it.
+    assert "the image these files describe has still not been built" in " ".join(section.split())
     # The ledger copy holds prompts: it is written where git ignores it.
     assert "docker compose cp tine:/data/ledger-copy.sqlite3 artifacts/" in section
     assert "/artifacts/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()

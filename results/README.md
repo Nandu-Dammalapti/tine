@@ -164,8 +164,9 @@ Whether either becomes the default is still a team decision.
 - The shared importer refuses the `hle` dataset because five records have negative
   token counts. `scripts/agreement_datasets.py` works around it by leaving those
   tasks out of a copy.
-- The container image (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`) has
-  never been built or run.
+- The container image (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`) was built
+  and run once from an earlier Dockerfile (40 paid requests through a route policy,
+  2026-11-17). The files as they are now have not been built.
 - The savings report page (`docs/REPORT.md`) has been checked in a desktop browser
   only (2026-11-16, the two example pages), not in a mail client or on a phone.
 - The proxy does not read answers the way a policy's agreement check was certified.

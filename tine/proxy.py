@@ -257,6 +257,11 @@ class ProxyConfig:
             raise ValueError("Configure nonempty TINE_TENANT_KEYS before starting the proxy")
         if not _finite_number(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        # sqlite3 opens "" as a temporary database that is kept nowhere: the proxy would
+        # start, answer /health and lose every row when it stops.
+        if not str(self.ledger_path).strip():
+            raise ValueError("TINE_LEDGER_PATH is empty: give the ledger file's path, or remove the line for the "
+                             "default")
         if not isinstance(self.verified_cache, bool):
             raise ValueError("verified_cache must be a boolean")
         if not isinstance(self.allowed_models, dict) or any(

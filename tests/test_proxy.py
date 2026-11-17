@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import pytest
@@ -1087,6 +1088,28 @@ def test_an_empty_setting_means_its_default(monkeypatch):
     monkeypatch.setenv("TINE_TENANT_KEYS", "")
     with pytest.raises(ValueError, match="Configure nonempty TINE_TENANT_KEYS"):
         ProxyConfig.from_env().validate()
+
+
+@pytest.mark.parametrize("variable,message", [
+    ("TINE_LEDGER_PATH", "^TINE_LEDGER_PATH is empty"),
+    ("TINE_OPENAI_BASE_URL", "Provider base URLs must be HTTP"),
+    ("TINE_ANTHROPIC_BASE_URL", "Provider base URLs must be HTTP"),
+])
+def test_an_empty_ledger_path_or_base_url_stops_the_start(monkeypatch, variable, message):
+    """deploy/tine.env.example once said that any line left as "NAME=" means the default.
+    An empty ledger path was accepted, and sqlite3 opens "" as a temporary database kept
+    nowhere: the proxy started, /health said ok and every row was lost at the stop."""
+    for name in POLICY_FILES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    ProxyConfig.from_env().validate()
+    for value in ("", " "):
+        monkeypatch.setenv(variable, value)
+        with pytest.raises(ValueError, match=message):
+            ProxyConfig.from_env().validate()
+    example = (Path(__file__).resolve().parents[1] / "deploy" / "tine.env.example").read_text(encoding="utf-8")
+    assert 'A line left as "NAME=" means the default' not in example
+    assert "Never leave a base URL or TINE_LEDGER_PATH" in " ".join(example.replace("#", "").split())
 
 
 @pytest.mark.parametrize("value,expected", [("1", True), ("true", True), ("TRUE", True), (" true ", True),

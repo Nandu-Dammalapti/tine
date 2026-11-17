@@ -1,19 +1,29 @@
 # Deploying the proxy in a container
 
-**No Docker daemon has built or run the image yet.** The `Dockerfile` and `docker-compose.yml` were
-written on a machine without Docker, and not every step of the Dockerfile has been run.
+**No Docker daemon has built or run these files as they now stand.** A daemon built the image once, on
+2026-11-17, from the `Dockerfile` as it was before the changes described here, which installed the
+dependencies without the lock file. A container of that image served 40 paid requests through a route
+policy (it has no write-up of its own; `results/2026-11-17-concurrency-and-long-shadow` notes it as the
+container test), and `python -m tine backup-ledger` was later run in the same image
+([REPORT.md](REPORT.md), Getting the ledger out of a running container). The `Dockerfile` and
+`docker-compose.yml` were changed afterwards on a machine whose daemon was not running, and not every
+step of the Dockerfile as it is now has been run.
 
 - Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a
   `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on
   `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop.
-- Not run: the base image, the `pip install` itself, the two `COPY` steps, the user-creation step
-  (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME`.
+- Not run in their present form: the `COPY` that now brings `requirements-dev.lock`, and the
+  `pip install` with that lock as constraints. The base image, the `COPY` of `tine/`, the user-creation
+  step (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME` are unchanged from the image that
+  was built once.
 
 The image's command was run from a read-only copy of the package against a stand-in provider.
 `docker compose config`, which needs no daemon, accepted the compose files.
-[Checked without Docker](#checked-without-docker) lists what that covered. It does not cover the build
-itself, Linux, the non-root user, the read-only root filesystem or the ledger volume. Expect to fix
-something on the first real build, and treat every `docker` command below as untested.
+[Checked without Docker](#checked-without-docker) lists what that covered. It does not cover a build
+of the files as they are now, the install against the lock on Linux, or the ledger volume under the
+compose file as it is now. Expect to fix something on the first build of these files. Of the `docker`
+commands on this page, only `docker exec` and `docker cp` have been run, in the earlier image and not
+in their `docker compose` forms: treat every `docker` command below as untested.
 
 The quickest first run needs no key and costs nothing: `python3 scripts/container_selftest.py` builds
 the image and tests a running container against a stand-in provider. See
@@ -351,7 +361,8 @@ What has been run and what has not, as of 2026-11-17:
 - `docker compose config`, which needs no daemon, read that env file to the same values as the
   script's own check (Docker Compose v5.7.0).
 - The savings page at the end was made from a ledger that run wrote.
-- No `docker` command below was run: not `build`, `up`, `ps`, `logs`, `exec`, `cp` or `down`. The image
+- No `docker` command below was run on these files: not `build`, `up`, `ps`, `logs`, `exec`, `cp` or
+  `down`. An earlier Dockerfile was built once (top of this page); the image these files describe
   has still not been built.
 
 Run [Check the image with one command](#check-the-image-with-one-command) first. It finds a build or
@@ -516,7 +527,8 @@ Do not paste `docker compose config` output anywhere: it prints the provider key
 
 The image holds only the `tine` package, not `scripts/`. So the page is made on the Mac, from a copy of
 the container's ledger. Do not copy `/data/ledger.sqlite3` itself: the ledger is in write-ahead mode,
-and that file, copied out alone from a container of an earlier build of the image, had no tables
+and that file, copied out alone from the container of the earlier image (top of this page), had no
+tables
 ([REPORT.md](REPORT.md)). The copy is taken with `python -m tine backup-ledger`, which is safe while
 the proxy runs (see Back up the ledger):
 
@@ -563,7 +575,7 @@ tenant whose policy to take from it:
   copy when you are done, and check that its mode is 600.
 - `backup-ledger` and `savings_report.py` with the container's policies file were run here outside
   Docker, on a ledger a running proxy had open. The `docker compose exec` and `docker compose cp`
-  around them were not run. [REPORT.md](REPORT.md) says what was run in the first locally built image,
+  around them were not run. [REPORT.md](REPORT.md) says what was run in the earlier image,
   and explains the page.
 
 ### 7. Stop and remove
@@ -662,8 +674,11 @@ Do not treat this as a production service.
   is no rate limit. Tested with stand-ins only; see Request limits in PROXY.md. They are commented out
   in `deploy/tine.env.example` under "Request limits".
 - **No metrics or structured logs.** Only `/health` and the container's log output.
-- **Never run on real traffic.** Shadow mode, routing through a policy and named checks have been
-  tested with stand-in providers and recorded answers only. See PROXY.md for the limits of each.
+- **Never run on a customer's traffic.** Shadow mode and routing through agreement policies have run
+  with real Claude models on public benchmark questions (`results/2026-11-17-live-pilot`,
+  `results/2026-11-17-live-pilot-more`), once in a container of the earlier image (40 paid requests,
+  routing and the holdout on). Named checks (a tests webhook, a judge call) have been tested with
+  stand-ins only. See PROXY.md for the limits of each.
 - **Streaming requests are passed through** to the frontier (or to a model you allowed by name in
   `TINE_ALLOWED_MODELS`) and are never shadowed or routed by a policy. Their answer cost is recorded
   from the usage the stream carries; OpenAI streams carry it only when the caller sends
@@ -780,8 +795,9 @@ interval, in `holdout_estimate` (PROXY.md, Measuring the saving under live routi
 from a random sample, it does not measure quality, and held-out requests cost the frontier's price.
 While some routed requests have a routing cost that is not known (a cheaper model failing, a webhook,
 the route deadline), the figure is only an upper limit on the saving.
-Built and tested with stand-ins only. A tenant's provider can have a shadow policy or a route policy,
-not both.
+Tested with stand-in providers, and run with real models on 40 benchmark questions
+(`results/2026-11-17-live-pilot-more`); never on a customer's traffic. A tenant's provider can have a
+shadow policy or a route policy, not both.
 `TINE_ROUTE_DEADLINE_SECONDS` is how long a route policy's cheaper stages may take together for one
 request before it goes to the frontier. Default: 30 seconds, or `TINE_TIMEOUT_SECONDS` if that is
 shorter. Raise it to cover the test run when a stage's check runs tests.
@@ -790,8 +806,8 @@ shorter. Raise it to cover the test run when a stage's check runs tests.
 
 The ledger is `/data/ledger.sqlite3` on the `tine-ledger` volume. It uses SQLite's write-ahead log, so
 recent writes can sit in `ledger.sqlite3-wal`. Copying only the main file from a running container
-gives an incomplete or broken backup: taken from a container of an earlier build of the image, such a
-copy had no tables at all.
+gives an incomplete or broken backup: taken from the container of the earlier image (top of this
+page), such a copy had no tables at all.
 Use the package's backup command, which is safe while the proxy runs:
 
 ```bash
@@ -805,7 +821,7 @@ online backup, and writes one file with mode 600 and no `-wal` or `-shm` beside 
 counts of the copy. It refuses to replace an existing file without `--force`. Write the copy to
 `/data`: `/tmp` is a tmpfs, and `docker cp` cannot read a file from one. Check the mode of the copy on
 the host as well. [REPORT.md](REPORT.md), Getting the ledger out of a running container, has the
-details and what was run: `docker exec` and `docker cp` in the first locally built image, beside a
+details and what was run: `docker exec` and `docker cp` in the earlier image, beside a
 stand-in writer. The `docker compose` forms above were not run.
 
 Or stop the container and copy the whole volume:
@@ -966,10 +982,14 @@ Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its da
   policy that names `judge:x`, `tests` or `tests+judge:x` it exited with status 1 and named the check,
   as it did with the development environment's Python.
 
-Not checked by anything: that the base image pulls, that the image builds, that the packages install
-and import on the base image, that the two `COPY` steps and the user-creation step (`groupadd`,
-`useradd`, `chown`, `chmod`) run, that the container starts as uid 10001 under a read-only root
-filesystem, that the health check passes in a container and when `healthy` first shows, that volume
+Not checked on the files as they are now, by anything: that the base image pulls, that the image
+builds, that the packages install and import on the base image, that the two `COPY` steps and the
+user-creation step (`groupadd`, `useradd`, `chown`, `chmod`) run, that the container starts as uid
+10001 under a read-only root filesystem, that the health check passes in a container and when `healthy` first shows, that volume
 ownership works as described, what `docker compose up -d` does after a file-only edit, the exit code
 Docker reports after a stop, whether macOS asks Docker Desktop for access to this folder on the first
 bind mount, and every `docker` command on this page that needs the daemon.
+
+The earlier image did pull the base image, build, start and serve 40 requests on 2026-11-17, and it ran
+as uid 10001 under a read-only root filesystem for the backup test in [REPORT.md](REPORT.md). None of
+that was repeated after the lock-file and host-port changes.

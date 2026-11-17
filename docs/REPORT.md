@@ -4,7 +4,7 @@
 
 ## Getting the ledger out of a running container
 
-The ledger is a SQLite file in WAL mode. While the proxy runs, the newest rows are in `ledger.sqlite3-wal`, beside the main file. A copy of `/data/ledger.sqlite3` alone can lack rows. On the first real container run it had no tables at all.
+The ledger is a SQLite file in WAL mode. While the proxy runs, the newest rows are in `ledger.sqlite3-wal`, beside the main file. A copy of `/data/ledger.sqlite3` alone can lack rows. On the first real container run (an image of the earlier Dockerfile, [DEPLOY.md](DEPLOY.md)) it had no tables at all.
 
 Make the copy with the package's own command, then copy that one file out:
 
@@ -31,7 +31,7 @@ python scripts/savings_report.py --ledger ./ledger-copy.sqlite3 --tenant TENANT 
 - The copy stays on the volume until you remove it (the third line above) or replace it with `--force`, and the volume needs room for it. It holds prompts and responses: protect it like the ledger, on the host too.
 - Given the main file copied alone, `scripts/savings_report.py` stops with "it has no requests table" and names this command.
 
-Status: on 2026-11-17 the command was run in the locally built image with this code mounted over the image's copy, under the compose file's restrictions (read-only root, `/tmp` as tmpfs, uid 10001, no capabilities) and with no network. A stand-in process kept the ledger open and wrote to it; the proxy itself was not running. `docker exec` and `docker cp` were used: the `docker compose` forms above were not run. The backup to `/data` copied out complete, the plain copy of the main file had no tables, and `docker cp` from `/tmp` failed as said above. It was also run outside Docker on a copy of the first container run's ledger (40 requests). No customer has used it.
+Status: on 2026-11-17 the command was run in the image built from the earlier Dockerfile, with this code mounted over the image's copy, under the compose file's restrictions (read-only root, `/tmp` as tmpfs, uid 10001, no capabilities) and with no network. A stand-in process kept the ledger open and wrote to it; the proxy itself was not running. `docker exec` and `docker cp` were used: the `docker compose` forms above were not run. The backup to `/data` copied out complete, the plain copy of the main file had no tables, and `docker cp` from `/tmp` failed as said above. It was also run outside Docker on a copy of the first container run's ledger (40 requests). No customer has used it.
 
 ## Usage
 
