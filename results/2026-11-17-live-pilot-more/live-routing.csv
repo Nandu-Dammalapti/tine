@@ -1,0 +1,5 @@
+benchmark,routed,held_out,routed_accuracy,held_out_accuracy,routed_cheaper_share,routed_mean_cost_usd,held_out_mean_cost_usd,holdout_saving,holdout_saving_low,holdout_saving_high,latency_p50_s,latency_p95_s,spent_usd
+medqa,105,45,0.9714,0.9778,0.9429,0.005592,0.012801,0.5631,0.4878,0.6384,4.43,9.16,1.1632
+arcc,104,46,0.9327,1.0,1.0,0.000148,0.005449,0.9729,0.9697,0.9761,1.75,3.53,0.266
+finqa,96,37,0.7604,0.7568,0.625,0.009318,0.011403,0.1829,0.0495,0.3162,2.31,7.5,1.3164
+math500,56,14,0.9821,0.9286,0.8571,0.004706,0.010662,,,,2.59,10.18,0.4128

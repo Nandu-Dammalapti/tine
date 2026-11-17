@@ -288,7 +288,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
 
 async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_cost_usd: float, ledger_path: Path,
                         concurrency: int = 6, effort: str = "medium", max_tokens: int = 4096,
-                        ca_bundle: str | None = None, inner=None) -> dict:
+                        ca_bundle: str | None = None, inner=None, audit_rate: float = 0.0) -> dict:
     """Send every question to the real proxy as the customer's app would, in shadow mode
     (sample rate 1) or routing through the policy, with the real provider behind it."""
     import asyncio
@@ -307,7 +307,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
     config = ProxyConfig(
         tenant_keys={"pilot-token": TENANT}, anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         anthropic_frontier_model=frontier, prices=prices, verified_cache=False,
-        **({"route_policies": tenant_policy} if mode == "route" else
+        **({"route_policies": tenant_policy, "audit_rate": audit_rate} if mode == "route" else
            {"shadow_policies": tenant_policy, "shadow_sample_rate": 1.0, "shadow_max_cost_usd": max_cost_usd}))
     verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
     # A bare transport ignores HTTPS_PROXY, which httpx clients and the SDK honour.
@@ -316,6 +316,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                                   max_cost_usd, policy.get("answer_pattern") or ANSWER_PATTERN)
     ledger = Ledger(ledger_path)
     sent: dict[str, dict] = {}
+    retries = [0]
     gate = asyncio.Semaphore(concurrency)
     async with httpx.AsyncClient(transport=recorder, timeout=600) as upstream:
         app = create_app(config, ledger=ledger, client=upstream, policy_client=upstream)
@@ -327,9 +328,16 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                     if recorder.spent >= max_cost_usd:
                         return
                     started = time.time()
-                    response = await client.post("/v1/messages", headers=headers, json={
-                        "model": frontier, "max_tokens": max_tokens, "output_config": {"effort": effort},
-                        "messages": [{"role": "user", "content": question["prompt"]}]})
+                    # As a customer's app would: a rate-limited or overloaded reply is retried
+                    # after a pause. Each try is a new request to the proxy with its own ledger row.
+                    for attempt in range(6):
+                        response = await client.post("/v1/messages", headers=headers, json={
+                            "model": frontier, "max_tokens": max_tokens, "output_config": {"effort": effort},
+                            "messages": [{"role": "user", "content": question["prompt"]}]})
+                        if response.status_code not in (429, 529) or recorder.spent >= max_cost_usd:
+                            break
+                        retries[0] += 1
+                        await asyncio.sleep(min(60.0, float(response.headers.get("retry-after") or 2 ** (attempt + 2))))
                     sent[response.headers.get("x-tine-request-id", question["task_id"])] = {
                         "task_id": question["task_id"], "status": response.status_code,
                         "served_model": response.headers.get("x-tine-model"),
@@ -347,13 +355,15 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
     for request_id, row in sent.items():
         entry = ledger.get(TENANT, request_id) or {}
         row.update(request_id=request_id, ledger_model=entry.get("model"), cost_usd=entry.get("cost_usd"),
-                   routing_cost_usd=entry.get("routing_cost_usd"), latency_ms=entry.get("latency_ms"))
+                   routing_cost_usd=entry.get("routing_cost_usd"), latency_ms=entry.get("latency_ms"),
+                   holdout=entry.get("holdout"))
         run = ledger._db.execute("SELECT accepted, stage, served_by, matches_frontier, shadow_cost_usd "
                                  "FROM shadow_runs WHERE request_id=?", (request_id,)).fetchone() \
             if mode == "shadow" else None
         row.update(dict(run) if run else {})
     return {"mode": mode, "requests": list(sent.values()), "calls": recorder.calls, "shadow_report": shadow,
-            "savings_report": savings, "spent_usd": round(recorder.spent, 4), "refused_at_cap": recorder.refused}
+            "savings_report": savings, "spent_usd": round(recorder.spent, 4), "refused_at_cap": recorder.refused,
+            "client_retries": retries[0]}
 
 
 def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
@@ -374,6 +384,7 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
         rows.append({"task_id": r["task_id"], "freetext": gold is None, "accepted": bool(r.get("accepted"))
                      if result["mode"] == "shadow" else r.get("ledger_model") != frontier,
                      # A frontier call with no readable answer is wrong; no frontier call is unknown.
+                     "holdout": bool(r.get("holdout")),
                      "frontier_right": None if gold is None or (prompt, frontier) not in answers
                      else grade(dataset_of[r["task_id"]], front, gold),
                      "policy_right": grade(dataset_of[r["task_id"]], policy_answer, gold),
@@ -393,6 +404,19 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
                        loss_rate=_share(r["frontier_right"] and not r["policy_right"] for r in known),
                        gain_rate=_share(r["policy_right"] and not r["frontier_right"] for r in known),
                        compared=len(known))
+    held = [r for r in graded if r["holdout"]]
+    if held:
+        routed = [r for r in graded if not r["holdout"]]
+
+        def mean_cost(group):
+            known = [(r["cost_usd"] or 0.0) + (r["routing_cost_usd"] or 0.0) for r in group
+                     if r["cost_usd"] is not None and r["routing_cost_usd"] is not None]
+            return round(sum(known) / len(known), 6) if known else None
+        summary.update(routed_requests=len(routed), holdout_requests=len(held),
+                       routed_accepted_share=_share(r["accepted"] for r in routed),
+                       routed_accuracy=_share(r["policy_right"] for r in routed),
+                       holdout_accuracy=_share(r["policy_right"] for r in held),
+                       routed_mean_cost_usd=mean_cost(routed), holdout_mean_cost_usd=mean_cost(held))
     latencies = [r["latency_ms"] for r in rows if r["latency_ms"] is not None]
     if latencies:
         summary.update(caller_latency_p50_s=round(float(np.percentile(latencies, 50)) / 1000, 2),
@@ -468,6 +492,8 @@ def main(argv=None) -> None:
     serve.add_argument("--output", type=Path, required=True, help="full result JSON (local only)")
     serve.add_argument("--summary", type=Path, help="summary JSON (safe to publish)")
     serve.add_argument("--concurrency", type=int, default=6)
+    serve.add_argument("--audit-rate", type=float, default=0.0,
+                       help="route mode: share of requests held out and served by the frontier (TINE_AUDIT_RATE)")
     serve.add_argument("--ca-bundle")
     args = parser.parse_args(argv)
     if args.command == "proxy":
@@ -483,12 +509,13 @@ def main(argv=None) -> None:
         policy = json.loads(args.policy.read_text())
         result = asyncio.run(through_proxy(policy, questions, mode=args.mode, max_cost_usd=args.max_cost_usd,
                                            ledger_path=args.ledger, concurrency=args.concurrency,
-                                           ca_bundle=args.ca_bundle))
+                                           ca_bundle=args.ca_bundle, audit_rate=args.audit_rate))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, default=str))
         scored = score_proxy(result, questions, policy["frontier"])
         published = {**scored["summary"], "shadow_report": result["shadow_report"],
-                     "savings_report": result["savings_report"], "refused_at_cap": result["refused_at_cap"]}
+                     "savings_report": result["savings_report"], "refused_at_cap": result["refused_at_cap"],
+                     "client_retries": result.get("client_retries", 0)}
         if args.summary:
             args.summary.write_text(json.dumps(published, indent=2, default=str) + "\n")
         print(json.dumps(published, indent=2, default=str))

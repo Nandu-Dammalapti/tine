@@ -129,3 +129,15 @@ def test_boxed_answers_are_read_and_graded_like_the_benchmarks():
     assert grade("finqa", r"14.5\%", "14%") and grade("finqa", "1.74", "2%") and grade("finqa", "Yes", "yes")
     assert not grade("finqa", "14.6", "14.0%") and not grade("finqa", "0.099", "9.9%")
     assert grade("medqa", "B", "B") and not grade("medqa", None, "B") and grade("medqa", "B", None) is None
+
+
+def test_route_run_with_a_holdout_reports_both_groups(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    questions = [{"task_id": f"q{i}", "prompt": f"Question {i}?", "ground_truth": "B"} for i in range(40)]
+    result = asyncio.run(live_pilot.through_proxy(policy(), questions, mode="route", max_cost_usd=5.0,
+                                                  ledger_path=tmp_path / "l.db", inner=httpx.MockTransport(provider),
+                                                  audit_rate=0.5))
+    summary = live_pilot.score_proxy(result, questions, "claude-opus-5-5")["summary"]
+    assert summary["routed_requests"] + summary["holdout_requests"] == 40 and summary["holdout_requests"] > 5
+    assert summary["holdout_accuracy"] == 1.0 and summary["routed_mean_cost_usd"] < summary["holdout_mean_cost_usd"]
+    assert "holdout_estimate" in result["savings_report"]
