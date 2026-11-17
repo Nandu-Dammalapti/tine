@@ -89,6 +89,220 @@ If you run the image without compose (plain `docker run`, Kubernetes, ECS), carr
 over by hand. A named Docker volume takes the ownership of `/data` from the image. A bind mount or a
 Kubernetes volume does not: make the directory writable by uid 10001 (in Kubernetes, `fsGroup: 10001`).
 
+## Test the container on your own machine
+
+For a Mac with Docker Desktop running. Two scripts do the work around the `docker` commands:
+`scripts/container_env.py` writes the env file and a tenant token, and `scripts/container_smoke.py`
+checks the running container. Both use only the Python standard library, so the Mac's own `python3`
+runs them. Run every command from the repository root.
+
+What has been run and what has not, as of 2026-11-17:
+
+- Both scripts were run with the Mac's `python3` (3.9) against `python -m tine serve`, which is the
+  image's command, started outside Docker from the env file the first script wrote. The provider was a
+  stand-in on a local port. No real model was called.
+- `docker compose config`, which needs no daemon, read that env file to the same values as the
+  script's own check (Docker Compose v5.7.0).
+- The savings page at the end was made from a ledger that run wrote.
+- No `docker` command below was run: not `build`, `up`, `ps`, `logs`, `exec`, `cp` or `down`. The image
+  has still not been built.
+
+### 1. Put the provider key in a file
+
+One line, in a file outside the repository:
+
+```text
+ANTHROPIC_API_KEY=your-key
+```
+
+`TINE_ANTHROPIC_API_KEY=your-key` is read as well. Do not type the key into a command: it would stay in
+the shell history.
+
+### 2. Write the env file and the token
+
+```bash
+.tine-dev/venv/bin/python scripts/container_env.py \
+  --key-file ~/keys/anthropic.env \
+  --frontier YOUR-FRONTIER-MODEL \
+  --prices '{"anthropic:YOUR-FRONTIER-MODEL":{"input_per_million":5.0,"output_per_million":25.0}}'
+```
+
+Replace the key file, the model name and the two prices with your own. The prices shown are made up.
+`--prices` also takes the path of a JSON file.
+
+It writes:
+
+| File | What it holds |
+| --- | --- |
+| `deploy/tine.env` (mode 600) | The provider key, a new random tenant token, the frontier, the prices |
+| `deploy/client-token.txt` (mode 600) | The tenant token alone, for the smoke test |
+| `deploy/config/` | The folder compose mounts at `/config`, and a policy file when you gave one |
+
+Git ignores all three. The script never prints the key, and prints only the last four characters of the
+token. It leaves an existing `deploy/tine.env` alone unless you add `--force`; `--force` makes a new
+token, so recreate the container afterwards (step 3).
+
+Before anything is put in place, the script loads the files into the proxy's own configuration and runs
+its start-up validation. A configuration the proxy would refuse is reported and nothing is changed.
+That check needs the development environment's Python (`.tine-dev/venv/bin/python`, made by
+`bash scripts/setup.sh`). With plain `python3` the same files are written and the output says
+`NOT checked`.
+
+Options for more than a frontier-only test:
+
+- `--route-policy FILE` serves answers through a frozen policy. `--audit-rate 0.05` holds out that share
+  of routable requests to the frontier. Routing changes what callers receive.
+- `--shadow-policy FILE --shadow-sample-rate 0.5 --shadow-max-cost-usd 2` runs a frozen policy in shadow
+  mode. Without a rate above 0, shadow mode stays off.
+- `--tenant NAME` names the tenant. The default is the policy's own tenant, or `local-test`.
+- `--answer-pattern REGEX` is for a policy with agreement stages that carries no pattern of its own.
+
+`FILE` is a policy as `python -m tine freeze-policy --tenant NAME` writes it. Give every stage model a
+price in `--prices`. A policy that names a judge or webhook check is refused: the script does not write
+a checks file. Add `TINE_CHECKS` by hand as in Run it.
+
+### 3. Build and start
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+- The first build downloads the base image and the Python packages. Expect a few minutes.
+- `docker compose ps` shows `health: starting` and then `healthy`. The proxy needs some seconds before
+  it listens: about twelve outside Docker on the Mac this was written on.
+- A status of `Restarting` means the proxy refused its configuration. Read the logs (step 5).
+- If another program already listens on port 8000 of the Mac, such as a `python -m tine serve` left
+  running, `docker compose up` fails with an error about the port. Stop the other program first.
+- After you change `deploy/tine.env` or a policy file, run `docker compose up -d --force-recreate`. The
+  proxy reads both only when it starts.
+
+### 4. Run the smoke test
+
+```bash
+python3 scripts/container_smoke.py
+```
+
+This costs nothing. It waits up to 30 seconds for the proxy to answer, then checks that:
+
+- `GET /health` answers, and prints which routing and shadow mode are on;
+- a wrong token, and no token, are refused with 401;
+- `GET /v1/savings` answers for the tenant whose token is in `deploy/client-token.txt`;
+- `GET /v1/shadow` answers, when shadow mode is sampling.
+
+It prints one line per check and exits with status 1 if any failed. It never prints the token.
+
+To send real requests through the container:
+
+```bash
+python3 scripts/container_smoke.py --send 3 --model YOUR-FRONTIER-MODEL --yes-paid
+```
+
+**These are paid calls.** The container answers them with the provider key in `deploy/tine.env`, on that
+provider account. The script refuses `--send` without `--yes-paid`. Each request asks for one word and
+at most 16 output tokens. The last one is streamed when you send two or more. Sending stops at the first
+request that fails. `--model` is the name put in the request; the proxy decides which model answers.
+
+For each request it prints the status, the model that served it (`x-tine-model`), the route
+(`x-tine-route`: `stage-0` for a policy's first stage, `frontier`, `holdout`, or `-` when no policy
+ran), the request id and whether the ledger recorded it. Then it reads `/v1/savings` again and checks
+that the requests are there with a cost, and reads `/v1/shadow` if shadow mode is on. These lines are
+from a run outside Docker against the stand-in provider, with a route policy, a holdout share of 0.25
+and `--send 8`. The ids are shortened, and requests 2 to 5 and 7, which read like request 1, are left
+out:
+
+```text
+health                 PASS  routing policy, shadow off, storage sqlite-development
+wrong token refused    PASS  401 for a wrong token, 401 for no token
+savings                PASS  tenant 'rehearsal', 0 request(s), known cost $0.000000, answer cost unknown for 0
+shadow report          SKIP  shadow mode is off, so there is no /v1/shadow to read
+request 1              PASS  status 200, served by cheap-model, route stage-0, id cd7566b2, ledger recorded
+request 6              PASS  status 200, served by frontier-model, route holdout, id 068c3b09, ledger recorded
+request 8 (streamed)   PASS  status 200, served by frontier-model, route -, id c61c7106, ledger recorded
+savings after          PASS  requests 0 -> 8, known cost $0.000000 -> $0.000432
+costs recorded         PASS  every request sent has an answer cost
+```
+
+The model names and costs in it are the stand-in's, not a provider's.
+
+What a failure usually means:
+
+| Line | Likely cause |
+| --- | --- |
+| `health FAIL` | The container is not up, or still restarting. `docker compose ps`, then the logs |
+| `savings FAIL` with 401 | `deploy/tine.env` was rewritten after the container started. Recreate it (step 3) |
+| a request with status 401 or 404 | The provider refused the key, or does not know the model name |
+| `ledger unavailable` | The proxy could not write `/data/ledger.sqlite3`. Check the volume's owner |
+| `costs recorded FAIL` | The model that answered has no price in `TINE_MODEL_PRICES` |
+
+The proxy on another port or host: `--base-url http://127.0.0.1:8010`. A token kept elsewhere:
+`--token-file PATH`.
+
+### 5. Read the logs
+
+```bash
+docker compose logs tine
+docker compose logs -f --tail 50 tine
+```
+
+The second form follows the log; Ctrl-C stops following and leaves the container running. A healthy
+start has one line per loaded policy, then `Uvicorn running on http://0.0.0.0:8000`, then one line per
+request. Outside Docker the first line was `Matplotlib is building the font cache`, which is harmless;
+expect it at every start of the container, because `/tmp` is emptied each time. A `ValueError` followed
+by a restart is a refused configuration: the message names the setting.
+
+Do not paste `docker compose config` output anywhere: it prints the provider key and the tenant token.
+
+### 6. Make the savings report page
+
+The image holds only the `tine` package, not `scripts/`. So the page is made on the Mac, from a copy of
+the container's ledger. The copy is taken with SQLite's online backup, which is safe while the proxy
+runs (see Back up the ledger):
+
+```bash
+mkdir -p artifacts
+docker compose exec tine python -c "import os, sqlite3; os.umask(0o077); s = sqlite3.connect('/data/ledger.sqlite3'); d = sqlite3.connect('/data/ledger.backup.sqlite3'); s.backup(d); d.close(); s.close()"
+docker compose cp tine:/data/ledger.backup.sqlite3 artifacts/container-ledger.sqlite3
+docker compose exec tine python -c "import os; os.remove('/data/ledger.backup.sqlite3')"
+.tine-dev/venv/bin/python scripts/savings_report.py \
+  --ledger artifacts/container-ledger.sqlite3 --tenant local-test \
+  --output artifacts/container-savings.html
+open artifacts/container-savings.html
+```
+
+- Use the tenant name `container_env.py` printed, if it was not `local-test`.
+- Add `--policy FILE`, with the policy file you gave `container_env.py`, to describe the policy on the
+  page.
+- `savings_report.py` needs the development environment's Python. It opens the copy read-only.
+- The copy holds every prompt and response the container saw. `artifacts/` is ignored by git. Delete the
+  copy when you are done, and check that its mode is 600.
+- The backup line and `savings_report.py` were run here on a ledger written outside Docker. The
+  `docker compose exec` and `docker compose cp` around them were not. [REPORT.md](REPORT.md) explains
+  the page.
+
+### 7. Stop and remove
+
+```bash
+docker compose stop              # stop the container; it and the ledger stay
+docker compose start             # start it again
+docker compose down              # remove the container and its network; the ledger volume stays
+docker compose down --volumes    # also delete the ledger volume
+docker image rm tine-proxy:dev   # remove the image
+rm deploy/tine.env deploy/client-token.txt
+```
+
+`docker compose down --volumes` deletes every recorded request and cost. Take the copy in step 6 first
+if you want them. Remove `deploy/tine.env` and `deploy/client-token.txt` when the test is over: they
+hold the provider key and a working token.
+
+### What this test does not show
+
+A pass shows that the image builds, starts under the compose file's settings (uid 10001, read-only
+root), can write its ledger volume, answers on the loopback port and records requests. It does not test
+a gateway or TLS in front of the proxy, load, a restart under traffic, a backup restore, or the quality
+of any policy.
+
 ## What leaves your network and what does not
 
 Leaves, to destinations you configure:
@@ -360,8 +574,32 @@ earlier outcome updates are not in `outcome_events`, and shadow coverage counts 
 - the Dockerfile has a pinned base, a non-root user, no `ARG`, no secret-named `ENV`, a standard
   library health check that ignores proxy variables, and copies only `pyproject.toml` and `tine/`;
 - `.dockerignore` excludes `artifacts`, `.tine-dev` and everything else outside the package;
-- the compose file has one service with the hardening settings in the table above.
+- the compose file has one service with the hardening settings in the table above;
+- git ignores `deploy/client-token.txt`, and this page gives the steps of Test the container on your own
+  machine in order, with only options the two scripts have.
 
-Not checked by anything: that the image builds, that dependencies resolve on the base image, that the
+`tests/test_container_env.py` runs `scripts/container_env.py` on a made-up key file in a temporary
+folder: the key and the token never reach its output, both files are mode 600, an existing env file is
+kept without `--force`, and what it writes loads into `ProxyConfig` and validates.
+`tests/test_container_smoke.py` runs `scripts/container_smoke.py` against the real proxy app served on
+a local port, with a stand-in provider on a second local port.
+
+Checked by hand on 2026-11-17, on a Mac with Docker Desktop installed and its daemon out of reach:
+
+- `docker compose config` (Docker Compose v5.7.0, client only) accepts `docker-compose.yml` and reads the
+  JSON values of `deploy/tine.env.example` unchanged.
+- The Dockerfile's command that turns `pyproject.toml` into `requirements.txt`, run through `sh`, wrote
+  the eight dependency lines.
+- `uv pip compile` resolved those dependencies for Python 3.12 on 64-bit Arm and x86 Linux (glibc 2.36,
+  as in the base image) from wheels alone: 35 packages. Nothing was installed. Four are newer than in
+  `requirements-dev.lock`, which is what the tests run on: fastapi (0.163.1 against 0.162.0), numpy
+  (2.5.5 against 2.5.4), click and annotated-doc. The result will differ on a later day.
+- With that resolution installed on the Mac, the proxy, shadow, ledger, policy, deploy and kit tests
+  passed (391 tests). That covers the newer fastapi, not the Linux builds of the packages.
+- Importing the proxy takes several seconds, because the policy code imports matplotlib and
+  scikit-learn. With an empty matplotlib cache it took 12 seconds on this Mac; the image has few fonts,
+  so expect less there. The health check allows 30 seconds.
+
+Not checked by anything: that the image builds, that the packages install on the base image, that the
 container starts under a read-only root filesystem, that the health check passes in a container, that
-volume ownership works as described, and every `docker` command on this page.
+volume ownership works as described, and every `docker` command on this page that needs the daemon.

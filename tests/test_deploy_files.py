@@ -240,6 +240,22 @@ def test_local_configuration_is_not_read_as_a_committed_file():
     assert not ignored_locally(DEPLOY / "config.json") and not ignored_locally(DEPLOY / ".gitignore")
 
 
+def test_what_the_local_test_kit_writes_is_kept_out_of_git():
+    """scripts/container_env.py writes the provider key and a working tenant token under
+    deploy/. Each file, and the temporary name it has while it is checked, is ignored."""
+    for name in ("tine.env", "client-token.txt", "tine.env.1a2b3c4d.tmp.env", "client-token.txt.1a2b3c4d.tmp.env"):
+        assert ignored_locally(DEPLOY / name), name
+    assert ignored_locally(DEPLOY / "config" / "route-policies.json")
+    assert ignored_locally(DEPLOY / "config" / "route-policies.json.1a2b3c4d.tmp.env")
+    assert not ignored_locally(DEPLOY / "client-token.example.txt")
+    # The repository's own ignore file says the same, for a checkout whose deploy/.gitignore was lost.
+    top = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+    for rule in ("deploy/*.env", "deploy/config/", "deploy/client-token.txt"):
+        assert rule in top, rule
+    # Neither file can reach the image: the build context leaves out all of deploy/.
+    assert "deploy" in (ROOT / ".dockerignore").read_text(encoding="utf-8").split()
+
+
 def test_secret_variables_in_the_example_hold_placeholders():
     active, commented = env_example()
     for name, value in (active | commented).items():
@@ -255,7 +271,7 @@ def test_only_examples_live_in_deploy_and_real_config_is_ignored():
     names = {path.relative_to(DEPLOY).as_posix() for path in committed_files() if path.is_relative_to(DEPLOY)}
     assert all(name == ".gitignore" or ".example" in name for name in names), sorted(names)
     ignored = (DEPLOY / ".gitignore").read_text(encoding="utf-8").split()
-    assert "*.env" in ignored and "config/" in ignored
+    assert "*.env" in ignored and "config/" in ignored and "client-token.txt" in ignored
 
 
 def dockerfile_instructions() -> list[tuple[str, str]]:
@@ -356,3 +372,52 @@ def test_deploy_doc_states_what_was_not_done():
     assert "—" not in text
     for name in ("TINE_SHADOW_SAMPLE_RATE", "TINE_SHADOW_MAX_COST_USD", "SQLite", "TLS", "backup"):
         assert name in text, name
+
+
+def local_test_section() -> str:
+    """The part of docs/DEPLOY.md that walks through a test on the operator's own machine."""
+    text = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8")
+    start = text.index("\n## Test the container on your own machine\n")
+    return text[start:text.index("\n## ", start + 1)]
+
+
+def script_options(name: str) -> set[str]:
+    return set(re.findall(r'add_argument\("(--[a-z-]+)"', (ROOT / "scripts" / name).read_text(encoding="utf-8")))
+
+
+def test_deploy_doc_gives_the_local_test_in_order():
+    section = local_test_section()
+    steps = ["scripts/container_env.py", "docker compose build", "docker compose up -d", "docker compose ps",
+             "python3 scripts/container_smoke.py", "docker compose logs tine", "docker compose cp tine:/data/",
+             "scripts/savings_report.py", "docker compose stop", "docker compose down"]
+    places = [section.index(step) for step in steps]
+    assert places == sorted(places), "the commands are not in the order an operator runs them"
+    # Requests through the container are paid, and the page says so where it shows the command.
+    paid = section.index("--yes-paid")
+    assert "paid calls" in section[paid:paid + 400].lower()
+    # The image was not built when this was written. The sentence goes when someone has built it.
+    assert "has still not been built" in section
+    # The ledger copy holds prompts: it is written where git ignores it.
+    assert "docker compose cp tine:/data/ledger.backup.sqlite3 artifacts/" in section
+    assert "/artifacts/" in (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+
+
+def test_deploy_doc_uses_only_options_the_scripts_have():
+    section = local_test_section()
+    options = {name: script_options(name) for name in ("container_env.py", "container_smoke.py", "savings_report.py")}
+    assert all(len(found) >= 5 for found in options.values()), "the option lists were not read"
+    blocks = re.findall(r"```bash\n(.*?)```", section, flags=re.DOTALL)
+    commands = [command for block in blocks for command in re.sub(r"\\\n", " ", block).splitlines()]
+    seen = set()
+    for command in commands:
+        for name, known in options.items():
+            if f"scripts/{name}" in command:
+                seen.add(name)
+                used = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", command))
+                assert used <= known, f"{name} has no {sorted(used - known)}"
+    assert seen == set(options), "a script is missing from the commands"
+    # Options named in the text, such as `--route-policy FILE`, exist in one of the scripts.
+    every = set().union(*options.values())
+    for span in re.findall(r"`(--[^`]+)`", section):
+        used = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", span))
+        assert used <= every, f"no script has {sorted(used - every)}"
