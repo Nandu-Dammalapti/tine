@@ -210,17 +210,38 @@ def _holdout_sentence(ledger: dict | None) -> str | None:
     if saving is None:
         return None
     routed, held = _whole(estimate.get("routed_requests")), _whole(estimate.get("holdout_requests"))
-    interval = f"{_confidence(estimate)} interval for the saving: {_interval(estimate)}"
+    partial = _whole(estimate.get("routed_unknown_cost_requests")) if _upper_limit(estimate) else 0
+    # With routed costs not fully known, the routed mean is a lower limit and the
+    # saving an upper limit: the sentence says "at most" and how many are partial.
+    limit = "at most " if partial else ""
+    interval = (f"{_confidence(estimate)} interval for "
+                f"{'that upper limit' if partial else 'the saving'}: {_interval(estimate)}")
     if saving > 0:
-        result = (f"routed requests cost {percent(saving, rounding='down')} less per request than requests held out "
-                  f"for the frontier model ({interval})")
+        result = (f"routed requests cost {limit}{percent(saving, rounding='down')} less per request than requests "
+                  f"held out for the frontier model ({interval})")
     elif saving < 0:
-        result = (f"routed requests cost {percent(-saving, rounding='up')} more per request than requests held out "
-                  f"for the frontier model, so there is no saving ({interval})")
+        result = (f"routed requests cost {'at least ' if partial else ''}{percent(-saving, rounding='up')} more per "
+                  f"request than requests held out for the frontier model, so there is no saving ({interval})")
+    elif partial:
+        result = (f"routed requests cost at least as much per request as requests held out for the frontier model, "
+                  f"so there is no saving ({interval})")
     else:
         result = f"routed requests cost the same per request as requests held out for the frontier model ({interval})"
-    return (f"Measured under routing, from a random frontier holdout: {result}, on {_plural(routed, 'routed request')} "
-            f"and {count(held)} held out. It is an estimate from a random sample, and it does not measure quality.")
+    if partial:
+        total = None if routed is None or partial is None else routed + partial
+        groups = (f"on {_plural(total, 'routed request')}, {count(partial)} of them counted at the part of their "
+                  f"cost that is known (a cheaper call failed, a check raised or the route deadline ran out; most "
+                  f"then escalated to the frontier), and {count(held)} held out")
+    else:
+        groups = f"on {_plural(routed, 'routed request')} and {count(held)} held out"
+    return (f"Measured under routing, from a random frontier holdout: {result}, {groups}. It is an estimate from a "
+            "random sample, and it does not measure quality.")
+
+
+def _upper_limit(estimate: dict) -> bool:
+    """Whether the holdout saving is an upper limit, because routed requests whose cost
+    is not fully known were counted at their known part."""
+    return estimate.get("saving_is_upper_limit") is True
 
 
 def _estimated(ledger: dict | None) -> int | None:
@@ -620,15 +641,21 @@ def _holdout_table(ledger: dict) -> str:
         shown = f"{percent(saving, rounding='down')}: routing cost more"
     else:
         shown = percent(saving, rounding="down")
+    upper = _upper_limit(estimate)
+    if saving is not None and upper:
+        shown = f"at most {shown}"
+    routed_unknown = ("Counted at the known part of their cost, routed" if "saving_is_upper_limit" in estimate
+                      else "Left out because a cost is not known, routed")
     pairs = [
         ("Routed requests with known costs", count(estimate.get("routed_requests"))),
         ("Held-out requests with known costs", count(estimate.get("holdout_requests"))),
-        ("Left out because a cost is not known, routed", count(estimate.get("routed_unknown_cost_requests"))),
+        (routed_unknown, count(estimate.get("routed_unknown_cost_requests"))),
         ("Left out because a cost is not known, held out", count(estimate.get("holdout_unknown_cost_requests"))),
-        ("Mean cost per routed request, answer and routing", money(estimate.get("routed_mean_cost_usd"))),
+        ("Mean cost per routed request, answer and routing" + (", at least" if upper else ""),
+         money(estimate.get("routed_mean_cost_usd"))),
         ("Mean cost per held-out request, the frontier model", money(estimate.get("holdout_mean_cost_usd"))),
         ("Saving per request, measured from the holdout", shown),
-        (f"{_confidence(estimate).capitalize()} interval for the saving",
+        (f"{_confidence(estimate).capitalize()} interval for the saving" + (", an upper limit" if upper else ""),
          _interval(estimate) if saving is not None else NOT_KNOWN),
     ]
     method = estimate.get("method")
@@ -850,7 +877,10 @@ def _caveats(ledger: dict | None, shadow: dict | None, policy: dict | None) -> l
                 "per request of routed requests with that of requests held out for the frontier model, so it assumes "
                 "the two groups are alike; choosing them at random is what makes them so. Its interval is a normal "
                 "approximation. It does not measure quality: whether the routed answers were as good as the frontier "
-                "model's is not part of it.")
+                "model's is not part of it."
+                + (" Some routed requests have a cost that is not fully known; they are counted at the part that is "
+                   "known, so the routed mean is a lower limit and the saving an upper limit."
+                   if _upper_limit(_holdout(ledger)) else ""))
         if "estimated_baseline_requests" not in ledger:
             items.append(
                 "<strong>This ledger report does not say how many baselines were estimated.</strong> It may come "

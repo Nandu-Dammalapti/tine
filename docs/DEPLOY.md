@@ -266,6 +266,8 @@ and PROXY.md have been read. Under live routing the saving is measured only with
 frontier, and `GET /v1/savings` then compares the two groups' mean cost per request, with a 95%
 interval, in `holdout_estimate` (PROXY.md, Measuring the saving under live routing). It is an estimate
 from a random sample, it does not measure quality, and held-out requests cost the frontier's price.
+While some routed requests have a routing cost that is not known (a cheaper model failing, a webhook,
+the route deadline), the figure is only an upper limit on the saving.
 Built and tested with stand-ins only. A tenant's provider can have a shadow policy or a route policy,
 not both.
 `TINE_ROUTE_DEADLINE_SECONDS` is how long a route policy's cheaper stages may take together for one

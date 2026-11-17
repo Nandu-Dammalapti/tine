@@ -861,6 +861,34 @@ def test_the_holdout_saving_leads_the_page_with_its_interval_and_estimates_stay_
     assert "estimated" not in holdout_table.lower().replace("an estimate from a random sample", "")
 
 
+def test_a_holdout_with_routed_costs_not_fully_known_reads_as_an_upper_limit():
+    ledger = holdout_ledger()
+    for index in range(10):  # escalations after a failed cheap call: routing cost not known
+        ledger.record(tenant="acme", provider="openai", model="big", request_body={"failed": index}, success=True,
+                      holdout=False, cost_usd=1.0, routing_cost_usd=None)
+    report = ledger.report("acme")
+    estimate = report["holdout_estimate"]
+    assert estimate["saving_is_upper_limit"] is True
+    first = headline_sentences(report, None)[0]
+    assert first.startswith("Measured under routing, from a random frontier holdout: routed requests cost at most "
+                            f"{percent(estimate['saving_fraction'], rounding='down')} less per request")
+    assert "95% interval for that upper limit" in first
+    assert "on 40 routed requests, 10 of them counted at the part of their cost that is known" in first
+    text = text_of(render(report, None, tenant="acme", generated_at="now"))
+    for expected in ("Counted at the known part of their cost, routed 10",
+                     "Mean cost per routed request, answer and routing, at least",
+                     f"Saving per request, measured from the holdout at most "
+                     f"{percent(estimate['saving_fraction'], rounding='down')}",
+                     "the routed mean is a lower limit and the saving an upper limit"):
+        assert expected in text, expected
+    # Without such requests neither the headline nor the table reads as a limit.
+    plain_report = holdout_ledger().report("acme")
+    assert "at most" not in headline_sentences(plain_report, None)[0]
+    plain = text_of(render(plain_report, None, tenant="acme", generated_at="now"))
+    assert "Mean cost per routed request, answer and routing $" in plain
+    assert "measured from the holdout at most" not in plain and "the saving an upper limit." not in plain
+
+
 def test_a_holdout_too_small_for_a_figure_shows_counts_only():
     report = holdout_ledger(held=29).report("acme")
     assert report["holdout_estimate"]["saving_fraction"] is None

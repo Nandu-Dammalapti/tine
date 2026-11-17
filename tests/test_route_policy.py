@@ -1060,6 +1060,36 @@ def test_the_holdout_estimate_reaches_the_savings_endpoint_with_its_interval(mon
 
 
 
+def test_routed_escalations_with_an_unknown_routing_cost_stay_in_the_holdout_estimate(monkeypatch):
+    """On hard requests small-b answers 503, so the routing cost is unknown and the
+    frontier answers ($0.20). Left out, they would leave only the $0.006 easy requests
+    and report a 97% saving; counted at their known part, the saving is at most 48.5%."""
+    from tine.shadow import sampled
+
+    held, routed = [], []
+    for number in range(1000):
+        name = f"request-{number}"
+        (held if sampled(f"holdout:{name}", 0.5) else routed).append(name)
+    ids = iter(held[:30] + routed[:30])
+    monkeypatch.setattr("tine.proxy.uuid.uuid4", lambda: next(ids))
+
+    def handler(request):
+        sent = json.loads(request.content)
+        if sent["messages"][0]["content"] == "hard" and sent["model"] == "small-b":
+            return httpx.Response(503, json={"error": "down"})
+        return httpx.Response(200, json=chat("42"))
+    bodies = [{**QUESTION, "messages": [{"role": "user", "content": "hard" if number % 2 else "easy"}]}
+              for number in range(60)]
+    _, rows, savings, _ = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=0.5), handler, bodies)
+    escalated = [row for row in rows[30:] if row["routing_cost_usd"] is None]
+    assert len(escalated) == 15 and all(row["model"] == "frontier" for row in escalated)
+    estimate = savings["holdout_estimate"]
+    assert estimate["routed_requests"] == 15 and estimate["routed_unknown_cost_requests"] == 15
+    assert estimate["saving_is_upper_limit"] is True
+    assert estimate["routed_mean_cost_usd"] == pytest.approx((15 * 0.006 + 15 * 0.2) / 30)
+    assert estimate["saving_fraction"] == pytest.approx(0.485)
+
+
 def test_the_caller_cannot_set_the_costs_of_a_request_in_the_holdout_comparison():
     for rate in (1.0, 1e-12):
         _, _, _, patched = run_many(config(route_policies={"a": {"openai": AGREE}}, audit_rate=rate),

@@ -515,9 +515,10 @@ def test_a_ledger_from_before_baseline_sources_and_policy_traces_is_upgraded(tmp
 
 
 def test_holdout_estimate_shows_no_figure_below_the_minimum_count():
-    estimate = holdout_estimate([0.5] * HOLDOUT_MIN_REQUESTS, [1.0] * (HOLDOUT_MIN_REQUESTS - 1), routed_unknown=2)
+    estimate = holdout_estimate([0.5] * HOLDOUT_MIN_REQUESTS, [1.0] * (HOLDOUT_MIN_REQUESTS - 1),
+                                routed_unknown=[0.2, 0.0])
     assert estimate["routed_requests"] == HOLDOUT_MIN_REQUESTS and estimate["holdout_requests"] == HOLDOUT_MIN_REQUESTS - 1
-    assert estimate["routed_unknown_cost_requests"] == 2
+    assert estimate["routed_unknown_cost_requests"] == 2 and estimate["saving_is_upper_limit"]
     for name in ("routed_mean_cost_usd", "holdout_mean_cost_usd", "saving_fraction", "saving_fraction_low",
                  "saving_fraction_high"):
         assert estimate[name] is None
@@ -551,17 +552,43 @@ def test_report_compares_the_routed_and_held_out_groups_and_counts_unknown_costs
     for _ in range(HOLDOUT_MIN_REQUESTS):
         row(ledger, model="small", cost_usd=0.1, routing_cost_usd=0.1, holdout=False)
         row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0, holdout=True)
-    row(ledger, cost_usd=None, routing_cost_usd=0.05, holdout=False)   # an upstream failure: cost not known
     row(ledger, cost_usd=5.0, routing_cost_usd=0.0)                    # not in the comparison
     row(ledger, tenant="b", cost_usd=9.0, routing_cost_usd=0.0, holdout=False)
     estimate = ledger.report("a")["holdout_estimate"]
     assert estimate["routed_requests"] == HOLDOUT_MIN_REQUESTS == estimate["holdout_requests"]
-    assert estimate["routed_unknown_cost_requests"] == 1 and estimate["holdout_unknown_cost_requests"] == 0
+    assert estimate["routed_unknown_cost_requests"] == 0 == estimate["holdout_unknown_cost_requests"]
+    assert estimate["saving_is_upper_limit"] is False
     assert estimate["routed_mean_cost_usd"] == pytest.approx(0.2)
     assert estimate["saving_fraction"] == pytest.approx(0.8)
     assert estimate["saving_fraction_low"] == pytest.approx(0.8) == estimate["saving_fraction_high"]
+    row(ledger, cost_usd=1.0, routing_cost_usd=None, holdout=True)     # a held-out row with no price: left out
+    assert ledger.report("a")["holdout_estimate"]["holdout_unknown_cost_requests"] == 1
     with pytest.raises(ValueError, match="holdout"):
         row(ledger, holdout=1)
+
+
+def test_routed_requests_whose_cost_is_not_fully_known_count_at_their_known_part():
+    # Escalations after a failed cheap call, a check that raised or the route deadline
+    # have routing cost unknown but paid the frontier. Leaving them out would keep only
+    # the cheap routed requests and overstate the saving (0.988 here instead of <= 0.494).
+    ledger = Ledger()
+    for _ in range(40):
+        row(ledger, cost_usd=1.0, routing_cost_usd=0.0, baseline_cost_usd=1.0, holdout=True)
+        row(ledger, model="small", cost_usd=0.01, routing_cost_usd=0.002, holdout=False)
+        row(ledger, cost_usd=1.0, routing_cost_usd=None, holdout=False)           # escalated
+    row(ledger, model="small", cost_usd=None, routing_cost_usd=0.002, holdout=False)  # no usage: counted at 0.002
+    estimate = ledger.report("a")["holdout_estimate"]
+    assert estimate["routed_requests"] == 40 and estimate["routed_unknown_cost_requests"] == 41
+    assert estimate["saving_is_upper_limit"] is True
+    known = [0.012] * 40 + [1.0] * 40 + [0.002]
+    assert estimate["routed_mean_cost_usd"] == pytest.approx(sum(known) / len(known))
+    assert estimate["saving_fraction"] == pytest.approx(1 - sum(known) / len(known))
+    assert estimate["saving_fraction"] < 0.51 and estimate["saving_fraction_high"] < 0.62
+    assert "upper limit" in estimate["scope"]
+    # Partial routed costs alone are enough to start the comparison.
+    alone = Ledger()
+    row(alone, cost_usd=None, routing_cost_usd=None, holdout=False)
+    assert alone.report("a")["holdout_estimate"]["routed_unknown_cost_requests"] == 1
 
 
 def test_costs_of_a_request_in_the_holdout_comparison_cannot_be_set_by_the_caller():

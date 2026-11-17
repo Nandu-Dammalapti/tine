@@ -24,6 +24,7 @@ import sqlite3
 import statistics
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,8 +49,11 @@ HOLDOUT_SCOPE = (
     "served (TINE_AUDIT_RATE, chosen from the request id) skipped the policy and went to the frontier model. It "
     "compares the mean cost per request of the routed group (answer plus routing cost, escalations included) with "
     "that of the held-out group, so it assumes the two groups are alike; the random choice is what makes them so. "
-    "Cache hits, streamed requests and requests for an allowlisted model are in neither group, and requests whose "
-    "cost is not known are left out and counted. It pools every policy digest and audit rate in the ledger: "
+    "Cache hits, streamed requests and requests for an allowlisted model are in neither group. A routed request "
+    "whose cost is not fully known (a cheaper call failed, a check raised or the route deadline ran out, and it "
+    "usually escalated) is counted at its known part, so while there are any the routed mean is a lower limit "
+    "and the saving an upper limit (saving_is_upper_limit); held-out requests whose cost is not known are left "
+    "out and counted. It pools every policy digest and audit rate in the ledger: "
     "changing either mixes periods. It does not measure quality: whether the routed answers were as good as the "
     "frontier's is not part of it"
 )
@@ -118,19 +122,27 @@ def _cost_sum(values) -> float | None:
     return total if math.isfinite(total) else None
 
 
-def holdout_estimate(routed: list[float], holdout: list[float], *, routed_unknown: int = 0,
+def holdout_estimate(routed: list[float], holdout: list[float], *, routed_unknown: Sequence[float] = (),
                      holdout_unknown: int = 0) -> dict[str, Any]:
     """The saving under live routing, from per-request costs of the routed and held-out
     groups. No figure is given until each group has ``HOLDOUT_MIN_REQUESTS`` costs and
-    the held-out mean is above zero; the counts are always given."""
+    the held-out mean is above zero; the counts are always given.
+
+    ``routed_unknown`` holds the known part of each routed request whose cost is not
+    fully known. Those are mostly escalations, the costliest routed requests, so leaving
+    them out would bias the saving upward. They are counted at their known part instead,
+    which makes the routed mean a lower limit and the saving an upper limit."""
+    routed_unknown = list(routed_unknown)
     result: dict[str, Any] = {
         "routed_requests": len(routed), "holdout_requests": len(holdout),
-        "routed_unknown_cost_requests": routed_unknown, "holdout_unknown_cost_requests": holdout_unknown,
+        "routed_unknown_cost_requests": len(routed_unknown), "holdout_unknown_cost_requests": holdout_unknown,
         "routed_mean_cost_usd": None, "holdout_mean_cost_usd": None,
         "saving_fraction": None, "saving_fraction_low": None, "saving_fraction_high": None,
+        "saving_is_upper_limit": bool(routed_unknown),
         "confidence": HOLDOUT_CONFIDENCE, "min_requests_per_group": HOLDOUT_MIN_REQUESTS,
         "method": HOLDOUT_METHOD, "scope": HOLDOUT_SCOPE,
     }
+    routed = [*routed, *routed_unknown]
     if min(len(routed), len(holdout)) < HOLDOUT_MIN_REQUESTS:
         return result
     try:
@@ -644,14 +656,19 @@ class Ledger:
         unknown_cost = sum(row["cost_usd"] is None or row["routing_cost_usd"] is None for row in rows)
         successes = sum(row["success"] == 1 for row in rows)
         # The two groups of the holdout comparison, each request's answer plus routing cost.
+        # A routed request whose cost is not fully known is kept at its known part: those
+        # are mostly escalations, and leaving them out would overstate the saving.
         groups: dict[int, list[float]] = {0: [], 1: []}
-        group_unknown = {0: 0, 1: 0}
+        routed_partial: list[float] = []
+        holdout_unknown = 0
         for row in rows:
             if row["holdout"] in groups:
-                if row["cost_usd"] is None or row["routing_cost_usd"] is None:
-                    group_unknown[row["holdout"]] += 1
-                else:
+                if row["cost_usd"] is not None and row["routing_cost_usd"] is not None:
                     groups[row["holdout"]].append(row["cost_usd"] + row["routing_cost_usd"])
+                elif row["holdout"] == 0:
+                    routed_partial.append((row["cost_usd"] or 0.0) + (row["routing_cost_usd"] or 0.0))
+                else:
+                    holdout_unknown += 1
         savings = fraction = None
         if comparable and verified_baseline is not None and verified_cost is not None:
             savings = verified_baseline - verified_cost
@@ -696,9 +713,9 @@ class Ledger:
                 "updated): Tine did not measure it, so this figure is the caller's and is not part of verified savings"
             ),
             "holdout_estimate": (
-                holdout_estimate(groups[0], groups[1], routed_unknown=group_unknown[0],
-                                 holdout_unknown=group_unknown[1])
-                if any(groups.values()) or any(group_unknown.values()) else None
+                holdout_estimate(groups[0], groups[1], routed_unknown=routed_partial,
+                                 holdout_unknown=holdout_unknown)
+                if any(groups.values()) or routed_partial or holdout_unknown else None
             ),
             "scope": (
                 "development ledger; outcomes are caller-attested, verified baselines were measured by the proxy, "

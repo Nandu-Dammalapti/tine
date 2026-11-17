@@ -133,8 +133,16 @@ provider cannot have a shadow policy as well as a route policy, so a held-out re
 `GET /v1/savings` then carries `holdout_estimate` (null while no row is in the comparison):
 
 - `routed_requests` and `holdout_requests`: requests in each group whose answer and routing costs are
-  both known. `routed_unknown_cost_requests` and `holdout_unknown_cost_requests` count those left out,
-  for example a 502 or a model with no price.
+  both known.
+- `routed_unknown_cost_requests`: routed requests whose answer or routing cost is not known. Routing
+  cost is unknown when a cheaper call failed (an HTTP error or a 503), a check raised or had no usage,
+  a webhook failed closed, or `TINE_ROUTE_DEADLINE_SECONDS` ran out. Those requests then usually
+  escalated and paid the frontier as well, so they are the costliest routed requests. Leaving them out
+  would overstate the saving, so each is counted at the part of its cost that is known (unknown parts
+  as 0). While any are, `saving_is_upper_limit` is true: the routed mean is a lower limit, and the
+  saving and both ends of its interval are upper limits.
+- `holdout_unknown_cost_requests`: held-out requests whose cost is not known (a 502, or a frontier model
+  with no price). They are left out and counted.
 - `routed_mean_cost_usd` (answer plus routing cost, escalations included) and `holdout_mean_cost_usd`.
 - `saving_fraction` = 1 - mean(routed) / mean(holdout), with `saving_fraction_low` and
   `saving_fraction_high` at `confidence` 0.95. The interval is a normal approximation on the ratio
@@ -162,6 +170,10 @@ Limits:
 - Held-out requests cost the frontier's price. That is part of the price of measuring, and it lowers
   the saving the tenant gets by about the rate times the saving.
 - It says nothing about quality. A routed answer that was wrong costs the same here as a right one.
+- A routed request whose cost is not fully known turns the figure into an upper limit, and its costs
+  cannot be filled in later (the 409 above). Find why routing cost went unknown (a model that fails,
+  a webhook, the deadline) and fix it to get a point figure again. Held-out requests whose cost is not
+  known are still left out, which can move the figure either way.
 - Built and tested with stand-in providers. Never run on real traffic or used by a real customer.
 
 ### Audit trail
