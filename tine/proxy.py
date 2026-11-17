@@ -418,6 +418,94 @@ def _cost(config: ProxyConfig, provider: str, model: str, tokens: dict) -> float
     return cost if math.isfinite(cost) else None
 
 
+class _StreamUsage:
+    """Reads token usage from a server-sent event stream as it is relayed, on the side.
+
+    The bytes are only read, never changed. Anthropic sends input tokens in
+    ``message_start`` and the final output tokens in ``message_delta``; OpenAI sends one
+    chunk with ``usage`` at the end, when the caller asked for it with
+    ``stream_options.include_usage``. ``tokens()`` is None while no usage has arrived.
+    """
+
+    # A longer line is skipped, not buffered: usage events are short.
+    MAX_LINE = 1 << 20
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        self.usage: dict[str, Any] | None = None
+        self.final_output = False
+        self._line = bytearray()
+        self._skipping = False
+        self._after_cr = False
+        self._data: list[bytes] = []
+
+    def feed(self, chunk: bytes) -> None:
+        try:
+            for piece in chunk.splitlines(keepends=True):
+                if self._after_cr and piece == b"\n" and not self._line:
+                    # The second half of a CRLF split across two chunks.
+                    self._after_cr = False
+                    continue
+                ended = piece.endswith((b"\n", b"\r"))
+                self._after_cr = piece.endswith(b"\r")
+                if not self._skipping:
+                    self._line += piece
+                    if len(self._line) > self.MAX_LINE:
+                        self._line.clear()
+                        self._skipping = True
+                if ended:
+                    if not self._skipping:
+                        self._take(bytes(self._line).rstrip(b"\r\n"))
+                    self._line.clear()
+                    self._skipping = False
+        except Exception:
+            # Reading usage must never interrupt the relayed stream.
+            self._line.clear()
+
+    def close(self) -> None:
+        """The stream ended: read a last event that had no blank line after it."""
+        if self._line and not self._skipping:
+            self._take(bytes(self._line).rstrip(b"\r\n"))
+        self._take(b"")
+
+    def _take(self, line: bytes) -> None:
+        if line.startswith(b"data:"):
+            self._data.append(line[5:].removeprefix(b" "))
+            return
+        if line or not self._data:
+            return
+        data, self._data = b"\n".join(self._data), []
+        # Most events carry no usage: skip decoding them.
+        if b'"usage"' not in data:
+            return
+        try:
+            event = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            return
+        if not isinstance(event, dict):
+            return
+        if self.provider == "openai":
+            if isinstance(event.get("usage"), dict):
+                self.usage = event["usage"]
+            return
+        if event.get("type") == "message_start" and isinstance(event.get("message"), dict):
+            usage = event["message"].get("usage")
+            if isinstance(usage, dict):
+                # Its output count is the first token's, not the reply's.
+                self.usage = {**(self.usage or {}), **{k: v for k, v in usage.items() if k != "output_tokens"}}
+        elif event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+            self.usage = {**(self.usage or {}), **event["usage"]}
+            self.final_output = "output_tokens" in event["usage"]
+
+    def tokens(self) -> dict[str, int | None] | None:
+        if self.usage is None:
+            return None
+        usage = self.usage
+        if self.provider == "anthropic" and not self.final_output:
+            usage = {k: v for k, v in usage.items() if k != "output_tokens"}
+        return _usage(self.provider, {"usage": usage})
+
+
 def _answer_reader(policy: dict, config: ProxyConfig) -> dict:
     """How a policy's agreement stages read a comparable answer, and where that came from."""
     if policy.get("answer_pattern"):
@@ -881,8 +969,11 @@ def create_app(
         shadow_due = (shadow_policy is not None and shadow_policy["stages"] and selected == frontier
                       and not fallback and response.status_code < 400 and sampled(request_id, config.shadow_sample_rate))
         if stream and response.status_code < 400:
-            # Streaming never enters the verified answer cache. Costs stay unknown
-            # until actual usage/cost is supplied through the outcome endpoint.
+            # Streaming never enters the verified answer cache. The row is written
+            # before the first byte; token counts and the answer cost are filled in
+            # when the stream ends, if it carried usage. Otherwise they stay unknown
+            # until supplied through the outcome endpoint. The baseline and routing
+            # cost stay unknown either way.
             recorded = record_safely(**common, upstream_status=response.status_code)
             if not recorded and config.ledger_required:
                 await response.aclose()
@@ -892,12 +983,36 @@ def create_app(
             # that the shadow report says how much of the sample it could not see.
             streamed = BackgroundTask(count_safely, identity, "streamed") if shadow_due else None
 
+            usage = _StreamUsage(provider)
+            priced_model = None if fallback else selected
+
+            def fill_usage() -> None:
+                # Also after a stream that broke off: what usage arrived is kept, and
+                # a cost needs every count. A failed write must not reach the caller.
+                if not recorded:
+                    return
+                try:
+                    usage.close()
+                    tokens = usage.tokens()
+                    if tokens is None:
+                        return
+                    store.fill_usage(
+                        identity, request_id, input_tokens=tokens["input_tokens"],
+                        output_tokens=tokens["output_tokens"], cached_tokens=tokens["cached_tokens"],
+                        cost_usd=_cost(config, provider, priced_model, tokens) if priced_model else None)
+                except Exception:
+                    pass
+
             async def chunks():
                 try:
                     async for chunk in response.aiter_bytes():
+                        usage.feed(chunk)
                         yield chunk
                 finally:
-                    await response.aclose()
+                    try:
+                        await response.aclose()
+                    finally:
+                        fill_usage()
 
             return StreamingResponse(
                 chunks(), status_code=response.status_code,

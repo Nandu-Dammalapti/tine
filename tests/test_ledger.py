@@ -20,6 +20,25 @@ def row(ledger, tenant="a", **overrides):
     return ledger.record(**values)
 
 
+def test_usage_learned_after_recording_fills_only_empty_fields_and_stays_in_the_tenant():
+    ledger = Ledger()
+    streamed = row(ledger, stream=True, response_body=None)
+    supplied = row(ledger, stream=True, response_body=None)
+    assert ledger.update_outcome("a", supplied, True, cost_usd=0.5)
+    assert not ledger.fill_usage("b", streamed, input_tokens=1, cost_usd=0.1)
+    for request_id in (streamed, supplied):
+        assert ledger.fill_usage("a", request_id, input_tokens=10, output_tokens=20, cached_tokens=0, cost_usd=0.1)
+    filled = ledger.get("a", streamed)
+    assert (filled["input_tokens"], filled["output_tokens"], filled["cached_tokens"], filled["cost_usd"]) == (
+        10, 20, 0, 0.1)
+    assert filled["baseline_cost_usd"] is filled["baseline_source"] is filled["success"] is None
+    # A cost the caller supplied first is kept, and no outcome event is added.
+    assert ledger.get("a", supplied)["cost_usd"] == 0.5 and len(ledger.outcome_events("a", supplied)) == 1
+    for bad in ({"input_tokens": -1}, {"output_tokens": True}, {"cost_usd": float("nan")}):
+        with pytest.raises(ValueError):
+            ledger.fill_usage("a", streamed, **bad)
+
+
 def test_unknown_outcomes_and_costs_are_not_success_or_savings():
     ledger = Ledger()
     request_id = row(ledger)

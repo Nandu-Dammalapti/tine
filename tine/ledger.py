@@ -499,6 +499,40 @@ class Ledger:
             )
         return True
 
+    def fill_usage(
+        self,
+        tenant: str,
+        request_id: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        cost_usd: float | None = None,
+    ) -> bool:
+        """Fill token counts and the answer cost the proxy learned after recording a
+        request, such as a streamed reply's usage once the stream has ended. Only empty
+        fields are filled: a value already there, such as a cost the caller supplied
+        meanwhile, is kept. This is not an outcome update and adds no outcome event.
+        Returns False when the tenant has no such request."""
+        _nonnegative(cost_usd, "cost_usd")
+        for name, value in (
+            ("input_tokens", input_tokens),
+            ("output_tokens", output_tokens),
+            ("cached_tokens", cached_tokens),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_TOKEN_COUNT
+            ):
+                raise ValueError(f"{name} must be an integer between 0 and {MAX_TOKEN_COUNT} or None")
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE requests SET input_tokens=COALESCE(input_tokens, ?), output_tokens=COALESCE(output_tokens, ?), "
+                "cached_tokens=COALESCE(cached_tokens, ?), cost_usd=COALESCE(cost_usd, ?) "
+                "WHERE tenant=? AND request_id=?",
+                (input_tokens, output_tokens, cached_tokens, cost_usd, tenant, request_id),
+            )
+        return cursor.rowcount > 0
+
     def outcome_events(self, tenant: str, request_id: str) -> list[dict[str, Any]]:
         """Every outcome update of one request, oldest first: the fields it set and the
         values they held before. Updates made before the table existed are not here."""
