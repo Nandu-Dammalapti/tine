@@ -34,7 +34,7 @@ Agreement on more exact-answer datasets: [results/2026-11-16-agreement-more-data
 - [docs/PROXY.md](docs/PROXY.md): the development proxy, ledger, shadow mode, routing through a policy and named checks.
 - [docs/POLICY.md](docs/POLICY.md): frozen policies.
 - [docs/REPORT.md](docs/REPORT.md): the savings report page. `scripts/savings_report.py` writes a tenant's savings report as one HTML file.
-- [docs/DEPLOY.md](docs/DEPLOY.md): container packaging. The image has not been built or run.
+- [docs/DEPLOY.md](docs/DEPLOY.md): container packaging. The image was built and run once from an earlier Dockerfile (40 paid requests, 2026-11-17); the current files have not been built.
 - [docs/PLANNING.md](docs/PLANNING.md): how many graded tasks certification needs.
 - [docs/LEARNING_LOOP.md](docs/LEARNING_LOOP.md): a design for certifying a tenant's policy from its own traffic. Not built.
 - [docs/CHECKS.md](docs/CHECKS.md), [docs/SWE_CHECKS.md](docs/SWE_CHECKS.md), [docs/JUDGE.md](docs/JUDGE.md): checks for chains.
@@ -136,7 +136,7 @@ The optional fixed-embedding stage pins a small sentence encoder, checks 50 prom
 
 ## Development proxy
 
-See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, cache isolation, shadow mode and routing through a frozen policy (with named checks: a tests webhook and a judge call) are tested with mocked providers. Shadow mode and routing through agreement policies have also run with real current models on public benchmark questions (`results/2026-11-17-live-pilot`, `results/2026-11-17-live-pilot-more`); the named checks are tested with stand-ins only. SQLite is a local development backend. None of this has served a customer's traffic. Production Postgres, streaming under a policy, nightly retraining and model generation/distillation remain future work; none is claimed by the offline report. Container packaging is in [docs/DEPLOY.md](docs/DEPLOY.md); the image has not been built or run.
+See [proxy and ledger instructions](docs/PROXY.md). Authenticated OpenAI/Anthropic requests, streaming passthrough, late outcomes, cache isolation, shadow mode and routing through a frozen policy (with named checks: a tests webhook and a judge call) are tested with mocked providers. Shadow mode and routing through agreement policies have also run with real current models on public benchmark questions (`results/2026-11-17-live-pilot`, `results/2026-11-17-live-pilot-more`); the named checks are tested with stand-ins only. SQLite is a local development backend. None of this has served a customer's traffic. Production Postgres, streaming under a policy, nightly retraining and model generation/distillation remain future work; none is claimed by the offline report. Container packaging is in [docs/DEPLOY.md](docs/DEPLOY.md). The image was built and run once from an earlier Dockerfile (40 paid requests, 2026-11-17); the current files have not been built.
 
 The ledger records answer-generation and routing/checking costs separately. Verified savings subtract both; requests with unknown routing costs are excluded from that comparison. With a route policy the proxy records routing cost itself for requests the policy handled. Otherwise supply measured `routing_cost_usd` through the outcome endpoint, including for cache hits. Existing records retain unknown routing costs after migration.
 

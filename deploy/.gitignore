@@ -1,3 +1,5 @@
 # Real configuration never goes into git. Only the *.example files do.
 *.env
 config/
+# The tenant token scripts/container_env.py writes for a local test.
+client-token.txt

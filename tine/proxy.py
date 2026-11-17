@@ -77,6 +77,48 @@ def _json_file(variable: str) -> tuple[Any, bytes | None]:
         raise ValueError(f"{variable}={path} could not be loaded as JSON: {type(error).__name__}: {error}") from None
 
 
+def _env_json(variable: str) -> Any:
+    """The JSON value of an environment variable, ``{}`` when it is unset or empty. An
+    error names the variable and never repeats its value, which may hold tokens."""
+    raw = os.environ.get(variable, "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError) as error:
+        detail = (f"{error.msg} at character {error.pos}" if isinstance(error, json.JSONDecodeError)
+                  else type(error).__name__)
+        quoted = " The value starts with a quote: remove the quotes around it." if raw[0] in "'\"" else ""
+        raise ValueError(f"{variable} is not valid JSON ({detail}). Write the JSON on one line.{quoted}") from None
+
+
+def _env_number(variable: str, default, kind=float):
+    """A number from an environment variable, ``default`` when it is unset or empty. An
+    error names the variable, not the value."""
+    raw = os.environ.get(variable, "").strip()
+    if not raw:
+        return default
+    try:
+        return kind(raw)
+    except ValueError:
+        wanted = "a whole number" if kind is int else "a number"
+        raise ValueError(f"{variable} must be {wanted}, with no unit or other text") from None
+
+
+def _env_flag(variable: str, default: bool) -> bool:
+    """A switch from an environment variable: 1 or true, 0 or false, in any case.
+    ``default`` when it is unset or empty. Any other value is refused, so that a
+    misspelt switch is not read as off."""
+    raw = os.environ.get(variable, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true"):
+        return True
+    if raw in ("0", "false"):
+        return False
+    raise ValueError(f"{variable} must be 1 or true, or 0 or false")
+
+
 def _has_stages(policies: dict) -> bool:
     """Whether any tenant's policy has a cheaper stage to run."""
     return any(policy["stages"] for by_provider in policies.values() for policy in by_provider.values())
@@ -156,13 +198,14 @@ class ProxyConfig:
 
     @classmethod
     def from_env(cls) -> "ProxyConfig":
-        """Read configuration, never print or persist credential values."""
+        """Read configuration, never print or persist credential values. A value that
+        cannot be read stops with an error that names its variable."""
         shadow_policies, _ = _json_file("TINE_SHADOW_POLICIES")
         # Hashed from the same bytes that are parsed, so the digest is of what runs.
         route_policies, route_bytes = _json_file("TINE_ROUTE_POLICIES")
         betas = os.environ.get("TINE_ANTHROPIC_BETA_ALLOWLIST")
         return cls(
-            tenant_keys=json.loads(os.environ.get("TINE_TENANT_KEYS", "{}")),
+            tenant_keys=_env_json("TINE_TENANT_KEYS"),
             openai_api_key=os.environ.get("TINE_OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("TINE_ANTHROPIC_API_KEY", ""),
             openai_frontier_model=os.environ.get("TINE_OPENAI_FRONTIER_MODEL", ""),
@@ -172,33 +215,29 @@ class ProxyConfig:
                 "TINE_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
             ),
             ledger_path=os.environ.get("TINE_LEDGER_PATH", "artifacts/ledger.sqlite3"),
-            timeout_seconds=float(os.environ.get("TINE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
-            allowed_models=json.loads(os.environ.get("TINE_ALLOWED_MODELS", "{}")),
-            prices=json.loads(os.environ.get("TINE_MODEL_PRICES", "{}")),
-            verified_cache=os.environ.get("TINE_VERIFIED_CACHE", "true").lower() == "true",
+            timeout_seconds=_env_number("TINE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+            allowed_models=_env_json("TINE_ALLOWED_MODELS"),
+            prices=_env_json("TINE_MODEL_PRICES"),
+            verified_cache=_env_flag("TINE_VERIFIED_CACHE", True),
             shadow_policies=shadow_policies,
-            shadow_sample_rate=float(os.environ.get("TINE_SHADOW_SAMPLE_RATE", "0")),
-            shadow_max_cost_usd=(float(os.environ["TINE_SHADOW_MAX_COST_USD"])
-                                 if os.environ.get("TINE_SHADOW_MAX_COST_USD") else None),
+            shadow_sample_rate=_env_number("TINE_SHADOW_SAMPLE_RATE", 0.0),
+            shadow_max_cost_usd=_env_number("TINE_SHADOW_MAX_COST_USD", None),
             route_policies=route_policies,
             route_policies_sha256=hashlib.sha256(route_bytes).hexdigest() if route_bytes is not None else None,
-            route_estimate_baseline=os.environ.get("TINE_ROUTE_ESTIMATE_BASELINE", "false").lower() == "true",
+            route_estimate_baseline=_env_flag("TINE_ROUTE_ESTIMATE_BASELINE", False),
             checks=_json_file("TINE_CHECKS")[0],
             tenant_checks=_json_file("TINE_TENANT_CHECKS")[0],
             answer_pattern=os.environ.get("TINE_ANSWER_PATTERN") or None,
-            shadow_max_concurrent=int(os.environ.get("TINE_SHADOW_MAX_CONCURRENT", "8")),
-            shadow_max_concurrent_per_tenant=(int(os.environ["TINE_SHADOW_MAX_CONCURRENT_PER_TENANT"])
-                                              if os.environ.get("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT") else None),
-            shadow_max_unknown_cost_calls=int(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20")),
-            shadow_max_unknown_cost_share=float(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", "0.2")),
-            shadow_max_calls_per_minute=(int(os.environ["TINE_SHADOW_MAX_CALLS_PER_MINUTE"])
-                                         if os.environ.get("TINE_SHADOW_MAX_CALLS_PER_MINUTE") else None),
-            route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
-                                    if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
-            ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
-            audit_rate=float(os.environ.get("TINE_AUDIT_RATE", "0")),
-            max_body_bytes=int(os.environ.get("TINE_MAX_BODY_BYTES", "10485760")),
-            denied_fields=json.loads(os.environ.get("TINE_DENIED_FIELDS", "{}")),
+            shadow_max_concurrent=_env_number("TINE_SHADOW_MAX_CONCURRENT", 8, int),
+            shadow_max_concurrent_per_tenant=_env_number("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT", None, int),
+            shadow_max_unknown_cost_calls=_env_number("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", 20, int),
+            shadow_max_unknown_cost_share=_env_number("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", 0.2),
+            shadow_max_calls_per_minute=_env_number("TINE_SHADOW_MAX_CALLS_PER_MINUTE", None, int),
+            route_deadline_seconds=_env_number("TINE_ROUTE_DEADLINE_SECONDS", None),
+            ledger_required=_env_flag("TINE_LEDGER_REQUIRED", False),
+            audit_rate=_env_number("TINE_AUDIT_RATE", 0.0),
+            max_body_bytes=_env_number("TINE_MAX_BODY_BYTES", 10_485_760, int),
+            denied_fields=_env_json("TINE_DENIED_FIELDS"),
             anthropic_beta_allowlist=([value.strip() for value in betas.split(",") if value.strip()]
                                       if betas else None),
         )
@@ -218,6 +257,11 @@ class ProxyConfig:
             raise ValueError("Configure nonempty TINE_TENANT_KEYS before starting the proxy")
         if not _finite_number(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        # sqlite3 opens "" as a temporary database that is kept nowhere: the proxy would
+        # start, answer /health and lose every row when it stops.
+        if not str(self.ledger_path).strip():
+            raise ValueError("TINE_LEDGER_PATH is empty: give the ledger file's path, or remove the line for the "
+                             "default")
         if not isinstance(self.verified_cache, bool):
             raise ValueError("verified_cache must be a boolean")
         if not isinstance(self.allowed_models, dict) or any(
@@ -372,6 +416,12 @@ class ProxyConfig:
                 raise ValueError(
                     f"checks: bearer_env {variable!r} is sent by the webhook checks of several tenants "
                     f"({', '.join(sorted(users))}). Give each tenant's webhook a token variable of its own")
+        # A webhook's token is read from the environment each time the check runs. Unset,
+        # every run would fail closed: no cheaper answer accepted, each at unknown cost.
+        for variable in sorted({name for step in every_step for name in token_variables([step])}):
+            if not os.environ.get(variable):
+                raise ValueError(f"checks: bearer_env {variable!r} is not set, or is empty, in the proxy's "
+                                 "environment. Set the webhook's token there, or remove the check")
         for name, by_provider in self.route_policies.items():
             if set(by_provider) & set(self.shadow_policies.get(name, {})):
                 raise ValueError("A tenant's provider can have a shadow policy or a route policy, not both")
@@ -1101,7 +1151,11 @@ def create_app(
                         await response.aread()
                     break
                 await response.aclose()
-            except httpx.HTTPError:
+            except httpx.HTTPError as error:
+                # The caller gets a bare 502, so the reason goes to the log: the kind of
+                # failure and the host. Never the request, the path or a key.
+                log.warning("no reply from the %s upstream at %s for model %r: %s", provider,
+                            urlsplit(url).netloc, selected, type(error).__name__)
                 if response is not None:
                     await response.aclose()
                 response = None

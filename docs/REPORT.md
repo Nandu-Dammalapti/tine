@@ -4,13 +4,23 @@
 
 ## Getting the ledger out of a running container
 
-The ledger is a SQLite file in WAL mode. While the proxy runs, the newest rows are in `ledger.sqlite3-wal`, beside the main file. A copy of `/data/ledger.sqlite3` alone can lack rows. On the first real container run it had no tables at all.
+The ledger is a SQLite file in WAL mode. While the proxy runs, the newest rows are in `ledger.sqlite3-wal`, beside the main file. A copy of `/data/ledger.sqlite3` alone can lack rows. On the first real container run (an image of the earlier Dockerfile, [DEPLOY.md](DEPLOY.md)) it had no tables at all.
 
 Make the copy with the package's own command, then copy that one file out:
 
 ```bash
-docker compose exec tine python -m tine backup-ledger --output /data/ledger-backup.sqlite3
-docker compose cp tine:/data/ledger-backup.sqlite3 ./ledger-backup.sqlite3
+docker compose exec tine python -m tine backup-ledger --output /data/ledger-copy.sqlite3
+docker compose cp tine:/data/ledger-copy.sqlite3 ./ledger-copy.sqlite3
+docker compose exec tine rm /data/ledger-copy.sqlite3
+```
+
+Then make the page on the host, from the copy and the policies file the container reads
+(`deploy/config/route-policies.json` or `deploy/config/shadow-policies.json`), naming the tenant whose
+policy to take from it:
+
+```bash
+python scripts/savings_report.py --ledger ./ledger-copy.sqlite3 --tenant TENANT \
+  --policy deploy/config/route-policies.json --output report.html
 ```
 
 - The command reads the ledger at `TINE_LEDGER_PATH`, or the file given with `--ledger`. With neither it looks where the proxy would, `artifacts/ledger.sqlite3`.
@@ -18,10 +28,10 @@ docker compose cp tine:/data/ledger-backup.sqlite3 ./ledger-backup.sqlite3
 - The copy is a single file with mode 600 and no `-wal` or `-shm` file beside it. `scripts/savings_report.py --ledger` reads it as it is. It prints the row counts of the copy.
 - It refuses to replace an existing file unless `--force` is given, and never writes over the ledger itself. The ledger file is not changed. Run on a ledger that no process has open, it leaves an empty `-wal` file and a `-shm` file beside it.
 - It writes only in the output's directory: a temporary file there, renamed when complete. Under the container's read-only root that leaves `/data` and `/tmp`. Use `/data`: `/tmp` is a tmpfs, and `docker cp` cannot read a file from a tmpfs.
-- The copy stays on the volume until you remove it or replace it with `--force`, and the volume needs room for it. It holds prompts and responses: protect it like the ledger.
+- The copy stays on the volume until you remove it (the third line above) or replace it with `--force`, and the volume needs room for it. It holds prompts and responses: protect it like the ledger, on the host too.
 - Given the main file copied alone, `scripts/savings_report.py` stops with "it has no requests table" and names this command.
 
-Status: on 2026-11-17 the command was run in the locally built image with this code mounted over the image's copy, under the compose file's restrictions (read-only root, `/tmp` as tmpfs, uid 10001, no capabilities) and with no network. A stand-in process kept the ledger open and wrote to it; the proxy itself was not running. `docker exec` and `docker cp` were used: the `docker compose` forms above were not run. The backup to `/data` copied out complete, the plain copy of the main file had no tables, and `docker cp` from `/tmp` failed as said above. It was also run outside Docker on a copy of the first container run's ledger (40 requests). No customer has used it.
+Status: on 2026-11-17 the command was run in the image built from the earlier Dockerfile, with this code mounted over the image's copy, under the compose file's restrictions (read-only root, `/tmp` as tmpfs, uid 10001, no capabilities) and with no network. A stand-in process kept the ledger open and wrote to it; the proxy itself was not running. `docker exec` and `docker cp` were used: the `docker compose` forms above were not run. The backup to `/data` copied out complete, the plain copy of the main file had no tables, and `docker cp` from `/tmp` failed as said above. It was also run outside Docker on a copy of the first container run's ledger (40 requests). No customer has used it.
 
 ## Usage
 
@@ -35,8 +45,8 @@ python scripts/savings_report.py --report-json saved.json --tenant TENANT --note
 | `--ledger` | ledger SQLite file; opened read-only |
 | `--report-json` | JSON with a `shadow_report` and/or `ledger_report` object, in place of a ledger |
 | `--tenant` | tenant the page is for; a saved report or policy for another tenant is refused |
-| `--policy` | policy JSON to describe on the page: one frozen policy, or the file the proxy reads (`TINE_ROUTE_POLICIES` or `TINE_SHADOW_POLICIES`) |
-| `--provider` | with the proxy's policies file: which of the tenant's policies to describe, when it has one for more than one provider |
+| `--policy` | policy JSON to describe on the page: one frozen policy as `tine freeze-policy` writes it, or the file the proxy reads (`TINE_ROUTE_POLICIES` or `TINE_SHADOW_POLICIES`: tenant, then provider, then policy), from which the `--tenant` policy is taken |
+| `--provider` | with the proxy's policies file: which of the tenant's policies to describe (`anthropic` or `openai`), when it has one for more than one provider |
 | `--generated-at` | time to print on the page; default is now, in UTC |
 | `--note` | one line shown under the headline, for example where the figures came from |
 | `--output` | HTML file to write |

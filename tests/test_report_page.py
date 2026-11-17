@@ -654,6 +654,45 @@ def test_cli_says_so_when_shadow_rows_were_run_with_another_policy(tmp_path, cap
     assert "Note." not in text_of(cli.build(tenant="nobody", ledger=path))
 
 
+def test_cli_describes_a_deployments_policy_file_without_changing_the_policy(tmp_path, capsys):
+    """A deployment has the proxy's own file, tenant then provider then policy, not one
+    bare policy. The tenant's policy is taken from it unchanged, so the digest check
+    against the shadow rows still holds."""
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    add_shadow_rows(ledger)
+    ledger.close()
+    deployed = tmp_path / "shadow-policies.json"
+    deployed.write_text(json.dumps({"acme": {"openai": POLICY}, "other": {"openai": {**POLICY, "tenant": "other"}}}),
+                        encoding="utf-8")
+    assert cli.read_policy(deployed, "acme") == POLICY
+    text = text_of(cli.build(tenant="acme", ledger=path, policy=deployed))
+    assert "The policy in plain words" in text and "Note." not in text
+    with pytest.raises(ValueError, match="holds no policy for tenant 'nobody'"):
+        cli.read_policy(deployed, "nobody")
+    both = tmp_path / "both.json"
+    both.write_text(json.dumps({"acme": {"openai": POLICY, "anthropic": {**POLICY, "task_type": "labels"}}}),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="Choose one with --provider"):
+        cli.read_policy(both, "acme")
+    assert cli.read_policy(both, "acme", "anthropic")["task_type"] == "labels"
+    with pytest.raises(ValueError, match="holds no 'anthropic' policy for tenant 'acme'"):
+        cli.read_policy(deployed, "acme", "anthropic")
+    # A policy filed under one tenant that names another is still refused.
+    crossed = tmp_path / "crossed.json"
+    crossed.write_text(json.dumps({"acme": {"openai": {**POLICY, "tenant": "other"}}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="names tenant 'other'"):
+        cli.read_policy(crossed, "acme")
+    output = tmp_path / "report.html"
+    cli.main(["--ledger", str(path), "--tenant", "acme", "--policy", str(both), "--provider", "openai",
+              "--output", str(output)])
+    assert "The policy in plain words" in text_of(output.read_text(encoding="utf-8"))
+    # One bare policy is read as before, and --provider is not needed for it.
+    bare = tmp_path / "policy.json"
+    bare.write_text(json.dumps(POLICY), encoding="utf-8")
+    assert cli.read_policy(bare, "acme") == POLICY
+
+
 def test_cli_warns_about_an_edited_policy_and_refuses_a_bound_written_as_text(tmp_path, capsys):
     frozen = {**POLICY, "provenance": {"seed": 42}}
     frozen["provenance"][DIGEST_FIELD] = policy_digest(frozen)

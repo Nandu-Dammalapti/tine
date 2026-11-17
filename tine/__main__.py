@@ -5,6 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+# How long ``tine serve`` lets requests in flight finish after it is told to stop.
+# docker-compose.yml's stop_grace_period must be longer, or Docker kills the process
+# first and the ledger is not closed.
+SERVE_SHUTDOWN_SECONDS = 20
+
 
 def freeze_notes(policy: dict) -> list[str]:
     """What to read beside a new policy's bound: one line with the held-out loss and
@@ -149,7 +154,13 @@ def main(argv=None):
     server = commands.add_parser("serve", help="Start the authenticated development proxy")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8000)
+    server.add_argument("--shutdown-seconds", type=int, default=SERVE_SHUTDOWN_SECONDS,
+                        help="On SIGTERM or Ctrl-C, how long requests in flight may take to finish before they "
+                             "are cut. An open stream is cut at this time too. Whole number, at least 1 "
+                             f"(default {SERVE_SHUTDOWN_SECONDS})")
     args = parser.parse_args(argv)
+    if args.command == "serve" and args.shutdown_seconds < 1:
+        parser.error("--shutdown-seconds must be at least 1")
     if args.command in {"run", "demo"}:
         from tine.data import read_outcomes, synthetic_fixture
         from tine.pipeline import run_experiment
@@ -291,7 +302,15 @@ def main(argv=None):
         tine_log.addHandler(handler)
         tine_log.setLevel(logging.INFO)
         tine_log.propagate = False
-        uvicorn.run(create_app(), host=args.host, port=args.port)
+        try:
+            app = create_app()
+        except ValueError as error:
+            # A refused configuration. In a container this is the end of the log before a
+            # restart, so it is one line that names the setting, with no traceback over it.
+            raise SystemExit(f"tine serve: the configuration was refused. {error}") from None
+        # Without a limit uvicorn waits for every open connection, and a stream that
+        # never ends would hold a stop until the supervisor kills the process.
+        uvicorn.run(app, host=args.host, port=args.port, timeout_graceful_shutdown=args.shutdown_seconds)
 
 
 if __name__ == "__main__":

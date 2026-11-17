@@ -2,7 +2,7 @@
 
 The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_SHADOW_MAX_CALLS_PER_MINUTE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
 
-To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). The image has not been built or run yet.
+To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). No Docker daemon has built or run the image from the files as they now stand; an earlier Dockerfile was built once on 2026-11-17 and its container served 40 paid requests. Not every step of the Dockerfile as it is now has been run. Run by hand outside Docker on 2026-11-17, on a Mac: the command that writes `requirements.txt`, a `pip` dry-run resolve of its lines for Linux (nothing was installed), the image's command (on `127.0.0.1`, not `0.0.0.0`), the health check command, requests and a stop. Not run in their present form: the `COPY` that now brings `requirements-dev.lock`, and the `pip install` with that lock as constraints. The base image, the `COPY` of `tine/`, the user-creation step (`groupadd`, `useradd`, `chown`, `chmod`), `USER` and `VOLUME` are unchanged from the image that was built once.
 
 Use the activated Python environment from the README. Configure these variables through your shell's secure configuration or environment settings:
 
@@ -12,11 +12,11 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_OPENAI_API_KEY` / `TINE_ANTHROPIC_API_KEY` | Provider credentials; configure only the providers you use |
 | `TINE_OPENAI_FRONTIER_MODEL` / `TINE_ANTHROPIC_FRONTIER_MODEL` | Exact frontier model name for each provider |
 | `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3`. To copy it while the proxy runs, use `python -m tine backup-ledger --output PATH` ([REPORT.md](REPORT.md)): the main file copied alone can lack the newest rows |
-| `TINE_LEDGER_REQUIRED` | `1` or `true` (any case) returns 503 instead of an answer the ledger could not record. Default off |
+| `TINE_LEDGER_REQUIRED` | `1` or `true` (any case) returns 503 instead of an answer the ledger could not record. `0` or `false` is off, the default. Any other word stops the start |
 | `TINE_OPENAI_BASE_URL` / `TINE_ANTHROPIC_BASE_URL` | Optional API-compatible upstreams; defaults are official HTTPS endpoints. Every model a policy names for that provider is called here (see One base URL per provider) |
 | `TINE_TIMEOUT_SECONDS` | How long a provider may take over one reply, in seconds. Default 600. A reply that takes longer is a 502 with no retry. It was 30 until 2026-11-17: in the live pilots 12 of about 3,600 frontier replies through the proxy took longer than that (up to 53 seconds). Connecting to the provider is given 10 seconds, or this value if it is lower |
 | `TINE_MODEL_PRICES` | Explicit USD-per-million token rates keyed by `provider:model`. Optional, except that shadow sampling needs a price for every stage model and judge model of a shadow policy |
-| `TINE_VERIFIED_CACHE` | `true` by default; cache requires an explicit successful outcome |
+| `TINE_VERIFIED_CACHE` | `true` (or `1`) by default; `false` (or `0`) turns the cache off, and any other word stops the start. The cache requires an explicit successful outcome |
 | `TINE_MAX_BODY_BYTES` | Largest request body on the provider routes, in bytes. Default 10485760 (10 MB). Larger gets 413 (see Request limits) |
 | `TINE_DENIED_FIELDS` | Optional JSON object of provider names and arrays of top-level request fields refused with 400. Unset: none |
 | `TINE_ANTHROPIC_BETA_ALLOWLIST` | Optional comma-separated `anthropic-beta` values that may be forwarded; others get 400. Unset or empty: all forwarded |
@@ -28,6 +28,30 @@ Start locally:
 ```bash
 python -m tine serve --host 127.0.0.1 --port 8000
 ```
+
+A configuration the proxy refuses ends the command with one line, `tine serve: the configuration was
+refused.` and the reason, and exit status 1. A variable whose value cannot be read is named in it, for
+example `TINE_MODEL_PRICES is not valid JSON (...)` or `TINE_TIMEOUT_SECONDS must be a number, with no
+unit or other text`; the value itself is never printed. A number, a JSON value or a switch set to
+nothing means its default. An empty `TINE_LEDGER_PATH` or base URL is refused.
+
+On SIGTERM or Ctrl-C the proxy lets requests in flight finish for 20 seconds, then cuts what is still
+open, streams included, and closes the ledger. `--shutdown-seconds N` changes the 20. Measured with a
+stand-in stream that never ends: the process was gone 20.1 seconds after the signal, with the ledger
+closed to a single file. The 20 seconds are well under `TINE_TIMEOUT_SECONDS` (default 600), so a stop
+can cut a request whose reply the proxy would otherwise have waited for.
+
+The two commands a deployment uses, both in the container image and neither loading the offline
+toolkit (numpy, pandas, scikit-learn, matplotlib):
+
+| Command | Options |
+| --- | --- |
+| `python -m tine serve` | `--host` (default `127.0.0.1`), `--port` (default 8000), `--shutdown-seconds` (default 20) |
+| `python -m tine backup-ledger` | `--output FILE` (required), `--ledger FILE` (default `TINE_LEDGER_PATH`), `--force` to replace an existing copy. See [REPORT.md](REPORT.md) |
+
+When a provider cannot be reached the caller gets 502 `Upstream request failed`, and the log has one
+WARNING line with the provider, the host and port of its base URL, the model and the kind of failure
+(for example `ConnectError`). Nothing of the request, its path or a key is logged.
 
 `GET /health` reports the routing mode, whether shadow mode is sampling, and SQLite development storage. `routing` is `policy` only when at least one loaded route policy has a nonempty `stages` list, and `frontier-default` otherwise, including when `TINE_ROUTE_POLICIES` holds only policies with `stages: []`. `shadow` is `sampling` only when the sample rate is above 0, shadow policies are loaded and at least one of them has stages; otherwise it is `off`. Provider routes return a Tine request ID in `x-tine-request-id`. After an objective check completes, authenticate as the same tenant and update it with `PATCH /v1/outcomes/{request_id}` and JSON `{"success": true}` or `{"success": false}`. Optional `cost_usd`, `routing_cost_usd`, and `baseline_cost_usd` must come from actual accounting; they are not guessed. A caller may set a cost the proxy did not record, never replace one it measured (see Where a baseline comes from). `GET /v1/savings` returns that tenant's ledger summary.
 
@@ -536,7 +560,7 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
   or with `none`, need no reader. Agreement compares the answers it reads as the policy's
   `answer_compare` says, as in shadow mode. With `math` the caller is served the first cheaper model's
   reply as it was written, not the rewritten answer.
-- `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
+- `TINE_ROUTE_ESTIMATE_BASELINE`: `true` or `1` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
   30 seconds, or `TINE_TIMEOUT_SECONDS` if that is shorter. When it runs out the request goes to the
   frontier.
@@ -682,6 +706,10 @@ order, all of which must pass.
     tenants' `TINE_TENANT_CHECKS` entries is refused, and so is one in a shared check that one tenant's
     policies use and also in another tenant's own entry. Give each tenant its own variable, as in the
     example below.
+  - Every variable a webhook step names must be set and not empty in the proxy's environment:
+    "checks: bearer_env 'CI_TOKEN' is not set, or is empty, in the proxy's environment...". The token
+    is read each time the check runs. Without this rule a missing one was found only then: every run
+    of the check failed closed, at unknown cost.
 - **Check files are operator-only configuration.** Whoever can edit `TINE_CHECKS` or
   `TINE_TENANT_CHECKS` chooses which URLs receive tenants' requests and which environment variable is
   sent as a token. The reserved names above cover only the proxy's own settings and the provider keys;

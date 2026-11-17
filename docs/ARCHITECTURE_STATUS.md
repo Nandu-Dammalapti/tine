@@ -94,9 +94,9 @@ and task splitting, are in the design and have not been built or tested.
 | Check audit: what each step of a named check decided, per request | Built and tested with stand-ins. Read from the ledger row; not on the report page |
 | Cost of streamed requests, read from the relayed events | Built and tested with stand-in streams; never run against a real provider's stream. Streams are not shadowed, routed or cached |
 | Savings report page fields: freeze digest state, drift warning, shadow coverage, caller-supplied baselines, the holdout estimate | Built and tested with stand-in data (`docs/REPORT.md`). Never seen by a customer |
-| Ledger backup while the proxy runs (`python -m tine backup-ledger`) | Built and tested; run in the local image beside a stand-in writer, not beside a real proxy |
+| Ledger backup while the proxy runs (`python -m tine backup-ledger`) | Built and tested; run in the image of the earlier Dockerfile beside a stand-in writer, not beside a real proxy |
 | Live pilot harness (`scripts/live_pilot.py`) | Built, tested with a fake provider, and run with paid calls. A test tool, not part of the product |
-| Docker deployment in the customer's cloud | Packaging written (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`). The image has never been built or run |
+| Docker deployment in the customer's cloud | Packaging written (`Dockerfile`, `docker-compose.yml`, `docs/DEPLOY.md`). An earlier Dockerfile was built and run once (40 paid requests, 2026-11-17); the current files have not been built |
 
 ## How the work is being done
 

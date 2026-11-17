@@ -7,10 +7,11 @@ and hands them to ``tine.report_page.render``. The shadow report is built only w
 the ledger has a shadow table. A policy JSON file adds a plain-words description of
 the policy the figures came from.
 
-``--policy`` takes a single frozen policy file, or the file the proxy itself reads
-(``TINE_ROUTE_POLICIES`` or ``TINE_SHADOW_POLICIES``: tenant to provider to policy).
-From the proxy's file it describes ``--tenant``'s policy. When that tenant has a
-policy for more than one provider, ``--provider`` says which.
+``--policy`` takes a single frozen policy file, as ``tine freeze-policy`` writes it,
+or the file the proxy itself reads (``TINE_ROUTE_POLICIES`` or
+``TINE_SHADOW_POLICIES``: tenant to provider to policy). From the proxy's file it
+describes ``--tenant``'s policy. When that tenant has a policy for more than one
+provider, ``--provider`` says which.
 
 The ledger is opened read-only. ``Ledger`` and ``ShadowStore`` create tables and
 switch the journal mode when constructed, which a report must not do to a database a
@@ -158,7 +159,8 @@ def read_policy(path: Path, tenant: str, provider: str | None = None) -> dict:
     """A valid policy that names this tenant, from a single policy file or from the
     proxy's own policies file. A policy for one tenant must not be shown beside
     another tenant's figures. A file edited after freezing still loads; the page says
-    so, and so does a warning here."""
+    so, and so does a warning here. A policy taken from the proxy's file is not
+    changed, so its digest is the one shadow rows carry."""
     policy = json.loads(path.read_text(encoding="utf-8"))
     if is_deploy_format(policy):
         policy, provider = select_policy(policy, tenant, provider, path)
