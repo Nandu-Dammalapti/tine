@@ -293,3 +293,154 @@ def test_batch_create_that_may_have_gone_through_is_never_repeated(tmp_path):
     other.mkdir()
     assert ask_batch(other, FakeBatches(create_error=refused))["unconfirmed_batches"] == 0
     assert ask_batch(other, FakeBatches())["asked"] == 8
+
+
+class Killed(BaseException):
+    """Stands in for the process dying: nothing in the proxy or the pilot catches it."""
+
+
+def counting(calls: list, die_at: int | None = None):
+    """The stand-in provider, keeping each prompt it is asked and dying at one call."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if die_at is not None and len(calls) + 1 == die_at:
+            raise Killed
+        calls.append(json.loads(request.content)["messages"][-1]["content"])
+        return provider(request)
+    return httpx.MockTransport(handler)
+
+
+def run_lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def proxy_run(tmp_path, calls, **options):
+    options = {"mode": "shadow", "max_cost_usd": 1.0, "concurrency": 1, **options}
+    return asyncio.run(live_pilot.through_proxy(
+        options.pop("policy", policy()), options.pop("questions", QUESTIONS),
+        ledger_path=options.pop("ledger_path", tmp_path / "l.db"), run_file=tmp_path / "out.json.run.jsonl",
+        inner=counting(calls, options.pop("die_at", None)), **options))
+
+
+def test_proxy_run_killed_part_way_keeps_what_it_paid_for_and_resumes(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    run_file = tmp_path / "out.json.run.jsonl"
+    # Each request is three calls (the frontier, then the two shadowed models). The run dies
+    # on the eighth: two requests are finished and the third has paid for its frontier call.
+    with pytest.raises(Killed):
+        proxy_run(tmp_path, [], die_at=8)
+    kept = run_lines(run_file)
+    assert [line["kind"] for line in kept] == (["header"] + ["call"] * 3 + ["request"] + ["call"] * 3 + ["request"]
+                                               + ["call"])
+    finished = [line for line in kept if line["kind"] == "request"]
+    assert [line["task_id"] for line in finished] == ["q0", "q1"]
+    assert all(line["accepted"] == 1 and line["ledger_model"] == "claude-opus-5-5" for line in finished)
+    # A line cut off by the kill is dropped, and a run file is never started over by accident.
+    with run_file.open("a") as stream:
+        stream.write('{"kind": "call", "model": "claude-op')
+    with pytest.raises(SystemExit, match="--resume"):
+        proxy_run(tmp_path, [])
+    # Under a cap that the recorded spend already reaches, a resume sends nothing.
+    spent = sum(line["cost_usd"] for line in kept if line["kind"] == "call")
+    capped = []
+    held = proxy_run(tmp_path, capped, resume=True, max_cost_usd=spent)
+    assert capped == [] and len(held["requests"]) == 2 and held["spent_usd"] == round(spent, 4)
+    second = []
+    result = proxy_run(tmp_path, second, resume=True)
+    # q0 and q1 are not asked again; q2, in flight when the run died, is asked in full.
+    assert sorted(set(second)) == ["Question 2?", "Question 3?"] and len(second) == 6
+    assert sorted(row["task_id"] for row in result["requests"]) == ["q0", "q1", "q2", "q3"]
+    assert (result["resumes"], len(result["calls"])) == (2, 13)
+    assert result["spent_usd"] == round(sum(call["cost_usd"] for call in result["calls"]), 4) > round(spent, 4)
+    # The result is what the file holds, and it grades as an unbroken run would.
+    lines = run_lines(run_file)
+    assert result["calls"] == [{key: value for key, value in line.items() if key != "kind"}
+                               for line in lines if line["kind"] == "call"]
+    assert lines[-1]["kind"] == "end" and result["shadow_report"] == lines[-1]["shadow_report"]
+    summary = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert (summary["accepted_share_graded"], summary["loss_rate"], summary["policy_accuracy"]) == (0.75, 0.0, 1.0)
+
+
+def test_resume_refuses_a_changed_policy_question_set_or_ledger(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    with pytest.raises(SystemExit, match="no run to resume"):
+        proxy_run(tmp_path, [], resume=True, mode="route")
+    proxy_run(tmp_path, [], mode="route")
+    before = (tmp_path / "out.json.run.jsonl").read_text()
+    other_policy = {**policy(), "stages": [{"models": ["claude-sonnet-5-5", "claude-haiku-5-5"], "check": "agreement"}]}
+    changed = {"policy_sha256": {"policy": other_policy}, "questions_sha256": {"questions": QUESTIONS[:3] + FREE},
+               "mode": {"mode": "shadow"}, "max_tokens": {"max_tokens": 1024},
+               "does not exist": {"ledger_path": tmp_path / "missing.db"}}
+    for message, change in changed.items():
+        calls = []
+        with pytest.raises(SystemExit, match=message):
+            proxy_run(tmp_path, calls, resume=True, **{"mode": "route", **change})
+        assert calls == []
+    # A ledger that is there but is not this run's: its requests are not in it.
+    from tine.ledger import Ledger
+
+    Ledger(tmp_path / "other.db").close()
+    with pytest.raises(SystemExit, match="does not hold 4 of the requests"):
+        proxy_run(tmp_path, [], resume=True, mode="route", ledger_path=tmp_path / "other.db")
+    assert (tmp_path / "out.json.run.jsonl").read_text() == before
+    with pytest.raises(SystemExit, match="more than once"):
+        proxy_run(tmp_path, [], mode="route", questions=QUESTIONS + QUESTIONS[:1])
+
+
+def test_proxy_command_writes_its_result_from_the_run_file_and_resumes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    calls, real = [], live_pilot.through_proxy
+    monkeypatch.setattr(live_pilot, "through_proxy",
+                        lambda *args, **options: real(*args, inner=counting(calls), **options))
+    (tmp_path / "policy.json").write_text(json.dumps(policy()))
+    output = tmp_path / "run" / "out.json"
+    command = ["proxy", "--policy", str(tmp_path / "policy.json"), "--questions",
+               str(write_questions(tmp_path / "q.jsonl", QUESTIONS)), "--mode", "route", "--max-cost-usd", "1",
+               "--ledger", str(tmp_path / "l.db"), "--output", str(output), "--concurrency", "1"]
+    live_pilot.main(command)
+    whole = json.loads(output.read_text())
+    assert len(whole["requests"]) == 4 and whole["resumes"] == 0 and len(calls) == 9
+    assert json.loads(capsys.readouterr().out)["resumes"] == 0
+    with pytest.raises(SystemExit, match="that run finished"):
+        live_pilot.main(command + ["--resume"])
+    # Killed after the last request but before the result was written: the run file has it all.
+    output.unlink()
+    with pytest.raises(SystemExit, match="--resume"):
+        live_pilot.main(command)
+    live_pilot.main(command + ["--resume"])
+    again = json.loads(output.read_text())
+    assert len(calls) == 9 and again["requests"] == whole["requests"] and again["calls"] == whole["calls"]
+    assert again["resumes"] == 1 and json.loads(capsys.readouterr().out)["resumes"] == 1
+
+
+def test_sample_help_does_not_offer_the_ticket_sets(capsys):
+    with pytest.raises(SystemExit) as shown:
+        live_pilot.main(["sample", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert shown.value.code == 0 and "{arcc,finqa,math500,medqa,mmlupro}" in text
+    assert "scripts/ticket_pilot_prep.py" in text
+    with pytest.raises(SystemExit) as refused:
+        live_pilot.main(["sample", "--bench-dir", "b", "--output", "o", "--dataset", "tickets"])
+    assert refused.value.code == 2 and "invalid choice: 'tickets'" in capsys.readouterr().err
+
+
+def test_worst_case_counts_text_that_is_not_plain_english_higher():
+    from tine.judge import build_messages, estimate_input_tokens, worst_case_cost
+
+    plain = "the printer on the second floor stopped working after the update last night"
+    ticket = "RE: [TICKET #48213] VPN-GW01 DOWN!! Kd. 0049-7731 / Fehler 0x80070005 (ACCESS_DENIED)"
+    # Plain lower-case English is a third of a token a character, plus 8 for the message.
+    assert estimate_input_tokens(plain) == -(-len(plain) // 3) + 8 and estimate_input_tokens("") == 8
+    # Capitals, digits, punctuation and line breaks each add a token.
+    assert estimate_input_tokens("Ab1!\n") == 2 + 4 + 8
+    assert estimate_input_tokens(ticket) / len(ticket) > 2 * estimate_input_tokens(plain) / len(plain)
+    # A character outside ASCII counts as its UTF-8 bytes: 2 for "ü", 3 for each of the others.
+    assert estimate_input_tokens("ü") == 1 + 2 + 8 and estimate_input_tokens("日本語") == 1 + 9 + 8
+    for text in (plain, ticket, "日本語", "x" * 1000):
+        assert estimate_input_tokens(text) >= len(text) / 3
+    # The caps are built on it: here with no reply allowed, at Opus's input price.
+    assert live_pilot._worst_case({"prompt": ticket}, "claude-opus-5-5", 0) == pytest.approx(
+        estimate_input_tokens(ticket) * 4.0 / 1e6)
+    case = {"repository": "o/r", "issue": ticket, "patch": "--- a/x.py\n+++ b/x.py\n"}
+    messages = build_messages(case, "verdict")
+    assert worst_case_cost(case, model="claude-opus-5-5", max_tokens=0) == pytest.approx(
+        estimate_input_tokens(messages[0]["content"] + messages[1]["content"]) * 4.0 / 1e6)

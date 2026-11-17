@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tine.judge import ANTHROPIC_PRICES, MAX_ISSUE_CHARS  # noqa: E402
+from tine.judge import ANTHROPIC_PRICES, MAX_ISSUE_CHARS, estimate_input_tokens  # noqa: E402
 
 PROMPT_VERSION = "2026-11-16-recall"
 INSTRUCTIONS = """Below is a GitHub issue from the {repository} repository. Write the code change the project's maintainers merged to fix it, as a unified diff against the repository as it was when the issue was filed. If you do not know the merged change, write the fix you think is right.
@@ -91,7 +91,7 @@ def run(dataset: Path, instance_ids: list[str], output: Path, *, model: str, max
     def one(instance_id: str) -> None:
         row = rows[instance_id]
         system = INSTRUCTIONS.format(repository=row["repo"])
-        worst = (len(system) + len(row["problem_statement"][:MAX_ISSUE_CHARS])) / 3 * price_in / 1e6 \
+        worst = estimate_input_tokens(system + row["problem_statement"][:MAX_ISSUE_CHARS]) * price_in / 1e6 \
             + max_tokens * price_out / 1e6
         with lock:
             if state["spent"] + state["reserved"] + worst > max_cost_usd:

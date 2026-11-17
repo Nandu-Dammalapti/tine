@@ -251,6 +251,35 @@ def test_singles_are_offered_unchecked_and_answers_can_come_from_a_csv(tmp_path)
     assert agreement.answers_from_csv(path) == recorded()
 
 
+def test_singles_are_still_offered_when_no_pair_is_cheap_enough(tmp_path, capsys):
+    # The cheapest pair, cheap+tiny, costs 1.5 of the frontier's 10: over a 10% share.
+    with pytest.raises(ValueError, match=r"No pair of models is cheap enough \(the cheapest costs 15\.0% of the "
+                                         r"frontier, over max_cost_share 10\.0%\)"):
+        agreement.build_pairs(outcomes_frame(), recorded(), "big", max_cost_share=0.1)
+    frame, checks, report = agreement.build_pairs(outcomes_frame(), recorded(), "big", max_cost_share=0.1,
+                                                  include_singles=True)
+    assert set(frame.model) == {"big", "cheap", "tiny"} and report["pairs"] == 0 and report["agreement_rate"] == {}
+    assert report["cheapest_pair_cost_share"] == 0.15 and "15.0% of the frontier" in report["no_pair_cheap_enough"]
+    assert len(checks) == 10 and all(row["passed"] is True for row in checks)
+    # With no single model under the share either there is nothing to offer.
+    with pytest.raises(ValueError, match="cheap enough"):
+        agreement.build_pairs(outcomes_frame(), recorded(), "big", max_cost_share=0.01, include_singles=True)
+    # When a pair is cheap enough the report says nothing about it, as before.
+    usual = agreement.build_pairs(outcomes_frame(), recorded(), "big", include_singles=True)[2]
+    assert "no_pair_cheap_enough" not in usual and "cheapest_pair_cost_share" not in usual
+    # The command says so in the report it prints, and writes inputs the cascade reads.
+    outcomes_frame().to_json(tmp_path / "outcomes.jsonl", orient="records", lines=True)
+    pd.DataFrame([{"task_id": task_id, "model": model, "answer": answer or ""}
+                  for (task_id, model), answer in recorded().items()]).to_csv(tmp_path / "answers.csv", index=False)
+    agreement.main(["--input", str(tmp_path / "outcomes.jsonl"), "--answers", str(tmp_path / "answers.csv"),
+                    "--frontier", "big", "--output", str(tmp_path / "singles.jsonl"),
+                    "--checks", str(tmp_path / "singles.csv"), "--max-cost-share", "0.1", "--include-singles"])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["pairs"] == 0 and printed["cheapest_pair_cost_share"] == 0.15
+    assert set(read_outcomes(tmp_path / "singles.jsonl").model) == {"big", "cheap", "tiny"}
+    assert len(read_checks(tmp_path / "singles.csv")) == 10
+
+
 def test_math_comparison_agrees_by_value_and_the_default_keeps_every_result(tmp_path):
     """The same answers compared exactly and by value: exact reproduces what this
     script always did, math also accepts one value written two ways."""
