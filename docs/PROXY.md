@@ -174,7 +174,9 @@ Limits:
   cannot be filled in later (the 409 above). Find why routing cost went unknown (a model that fails,
   a webhook, the deadline) and fix it to get a point figure again. Held-out requests whose cost is not
   known are still left out, which can move the figure either way.
-- Built and tested with stand-in providers. Never run on real traffic or used by a real customer.
+- Built and tested with stand-in providers, and run with real current models on public benchmark questions in
+  `results/2026-11-17-live-pilot-more` (measured saving MedQA 56%, ARC 97%, FinQA 18%). Never run on a
+  customer's traffic.
 
 ### Audit trail
 
@@ -416,7 +418,8 @@ from older policy files too.
 
 Rate limits belong to the provider organisation, so shadow calls and the tenant's real calls share
 them. In a live pilot on an account with modest limits, shadow calls running beside real traffic led
-Anthropic to answer 429 to 19-45% of the real frontier requests. Shadow mode now holds back:
+Anthropic to answer 429 to 19-38% of the real frontier requests in the shadow runs, 25-58% in the routed
+runs and 65% in the server test (`results/2026-11-17-live-pilot-more`). Shadow mode now holds back:
 
 - A provider reply of 429 (rate limit) or 529 (overloaded) pauses shadow mode on that provider. This
   holds for a shadow call, a judge call made by a shadow run, a routed request's cheaper call and the
@@ -447,8 +450,12 @@ Anthropic to answer 429 to 19-45% of the real frontier requests. Shadow mode now
   `shadow_calls_last_minute` (null without a cap). `sampling` still says `on` during a pause.
 
 Status: built and tested with stand-in providers that answer 429 and 529, with and without
-`retry-after`, on a test clock. It has not been run against a real provider's limits. It lowers the
-load shadow mode adds; it cannot stop real traffic alone from reaching the limit.
+`retry-after`, on a test clock. It met a real provider's limit once
+(`results/2026-11-17-concurrency-and-long-shadow`): in a test added after that run's plan, the provider
+refused 9 of 69 real requests without the pause and none of 60 with it, and 55 of those 60 were not
+shadowed. The planned test showed nothing. The pause was not seen to end, and a `retry-after` header and
+a 529 were not met. It lowers the load shadow mode adds; it cannot stop real traffic alone from reaching
+the limit.
 
 The same report as a page to send to a customer:
 `python scripts/savings_report.py --ledger LEDGER --tenant TENANT --policy POLICY.json --output report.html`

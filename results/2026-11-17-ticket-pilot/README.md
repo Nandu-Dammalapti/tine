@@ -20,11 +20,17 @@ Tine's proxy. The run used the team's separate credits key.
   Every earlier live result is on benchmark questions.
 - **A policy certified at 4%: Sonnet alone, with no check.** The bound is 3.15%.
   Nothing certified at 2%.
-- **On 300 new tickets the loss was 4.0%, exactly at the limit.** That is 12
-  tickets. One more would have failed the pass mark. The one-sided 95% upper bound is
-  6.4%, so this run does not show the loss on new tickets is under 4%.
-- **The quality margin is thin wherever it is measured.**
+- **The 4% result held with no margin.** Read the bound beside what was measured
+  outside the certify part:
   - Held-out part of the history: 5.1% (10 of 197), above the limit.
+  - 300 new tickets in shadow mode: 4.0% (12), exactly at the limit. One more
+    would have failed the pass mark. The one-sided 95% upper bound is 6.4%, so
+    this run does not show the loss on new tickets is under 4%.
+  - Every ticket outside the certify part, 505 from the history and the 300 new
+    ones: 3.98% (32 of 805; 95% interval 2.7% to 5.6%).
+- **The certify part's 1.8% is not the loss to expect.** It is the count the
+  policy passed on, and it is lower than every other part.
+- **New text does worse than repeated text.**
   - The 203 new tickets whose text was not seen before: 4.9%.
   - The 97 whose text repeats an earlier ticket: 2.1%.
 - **The saving is about half, and it was measured.** Live routing with a random 30%
@@ -110,8 +116,18 @@ files gives the same policy.
 - **Nothing certified at 2%.** Only the pair was tested, and its bound of 2.11% is
   just over.
 - **The held-out loss is above the limit.** Sonnet alone lost 10 of the 197
-  held-out tickets, 5.1%. The guarantee is the bound on the certify part. The
-  held-out part is an estimate on a small sample, and here it points the other way.
+  held-out tickets, 5.1% (95% upper bound 8.5%). The guarantee is the bound on the
+  certify part. The held-out part is an estimate on a small sample, and here it
+  points the other way.
+- **The certify part is the lowest of the three.** Sonnet alone lost 3.2% on the
+  choose part (10 of 308), 1.8% on the certify part (9 of 495) and 5.1% on the
+  held-out part. The certify part against the rest of the history is 9 of 495
+  against 20 of 505 (Fisher p = 0.058). A chain that passed has a low count on its
+  certify part partly by selection, so 1.8% is not the loss to expect. Over all
+  1,000 tickets the loss is 2.9% (29), with a bound of 3.93%: just inside 4%.
+- **Not a violation.** A true loss of exactly 4% would give 32 or more losses in
+  805 tickets about half the time (probability 0.54). The data fit a loss at the
+  limit. They do not show a margin under it.
 - **The pair sends 7.2% of tickets to Opus** and answers the rest when the two
   cheaper models agree.
 
@@ -179,6 +195,11 @@ the policy and went to Opus. 3 requests in flight, `max_tokens` 512.
 | shadow, 300 new tickets | 76.3% |
 | live, 84 held-out tickets | 76.2% |
 
+Both models scored lower on the new tickets than on the history: Opus 82.0%
+against 76.3% (Fisher p = 0.037), and Sonnet 80.3% against 74.7% (p = 0.043). The
+history was asked through batches and the new tickets through the proxy. The cause
+was not looked into.
+
 Roughly a fifth to a quarter of tickets are "wrong" for Opus too. So the loss
 against the frontier here measures agreement with one team's labelling as much as
 it measures quality. Some losses will be tickets where two categories were both
@@ -207,6 +228,19 @@ reasonable. That was not checked.
 5. **Code version:** `2341a23` for the shadow and live runs, from the version
    file. The proxy code under `tine/` is the same as in the long shadow run
    (`6dcd48d`).
+
+6. **The laptop slept for 106 seconds during the shadow run.** The system's power
+   log has a lid-closed sleep on battery from 10:27:57 to 10:29:43 UTC. The run's
+   ledger has no finished request between 10:27:58 and 10:29:58.
+   - Three provider calls took 118 to 127 seconds by the wall clock. All returned
+     200.
+   - For those three requests the ledger's latency is 1.4 to 23.7 seconds. The
+     proxy times a request with a clock that stops while the machine sleeps.
+   - No request failed and no count changed.
+7. **The runs shared the account with the long shadow run.** The shadow run (10:22
+   to 10:30 UTC) and the live run (10:30 to 10:33) ran beside blocks 4 and 5 of
+   `../2026-11-17-concurrency-and-long-shadow`, each at 3 requests in flight. No
+   call in any of them got a 429.
 
 ## Limits
 

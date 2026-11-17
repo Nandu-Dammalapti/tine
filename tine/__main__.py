@@ -28,7 +28,7 @@ def freeze_notes(policy: dict) -> list[str]:
     if lost / test > epsilon:
         notes.append(f"Warning: the held-out loss ({lost / test:.2%}) is above epsilon ({epsilon:.2%}). "
                      "Quote the held-out loss beside the bound.")
-    if seen >= allowed:
+    if allowed is not None and seen >= allowed:
         notes.append(f"Warning: the certify part used every loss it was allowed ({seen} of {allowed}). "
                      "One more loss would not have certified; this certificate has no margin.")
     return notes

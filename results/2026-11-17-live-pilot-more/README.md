@@ -39,8 +39,9 @@ through Tine's proxy. The run used the team's separate credits key.
   | FinQA | 51% → 59% | 10% → 17% | 1.0% → 2.0% |
 
 - **Rate limits are a real risk for shadow mode.** When shadow calls and real
-  calls shared one account at modest limits, the provider refused 19-45% of the
-  customer's real requests. That led to the rate-limit pause now in the proxy.
+  calls shared one account at modest limits, the provider refused 19-38% of the
+  customer's real requests in the shadow runs, 25-58% in the routed runs and 65%
+  in the server test. That led to the rate-limit pause now in the proxy.
 - **`tine serve` worked as a real server.** It ran as its own process and answered
   40 requests over HTTP with routing and the holdout on, with no errors.
 
@@ -161,7 +162,11 @@ This was the first time the proxy ran as a server rather than in-process.
 
 1. **The first shadow and live runs were stopped for rate limits.** The four
    benchmarks and a first server test ran in parallel on one account. The
-   provider refused 19-45% of the requests with 429, so the runs were stopped.
+   provider refused part of the real requests with 429, so the runs were stopped.
+   The share was 19-38% in the shadow runs (MATH-500 19 of 100, FinQA 53 of 200,
+   MedQA 45 of 124, ARC 75 of 200), 25-58% in the routed runs (FinQA 14 of 57, ARC
+   31 of 88, MATH-500 40 of 69) and 65% in the server test (26 of 40). An earlier
+   version of this page said 19-45%; no run gives 45%, which was MedQA's count.
    - Spend: $5.32 recorded, including $0.13 for the stopped server test.
    - Rerun: one benchmark at a time, 3 requests in flight, with client retries.
      No retries were needed.

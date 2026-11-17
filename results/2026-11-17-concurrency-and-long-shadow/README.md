@@ -15,22 +15,29 @@ credits key.
 
 - **This key allows 25 requests in flight.** That is the limit that binds. A
   refusal comes back in about half a second and names no wait.
-- **The pause kept real traffic safe when the proxy's own calls filled the
-  account.** The same 60 questions were sent 24 at a time through each code version.
+- **The planned pause test showed nothing.** A background load left only a few
+  slots free, but no real request was refused with either code version. The plan's
+  pass mark, fewer refused real requests with the pause than without, is not shown
+  by the test the plan describes.
+- **A test added after the plan showed the pause working.** It is not a
+  pre-registered result. The proxy's own calls filled the account: the same 60
+  questions were sent 24 at a time through each code version.
   - Without the pause: the provider refused 9 of 69 real attempts (13%). The 60
     questions took 46 seconds.
   - With the pause: it refused none of 60. They took 30 seconds.
 - **The price is shadow coverage.** With the pause, 4 of the 60 requests were
   shadowed (6.7%) and 55 were skipped. The report counted them and said why.
-- **The first pause test showed nothing.** A background load left only a few slots
-  free, but no real request was refused with either code version. A second test was
-  added.
 - **On 1,500 new questions the loss against Opus was 2.47%** (37 questions). The
   one-sided 95% upper bound is 3.2%. The pass mark was a bound of at most 4%, so it
   passes.
-- **The run does not confirm the 2% limit.** The same policy also certified at 2%
-  on its history. Here the bound is 3.2%, above 2%. The run does not show the true
-  loss is above 2% either: the lower bound is 1.8%.
+- **Do not quote 2% for this policy.** It certified at 4%. Its 2% certificate
+  passed on the last allowed loss with 495 certify questions, and it did not hold
+  up: the loss was 2.3% on the 2,305 questions outside the certify part (95% upper
+  bound 2.8%) and 2.4% on the 1,800 new ones. This run does not show the true loss
+  is above 2% either: its lower bound is 1.8%.
+- **These questions are easier than the history's.** So the share answered by
+  cheaper models and the saving here are not comparable with the history's. The
+  loss stands on its own.
 - **Five blocks of 300 lost 1.3% to 3.3%.** That is the spread of a larger sample
   within 79 minutes of one day. It is not drift over weeks.
 - **The drift check warned in 2 of the 5 blocks** while the loss in each was under
@@ -104,17 +111,29 @@ alone fit under the limit of 25. The shadow calls do not.
   coverage 6.7%, and `shadow_paused` with the reason: "a shadow call got HTTP 429
   from anthropic; no retry-after, so 30 seconds (pause 1 in a row)".
 - **Through the proxy, a refusal came back in 0.30 to 0.48 seconds** over both tests.
+- **Share answered by cheaper models, over the requests that were shadowed:** 32 of
+  44 (72.7%) on the old code and 3 of 4 on the new. The harness's summaries said
+  53.3% and 5.0%, because they counted requests that were never shadowed as turned
+  down. The harness now counts shadowed requests only.
 
-The plan's pass marks, applied to the second test:
+**The plan's pass marks.** They were written for the first test, and on it they
+give no verdict: neither version had a refused real request or a skipped run.
 
-| pass mark | result | |
+| pass mark | first test, as planned | |
 | --- | --- | --- |
-| after has fewer refused real requests than before, and under 10% | 0 of 60 against 9 of 69 | pass |
-| the report counts the skipped shadow runs | 55 skipped as rate limited | pass |
-| coverage is below 100% and says why | 6.7%, with the pause and its reason | pass |
+| after has fewer refused real requests than before, and under 10% | 0 of 30 against 0 of 30 | not shown |
+| the report counts the skipped shadow runs | none were skipped | not shown |
+| coverage is below 100% and says why | 100% with both versions | not shown |
 
-On the first test the marks say nothing: neither version had a refused real request
-or a skipped run.
+**The same marks on the added test.** That test was designed after the first one
+had been seen, so read this as a description of what happened, not as a
+pre-registered pass.
+
+| pass mark | second test, added | |
+| --- | --- | --- |
+| after has fewer refused real requests than before, and under 10% | 0 of 60 against 9 of 69 | met |
+| the report counts the skipped shadow runs | 55 skipped as rate limited | met |
+| coverage is below 100% and says why | 6.7%, with the pause and its reason | met |
 
 ### Addition: the Message Batches API on the same account
 
@@ -153,8 +172,9 @@ Opus. The run took 79 minutes.
 | answered by cheaper models | 92.7% |
 | projected saving | 50.8% |
 
-**How to read the loss against 2%.** The policy file certified at both 4% and 2%,
-with a bound of 1.84% on its 495 certify questions.
+**How to read the loss against 2%.** The policy certified at 4%. It also passed at
+2%, with a bound of 1.84% on its 495 certify questions, on the last allowed loss:
+it had 4 losses and the limit allows 4.
 
 | sample | loss | one-sided 95% bounds: lower / upper |
 | --- | --- | --- |
@@ -162,10 +182,20 @@ with a bound of 1.84% on its 495 certify questions.
 | first shadow run, 300 new questions | 2.00% (6) | 0.87% / 3.91% |
 | this run, 1,500 new questions | 2.47% (37) | 1.84% / 3.23% |
 | both runs on new questions, 1,800 | 2.39% (43) | 1.83% / 3.07% |
+| everything outside the certify part: 505 history questions and the 1,800 | 2.26% (52 of 2,305) | 1.77% / 2.83% |
 
-The 4% claim is solid. The 2% claim on this policy was optimistic: the best estimate
-on new questions is 2.4%, though 2% is not ruled out. A customer who needs 2% should
-not rely on this policy for it.
+The 4% claim is solid. The 2% certificate did not hold up, and 2% should not be
+quoted for this policy.
+
+- **Outside the certify part the loss is above 2%:** 2.3% on 2,305 questions (95%
+  upper bound 2.8%), and 2.4% on the 1,800 new ones.
+- **Neither is significantly above 2%.** A true loss of exactly 2% would give 43 or
+  more losses in 1,800 about one time in seven. So 2% is not ruled out.
+- **It was never established.** The whole history's bound is 2.06%. Freezing that
+  history with 300 other seeds certifies at 2% in 17 of them
+  (`../2026-11-17-live-pilot`, Step 2).
+
+A customer who needs 2% should not rely on this policy for it.
 
 **By block,** in the order sent:
 
@@ -182,14 +212,36 @@ not rely on this policy for it.
   loss rate, a block of 300 would lose between 3 and 13 questions 95% of the time.
   These lost 4 to 10. A chi-square test finds no difference between the blocks
   (p = 0.52). Drift over weeks needs a real deployment.
-- **Above the certified estimate.** The policy file estimated 86.8% answered by
-  cheaper models and a 41.1% saving, on 197 held-out questions. Every block was above
-  both.
+- **Above the certified estimate, on easier questions.** The policy file estimated
+  86.8% answered by cheaper models and a 41.1% saving, on 197 held-out questions.
+  Every block was above both. The two sets are not like for like (below).
 - **The drift check gave two false warnings.** It counts accepted answers that
   differ from Opus's, which is more than the loss. Of the 58 that differed, 37 were
   losses, 10 were gains, and in 11 both answers were wrong. Blocks 2 and 4 warned at
   5.7% and 4.7% while their losses were 3.3% and 3.0%. Over all 1,500 requests the
   count is 3.9%, under the limit.
+
+**The long-run questions are easier than the history's.** Both sets are slices of
+one shuffle of the benchmark's 3,000 questions, and the draw was uneven.
+
+- **By the benchmark's own records.** The archive holds 15 models' graded answers
+  to every question. On average they got 80.7% of the history's 1,000 questions
+  right and 83.9% of these 1,500. The gap is 3.2 points, 2.6 standard errors.
+- **By our own models.** Haiku and Sonnet agreed on 86.9% of the history and 92.7%
+  here. Haiku was right on 84.3% of the history and 87.9% here.
+- **What this changes.** The share answered by cheaper models (92.7%) and the
+  projected saving (50.8%) are not comparable with the history's 86.9% and the
+  policy's estimate of 41.1%. Traffic like the history should expect the history's
+  figures.
+- **What it does not change.** The loss moved the other way: 13 of 1,000 on the
+  history and 37 of 1,500 here, on easier questions. The loss of 2.47% (bound
+  3.23%) stands on its own.
+- **Block 5 is the easiest.** The archive's models got 86.4% of its questions
+  right. Opus was right on 290 of its 300, against 275 to 278 in the other blocks
+  (Fisher p = 0.004).
+
+`python scripts/live_pilot.py sample --compare HISTORY.jsonl SET.jsonl` now prints
+these means, and warns about a draw like this one before any money is spent.
 
 **Refusals and errors:**
 
@@ -216,7 +268,8 @@ not rely on this policy for it.
 3. **A second pause test was added,** because the first one produced no refused
    real request. It has no background load and puts 24 real requests in flight, with
    the same 60 questions for both code versions. The pass marks were written for the
-   first design and are applied to the second.
+   first design. On the first test they give no verdict. What the second test shows
+   is reported apart from them, as an addition made after the plan.
 4. **Two more additions:** the batch validation, and the ramp repeated while
    batches were pending ($0.15 together).
 5. **The long run was five runs of 300, not one run of 1,500.** Each block was its
@@ -232,6 +285,29 @@ not rely on this policy for it.
    - *Blocks 4 and 5* started after `2341a23`, which gave `scripts/live_pilot.py` a
      tickets entry and a `--max-tokens` flag that defaults to the old value. Nothing
      under `tine/` changed, so the run behaved the same.
+
+7. **The laptop slept for 106 seconds during block 4.** The system's power log has a
+   lid-closed sleep on battery from 10:27:57 to 10:29:43 UTC. The block's ledger has
+   no finished request between 10:27:57 and 10:30:01.
+   - Four provider calls took 112 to 206 seconds by the wall clock. All returned 200.
+   - For the three requests that waited longest (128 to 211 seconds for the
+     client), the ledger's latency is 5 to 21 seconds. The proxy times a request
+     with a clock that stops while the machine sleeps.
+   - No request failed and no count changed. A longer sleep would have cost the
+     block: a proxy run could not be resumed then. It can now (`--resume`), and the
+     harness reports `suspended_seconds`.
+   - Run paid runs on mains power with the lid open. `caffeinate -i` stops idle
+     sleep but not a lid-closed sleep on battery.
+8. **Other runs used the same account during blocks 4 and 5.** The plan says one
+   run at 3 in flight. Block 4 ran from 10:14 to 10:31 UTC and block 5 from 10:32 to
+   10:46. Beside them ran the ticket pilot's shadow run (10:22 to 10:30) and live
+   run (10:30 to 10:33), each 3 in flight, and a 32-request server test through the
+   proxy's OpenAI-format route (10:36 to 10:37). None of these runs got a 429. A
+   container test followed at 10:48, after block 5 had ended.
+9. **A figure in the plan is wrong.** Its first reason says the provider refused
+   19-45% of real requests in `../2026-11-17-live-pilot-more`. The ledgers give
+   19-38% in the shadow runs, 25-58% in the routed runs and 65% in the server test.
+   The plan is left as it was written.
 
 ## Limits
 

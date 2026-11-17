@@ -98,8 +98,12 @@ in `2026-11-17-judge-prompt/README.md`) and $23.65 and $60.00 for the two live p
 **A live pilot with real models** (`2026-11-17-live-pilot/README.md`). Three current
 Claude models answered MMLU-Pro questions, as stand-in exact-answer traffic, through
 the real proxy. A policy (Haiku and Sonnet must agree, else `claude-opus-5-5`) certified
-at 4% and 2% on 1,000 graded questions. On 300 new questions in shadow mode, it lost
-2.0% against Opus and would have saved 47.8%. On 200 more questions routed live, it
+at 4% on 1,000 graded questions. Its 2% certificate passed on the last allowed loss with
+495 certify tasks and did not hold up: the loss was 2.3% on the 2,305 questions outside the
+certify part (95% upper bound 2.8%) and 2.4% on 1,800 new questions, 1,500 of them from
+`2026-11-17-concurrency-and-long-shadow/README.md`. Do not quote 2% for this policy. On
+300 new questions in shadow mode, it lost 2.0% against Opus and would have saved 47.8%.
+On 200 more questions routed live, it
 answered 91.5% right, against Opus's 91.7-92.2%, at about 52% lower cost. Free text
 on the same token was never accepted but cost 31% more than Opus alone. Tine's own
 `/v1/savings` reported no saving for the routed run, since that needs a frontier
@@ -115,8 +119,9 @@ where Haiku alone certified (97-98%), and 18% on FinQA (5-32%). The saving follo
 close the cheaper models are to Opus: FinQA, where Haiku gets 64% right against Opus's
 79%, saves least. Comparing answers by value (`--answer-compare math`) raised MATH-500's
 projected saving from 44.5% to 60.5% at the same 1.0% loss. Shadow calls sharing one
-account's rate limits with real traffic caused 19-45% of real requests to be refused
-until the runs were made sequential; the proxy now pauses shadow mode on a 429. `tine
+account's rate limits with real traffic caused 19-38% of real requests to be refused in
+the shadow runs, 25-58% in the routed runs and 65% in the server test, until the runs were
+made sequential; the proxy now pauses shadow mode on a 429. `tine
 serve` ran as a real process for the first time and served 40 routed requests over HTTP.
 Public benchmarks, one afternoon, small holdout groups: not customer evidence.
 

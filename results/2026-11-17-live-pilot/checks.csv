@@ -1,6 +1,6 @@
 check,pass_mark,result,passed
 loss on 300 new questions (shadow),at most 0.04,0.0200,yes
-share answered by cheaper models (shadow),within 0.07 of 0.868,0.8933,yes
+share answered by cheaper models (shadow; of the 297 shadowed),within 0.07 of 0.868,0.9024,yes
 reader match rate claude-haiku-5-5 (shadow),at least 0.98,0.9933,yes
 reader match rate claude-sonnet-5-5 (shadow),at least 0.98,1.0000,yes
 reader match rate claude-opus-5-5 (shadow),at least 0.98,1.0000,yes
