@@ -35,8 +35,9 @@ from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineE
 from .policy import FREEZE_EDITED, answer_mode, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
-    TOOLS_SKIP_REASON, NoAnswer, ShadowStore, extract_answer, has_answer, plain_finish, sampled, shadow_entries,
-    shadow_stages, skips_for_tools, validate_shadow_policy,
+    LIMIT_STATUSES, RATE_LIMITED_REASON, TOOLS_SKIP_REASON, NoAnswer, ShadowLimits, ShadowPaused, ShadowStore,
+    extract_answer, has_answer, most_calls, plain_finish, refused, sampled, shadow_entries, shadow_stages,
+    skips_for_tools, validate_shadow_policy,
 )
 
 log = logging.getLogger("tine.proxy")
@@ -110,6 +111,10 @@ class ProxyConfig:
     # than this share of all its shadow calls and checks.
     shadow_max_unknown_cost_calls: int = 20
     shadow_max_unknown_cost_share: float = 0.2
+    # Shadow provider calls (stage models and judges, not webhooks) one tenant may start
+    # in any 60 seconds. None: no cap. A sampled request whose run could pass it is
+    # skipped and counted as skipped_rate_cap.
+    shadow_max_calls_per_minute: int | None = None
     # How long a route policy's cheaper stages may take together before the request
     # goes to the frontier. None means timeout_seconds.
     route_deadline_seconds: float | None = None
@@ -173,6 +178,8 @@ class ProxyConfig:
                                               if os.environ.get("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT") else None),
             shadow_max_unknown_cost_calls=int(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20")),
             shadow_max_unknown_cost_share=float(os.environ.get("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", "0.2")),
+            shadow_max_calls_per_minute=(int(os.environ["TINE_SHADOW_MAX_CALLS_PER_MINUTE"])
+                                         if os.environ.get("TINE_SHADOW_MAX_CALLS_PER_MINUTE") else None),
             route_deadline_seconds=(float(os.environ["TINE_ROUTE_DEADLINE_SECONDS"])
                                     if os.environ.get("TINE_ROUTE_DEADLINE_SECONDS") else None),
             ledger_required=os.environ.get("TINE_LEDGER_REQUIRED", "").lower() in {"1", "true"},
@@ -271,6 +278,10 @@ class ProxyConfig:
         if per_tenant is not None and (isinstance(per_tenant, bool) or not isinstance(per_tenant, int)
                                        or per_tenant < 1):
             raise ValueError("shadow_max_concurrent_per_tenant must be a whole number of at least 1, or unset")
+        per_minute = self.shadow_max_calls_per_minute
+        if per_minute is not None and (isinstance(per_minute, bool) or not isinstance(per_minute, int)
+                                       or per_minute < 1):
+            raise ValueError("shadow_max_calls_per_minute must be a whole number of at least 1, or unset")
         if (not _finite_number(self.shadow_max_unknown_cost_share)
                 or not 0 <= self.shadow_max_unknown_cost_share <= 1):
             raise ValueError("shadow_max_unknown_cost_share must be between 0 and 1")
@@ -322,6 +333,11 @@ class ProxyConfig:
                             shared_users.setdefault(stage["check"], set()).add(name)
                     if sampling and label == "shadow_policies":
                         self._require_shadow_prices(name, provider, policy)
+                        most = most_calls(policy, self.checks_for(name))
+                        if per_minute is not None and most > per_minute:
+                            raise ValueError(
+                                f"shadow_max_calls_per_minute is {per_minute}, but one shadow run of tenant {name!r}'s "
+                                f"{provider} policy can make {most} provider calls, so none would ever start")
         for check, users in shared_users.items():
             if len(users) > 1 and any(step["type"] == "webhook" for step in self.checks[check]):
                 raise ValueError(
@@ -553,6 +569,20 @@ def _policy_summary(policy: dict, config: ProxyConfig) -> dict:
     return summary
 
 
+def _providers_reached(provider: str, policy: dict, checks: dict) -> set[str]:
+    """The providers one run of ``policy`` calls: its own, and Anthropic for a judge."""
+    judged = any(step.get("type") == "judge" for stage in policy["stages"] for step in checks.get(stage["check"], []))
+    return {provider, "anthropic"} if judged else {provider}
+
+
+class _Watched:
+    """What a policy's stages and checks post through for one request. ``post`` is the
+    wrapped client's ``post`` with a look at each provider reply on the way."""
+
+    def __init__(self, post) -> None:
+        self.post = post
+
+
 def _upstream_url(base: str, path: str) -> str:
     base = base.rstrip("/")
     return base + (path[3:] if base.endswith("/v1") and path.startswith("/v1/") else path)
@@ -564,6 +594,7 @@ def create_app(
     ledger: Ledger | None = None,
     client: httpx.AsyncClient | None = None,
     policy_client: httpx.AsyncClient | None = None,
+    clock=None,
 ) -> FastAPI:
     config = config or ProxyConfig.from_env()
     config.validate()
@@ -596,6 +627,10 @@ def create_app(
     app.state.ledger = store
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
+    # When shadow mode holds back for the provider's rate limit. ``clock`` (seconds since
+    # the epoch) is for tests.
+    shadow_limits = (ShadowLimits(config.shadow_max_calls_per_minute, clock or time.time)
+                     if shadow_on else None)
     shadow_running = 0
     shadow_running_by_tenant: dict[str, int] = {}
     route_deadline = (config.route_deadline_seconds if config.route_deadline_seconds is not None
@@ -692,8 +727,10 @@ def create_app(
         # tenant's shadow policies: the report adds all of its shadowed requests together.
         limits = [policy["guarantee"]["epsilon"] for policy in config.shadow_policies.get(identity, {}).values()
                   if policy["stages"] and _finite_number(policy["guarantee"].get("epsilon"))]
+        reached = {name for provider, policy in config.shadow_policies.get(identity, {}).items()
+                   for name in _providers_reached(provider, policy, config.checks_for(identity))}
         return {**shadow_store.report(identity, epsilon=min(limits, default=None)), "sampling": sampling,
-                "policies": policies}
+                "policies": policies, **shadow_limits.report(identity, reached)}
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None
@@ -702,12 +739,44 @@ def create_app(
         """How answers are read for this policy: its own pattern, else the proxy's."""
         return policy.get("answer_pattern") or config.answer_pattern
 
+    def note_limit(provider: str, response, where: str) -> None:
+        """Pause shadow mode on a provider that refused a call for its rate limit or load.
+        Only shadow mode holds back: the call itself is neither retried nor changed."""
+        if shadow_limits is None or response.status_code not in LIMIT_STATUSES:
+            return
+        try:
+            if shadow_limits.limited(provider, response.status_code, response.headers.get("retry-after"), where):
+                log.warning("shadow mode paused on %s: %s", provider, shadow_limits.paused(provider)["reason"])
+        except Exception:
+            pass
+
     def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict,
-                    *, request_id: str, mode: str):
+                    *, request_id: str, mode: str, run: dict | None = None):
         """How a policy's cheaper stages call a model and run a named check for one request.
-        ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks."""
+        ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks.
+
+        Every provider reply is looked at on the way: a 429 or 529 pauses shadow mode on
+        that provider. In a shadow run (``run``), a provider call is not sent while shadow
+        mode is paused on its provider, and the calls sent are counted in ``run["calls"]``
+        for the per-minute cap. Webhooks pass through untouched."""
+        judge_url = _upstream_url(config.anthropic_base_url, "/v1/messages")
+        providers = {judge_url: "anthropic", url: provider}
+        where = "a shadow call" if mode == "shadow" else "a routed cheaper call"
+
+        async def post(target: str, **kwargs):
+            reached = providers.get(target)
+            if reached is not None and run is not None:
+                if shadow_limits.paused(reached) is not None:
+                    raise ShadowPaused()
+                run["calls"] += 1
+            response = await side.post(target, **kwargs)
+            if reached is not None:
+                note_limit(reached, response, where)
+            return response
+        client = _Watched(post)
+
         async def call(model: str) -> dict:
-            response = await side.post(url, json={**body, "model": model}, headers=headers)
+            response = await client.post(url, json={**body, "model": model}, headers=headers)
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
@@ -727,9 +796,9 @@ def create_app(
 
         named = config.checks_for(identity)
         checks = build_checks(
-            named, upstream=side, tenant=identity, provider=provider, body=body,
-            anthropic_url=_upstream_url(config.anthropic_base_url, "/v1/messages"),
-            anthropic_key=config.anthropic_api_key, cost_of=price, request_id=request_id, mode=mode) if named else {}
+            named, upstream=client, tenant=identity, provider=provider, body=body,
+            anthropic_url=judge_url, anthropic_key=config.anthropic_api_key, cost_of=price,
+            request_id=request_id, mode=mode) if named else {}
         return call, checks
 
     async def run_shadow(*, request_id: str, identity: str, provider: str, policy: dict, body: dict,
@@ -740,7 +809,10 @@ def create_app(
 
         A run starts only if the tenant's cap has room for it (``ShadowStore.admit``),
         and what it spent is counted when it ends even if its row cannot be written.
-        A sampled request that is not shadowed is counted with the reason.
+        A sampled request that is not shadowed is counted with the reason. No run starts
+        while shadow mode is paused on a provider it would call, or when its calls could
+        pass the per-minute cap. A run in which a provider refused a call is stored with
+        ``RATE_LIMITED_REASON`` and left out of the projection.
         """
         nonlocal shadow_running
         mine = shadow_running_by_tenant.get(identity, 0)
@@ -754,7 +826,22 @@ def create_app(
             if shadow_store.state(identity, *limits) != "on":
                 count_safely(identity, "skipped_stopped")
                 return
-            if not shadow_store.admit(identity, *limits):
+            named = config.checks_for(identity)
+            reached = _providers_reached(provider, policy, named)
+            if any(shadow_limits.paused(name) is not None for name in reached):
+                count_safely(identity, "skipped_rate_limited")
+                return
+            reservation = shadow_limits.reserve(identity, most_calls(policy, named))
+            if reservation is None:
+                count_safely(identity, "skipped_rate_cap")
+                return
+            admitted = False
+            try:
+                admitted = shadow_store.admit(identity, *limits)
+            finally:
+                if not admitted:  # the run will not start: its calls are not held
+                    shadow_limits.release(reservation, 0)
+            if not admitted:
                 # The cap's room is held by runs in flight, or no run has finished yet
                 # to say what one costs.
                 count_safely(identity, "skipped_busy")
@@ -765,21 +852,27 @@ def create_app(
         shadow_running += 1
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
+        run = {"calls": 0}
         try:
             call, checks = stage_tools(identity, provider, policy, body, url, headers,
-                                       request_id=request_id, mode="shadow")
+                                       request_id=request_id, mode="shadow", run=run)
             outcome = await shadow_stages(policy, call, checks)
             entries = shadow_entries(outcome)
+            limited = any(refused(entry) for entry in entries)
             shadow_store.record(
                 request_id=request_id, tenant=identity, provider=provider, policy=policy, outcome=outcome,
                 frontier_answer=extract_answer(provider, frontier_payload, answer_pattern(policy)),
-                frontier_cost_usd=frontier_cost)
+                frontier_cost_usd=frontier_cost, skip_reason=RATE_LIMITED_REASON if limited else None)
+            if not limited:
+                for name in reached:
+                    shadow_limits.succeeded(name)
         except Exception:
             count_safely(identity, "failed")
             return
         finally:
             shadow_running -= 1
             shadow_running_by_tenant[identity] -= 1
+            shadow_limits.release(reservation, run["calls"])
             shadow_store.settle(identity, entries)
 
     def count_safely(identity: str, name: str) -> None:
@@ -985,6 +1078,8 @@ def create_app(
             try:
                 outgoing = upstream.build_request("POST", url, json=body, headers=headers)
                 response = await upstream.send(outgoing, stream=stream)
+                # Real traffic at the account's limit: shadow mode must not add to it.
+                note_limit(provider, response, "real traffic")
                 if response.status_code < 400 or selected == frontier or attempt == 1:
                     # Error bodies are buffered even for streaming requests.
                     # Keep their transport failures inside the upstream handler.

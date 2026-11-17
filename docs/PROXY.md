@@ -1,6 +1,6 @@
 # Local proxy and ledger
 
-The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
+The development proxy exposes native OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages` routes, including streaming passthrough. It uses an authenticated tenant mapping and sends every request to that provider's configured frontier model unless a frozen policy is configured. With one, it can run the policy in shadow mode (report only) or serve answers from it; see Shadow mode, Routing through a policy and Named checks below, which also list `TINE_SHADOW_POLICIES`, `TINE_SHADOW_SAMPLE_RATE`, `TINE_SHADOW_MAX_COST_USD`, `TINE_SHADOW_MAX_CONCURRENT`, `TINE_SHADOW_MAX_CONCURRENT_PER_TENANT`, `TINE_SHADOW_MAX_UNKNOWN_COST_CALLS`, `TINE_SHADOW_MAX_UNKNOWN_COST_SHARE`, `TINE_SHADOW_MAX_CALLS_PER_MINUTE`, `TINE_ROUTE_POLICIES`, `TINE_ROUTE_ESTIMATE_BASELINE`, `TINE_ROUTE_DEADLINE_SECONDS`, `TINE_AUDIT_RATE`, `TINE_CHECKS`, `TINE_TENANT_CHECKS`, `TINE_ANSWER_PATTERN` and `TINE_ALLOWED_MODELS`. Nothing is enabled by an offline experiment alone.
 
 To run the proxy in a container, see [DEPLOY.md](DEPLOY.md). The image has not been built or run yet.
 
@@ -295,6 +295,9 @@ traffic, without changing anything the tenant sees. It is off unless configured.
   cost are more than the count **and** more than the share of all its shadow calls and checks. A share
   of 0 gives the older rule, on the count alone. Three CI flakes in 20 requests (40 calls) no longer
   stop shadowing.
+- `TINE_SHADOW_MAX_CALLS_PER_MINUTE`: optional whole number, at least 1. Unset by default (no cap). It
+  caps the shadow provider calls (stage models and judges, not webhooks) one tenant may start in any
+  60 seconds. See "Rate limits" below.
 - `TINE_ANSWER_PATTERN`: optional regular expression; the comparable answer of a response is its
   last match (first group if there is one). A policy's own `answer_pattern`, written by
   `tine freeze-policy --answer-pattern`, wins; this setting is the fallback for policies without one.
@@ -360,19 +363,26 @@ More fields of `GET /v1/shadow`:
 - Coverage, kept in a ledger table `shadow_counts`:
   - `sampled_requests`: sampled requests a shadow run could have taken (answered by the frontier without
     streaming, no fallback, no error), counted once their run ended or was skipped. It equals
-    `shadowed_requests` + `skipped_busy` + `skipped_stopped` + `failed_shadow_runs`.
+    `shadowed_requests` + `skipped_busy` + `skipped_stopped` + `failed_shadow_runs` +
+    `skipped_rate_limited` + `skipped_rate_cap` + `rate_limited_runs`.
   - `skipped_busy`: sampled but not run because a concurrency limit was full, or because the spending
     cap could not reserve room. That happens while runs in flight hold the room, or before the tenant's
     first run has finished, when one run at a time is let through.
   - `skipped_stopped`: sampled after shadowing had stopped (cap reached, or the unknown-cost stop).
   - `failed_shadow_runs`: the run raised, or its row could not be written.
+  - `skipped_rate_limited`: sampled while shadow mode was paused on a provider the run would call (see
+    Rate limits).
+  - `skipped_rate_cap`: sampled when the run could have passed `TINE_SHADOW_MAX_CALLS_PER_MINUTE`.
+  - `rate_limited_runs`: runs in which a provider refused a call with 429 or 529, or a call was not
+    sent because shadow mode had paused. Their rows are kept, so their spend is in `shadow_spend_usd`
+    and `shadow_calls`, but they are not in `shadowed_requests`, the projection or the drift check.
   - `streamed_not_shadowed`: sampled requests that streamed. Shadow mode never runs them; they are
     counted only when they would otherwise have been shadowed.
   - `shadow_coverage`: `shadowed_requests` / `sampled_requests`, or null when nothing was sampled.
     Coverage below 1 means busy periods count for less than they should in the projection.
   - The counts start when a proxy with this version first opens the ledger, so an older ledger's
     earlier rows look fully covered. A read-only copy of a ledger without the table gives null for all
-    six fields. Other traffic that is never eligible (cache hits, an allowlisted cheaper model, frontier
+    nine fields. Other traffic that is never eligible (cache hits, an allowlisted cheaper model, frontier
     errors, non-JSON frontier replies) is not counted.
 - Drift:
   - `accepted_differing_from_frontier` and `accepted_differing_from_frontier_share`: accepted cheaper
@@ -401,6 +411,44 @@ there too, although the graded loss was 0.99%. The
 planned next step is to record the differing rate at certification time and compare against that.
 The check uses the tenant's strictest epsilon across providers, not each policy's own, and counts rows
 from older policy files too.
+
+### Rate limits
+
+Rate limits belong to the provider organisation, so shadow calls and the tenant's real calls share
+them. In a live pilot on an account with modest limits, shadow calls running beside real traffic led
+Anthropic to answer 429 to 19-45% of the real frontier requests. Shadow mode now holds back:
+
+- A provider reply of 429 (rate limit) or 529 (overloaded) pauses shadow mode on that provider. This
+  holds for a shadow call, a judge call made by a shadow run, a routed request's cheaper call and the
+  real frontier request. Webhooks are not provider calls and do not pause anything.
+- The pause is per provider, for every tenant. The proxy calls each provider with one key, so all
+  tenants share that account's limits.
+- While a pause lasts, no new shadow run starts on that provider. A run whose policy has a judge step
+  also waits for a pause on Anthropic. Sampled requests are counted as `skipped_rate_limited`.
+- The pause lasts as long as the reply's `retry-after` header asks, in seconds (at least 1, at most an
+  hour). An HTTP date in that header is not read. Without one, the pause is 30 seconds, doubled for each
+  pause in a row, up to 10 minutes. A shadow run that ends with no refused call resets the doubling.
+- A refused call is never retried. Real requests are passed through as before, with the provider's
+  status and `retry-after`.
+- A run in flight sends no more provider calls once its provider is paused. Such a run, and any run in
+  which a provider refused a call, is stored with `skip_reason` "rate_limited: ..." and counted in
+  `rate_limited_runs`. It is left out of the projection, because it does not show what the policy
+  would do.
+- A refused call, or one not sent, is stored at cost $0: a provider does not bill a request it refused.
+  So refusals do not count toward the unknown-cost stop.
+- `TINE_SHADOW_MAX_CALLS_PER_MINUTE` caps a tenant's shadow provider calls in any 60 seconds. A run
+  reserves the most calls it can make (each stage model once, plus each judge step) when it starts,
+  and gives back the ones it did not make when it ends. A sampled request whose run would pass the cap
+  is skipped and counted as `skipped_rate_cap`. The proxy refuses to start when one run of a shadow
+  policy can make more calls than the cap.
+- The pauses and the call count are kept in memory, in each proxy process. A restart clears them.
+- `GET /v1/shadow` also returns `shadow_paused` (provider to null, or to `{paused_until, seconds_left,
+  reason}`, for each provider the tenant's shadow policies call), `shadow_max_calls_per_minute` and
+  `shadow_calls_last_minute` (null without a cap). `sampling` still says `on` during a pause.
+
+Status: built and tested with stand-in providers that answer 429 and 529, with and without
+`retry-after`, on a test clock. It has not been run against a real provider's limits. It lowers the
+load shadow mode adds; it cannot stop real traffic alone from reaching the limit.
 
 The same report as a page to send to a customer:
 `python scripts/savings_report.py --ledger LEDGER --tenant TENANT --policy POLICY.json --output report.html`

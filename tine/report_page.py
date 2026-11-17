@@ -318,7 +318,11 @@ def _coverage_sentence(shadow: dict | None) -> str | None:
         reasons = [f"{count(number)} {why}" for number, why in (
             (_whole(shadow.get("skipped_busy")), "while shadow runs were busy"),
             (_whole(shadow.get("skipped_stopped")), "after shadowing had stopped"),
-            (_whole(shadow.get("failed_shadow_runs")), "because the shadow run failed")) if number]
+            (_whole(shadow.get("failed_shadow_runs")), "because the shadow run failed"),
+            (_whole(shadow.get("skipped_rate_limited")), "while shadow mode was paused for the provider's rate limit"),
+            (_whole(shadow.get("skipped_rate_cap")), "over the shadow call cap per minute"),
+            (_whole(shadow.get("rate_limited_runs")), "because the provider refused a shadow call (429 or 529)"))
+            if number]
         skipped = f" ({_listed(reasons)})" if reasons else ""
         parts.append(f"Shadow mode ran on {count(shadowed)} of {_plural(sampled, 'sampled request')} "
                      f"({percent(shadow.get('shadow_coverage'), rounding='down')}); the rest were skipped{skipped}, "
@@ -327,6 +331,17 @@ def _coverage_sentence(shadow: dict | None) -> str | None:
         parts.append(f"{count(streamed)} more sampled {'request was' if streamed == 1 else 'requests were'} "
                      "streamed, and shadow mode does not run streamed requests")
     return ". ".join(parts) + "." if parts else None
+
+
+def _pauses(paused: dict) -> str:
+    """Each provider's shadow pause from ``GET /v1/shadow``, escaped: until when and why."""
+    shown = []
+    for provider, pause in sorted(paused.items(), key=lambda item: str(item[0])):
+        if isinstance(pause, dict):
+            shown.append(f"{provider}: paused until {pause.get('paused_until')}, because {pause.get('reason')}")
+        elif pause is None:
+            shown.append(f"{provider}: not paused")
+    return _esc("; ".join(shown)) if shown else NOT_KNOWN
 
 
 def _drift_warning(shadow: dict | None) -> str | None:
@@ -559,6 +574,16 @@ def _shadow_section(shadow: dict | None) -> str:
             ("Shadow runs that failed before they were recorded", count(shadow.get("failed_shadow_runs"))),
             ("Sampled requests that were streamed, never shadowed", count(shadow.get("streamed_not_shadowed"))),
         ]
+    if "skipped_rate_limited" in shadow:  # reports from before the rate-limit counts do not hold them
+        pairs += [
+            ("Skipped while shadow mode was paused for the provider's rate limit",
+             count(shadow.get("skipped_rate_limited"))),
+            ("Skipped over the shadow call cap per minute", count(shadow.get("skipped_rate_cap"))),
+            ("Shadow runs left out because the provider refused a call (429 or 529)",
+             count(shadow.get("rate_limited_runs"))),
+        ]
+    if isinstance(shadow.get("shadow_paused"), dict):  # added by GET /v1/shadow; held in memory by the proxy
+        pairs.append(("Paused for a provider's rate limit when the report was read", _pauses(shadow["shadow_paused"])))
     if "drift_check" in shadow:
         differing = count(shadow.get("accepted_differing_from_frontier"))
         if differing != NOT_KNOWN and _number(shadow.get("accepted_differing_from_frontier_share")) is not None:

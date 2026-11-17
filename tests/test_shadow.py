@@ -8,8 +8,11 @@ import pytest
 
 from tine.ledger import Ledger
 from tine.policy import DIGEST_FIELD, FREEZE_EDITED, FREEZE_UNCHANGED, policy_digest
-from tine.proxy import ProxyConfig, create_app
-from tine.shadow import ShadowStore, extract_answer, sampled, shadow_stages, validate_shadow_policy
+from tine.proxy import ProxyConfig, _providers_reached, create_app
+from tine.shadow import (
+    ShadowLimits, ShadowStore, extract_answer, most_calls, refused, retry_after_seconds, sampled, shadow_entries,
+    shadow_stages, validate_shadow_policy,
+)
 
 POLICY = {"version": 1, "tenant": "a", "frontier": "frontier", "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
           "stages": [{"models": ["small-a", "small-b"], "check": "agreement"}]}
@@ -410,13 +413,13 @@ def test_the_unknown_cost_stop_is_read_back_from_the_rows_after_a_restart():
     ledger = Ledger()
     failed = {"accepted": False, "stage": None, "served_by": None, "answer": None,
               "calls": [{"model": "small-a", "cost_usd": 0.1, "error": None},
-                        {"model": "small-b", "cost_usd": None, "error": "HTTPStatusError", "status": 429}]}
+                        {"model": "small-b", "cost_usd": None, "error": "HTTPStatusError", "status": 503}]}
     ShadowStore(ledger).record(request_id="r1", tenant="a", provider="openai", policy=POLICY, outcome=failed,
                                frontier_answer="B", frontier_cost_usd=1.0)
     restarted = ShadowStore(ledger)
     assert restarted.state("a", 5.0, 0, 0.2) == ("stopped: too many shadow calls of unknown cost: 1 of 2 calls and "
                                                  "checks (50.0%), more than 0 and more than 20.0% of them. Most "
-                                                 "common: small-b: HTTP 429 (1)")
+                                                 "common: small-b: HTTP 503 (1)")
     assert restarted.state("a", 5.0, 0, 0.5) == "on" and restarted.state("a", 5.0, 1, 0.2) == "on"
     assert restarted.admit("a", 5.0, 1, 0.2) and not restarted.admit("b", 0.0, 1, 0.2)
 
@@ -594,13 +597,222 @@ def test_the_new_shadow_settings_are_read_from_the_environment_and_checked(monke
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT", "2")
     monkeypatch.setenv("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", "0.35")
+    monkeypatch.setenv("TINE_SHADOW_MAX_CALLS_PER_MINUTE", "7")
     loaded = ProxyConfig.from_env()
     loaded.validate()
     assert (loaded.shadow_max_concurrent_per_tenant, loaded.shadow_max_unknown_cost_share) == (2, 0.35)
+    assert loaded.shadow_max_calls_per_minute == 7
     monkeypatch.delenv("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT")
     monkeypatch.delenv("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE")
+    monkeypatch.delenv("TINE_SHADOW_MAX_CALLS_PER_MINUTE")
     defaults = ProxyConfig.from_env()
     assert (defaults.shadow_max_concurrent_per_tenant, defaults.shadow_max_unknown_cost_share) == (None, 0.2)
+    assert defaults.shadow_max_calls_per_minute is None
     for bad in (-0.1, 1.5, float("nan"), True):
         with pytest.raises(ValueError, match="unknown_cost_share"):
             create_app(config(shadow_max_unknown_cost_share=bad), ledger=Ledger())
+
+
+START = 1_800_000_000.0  # seconds since the epoch, for the tests' own clock
+
+
+def with_clock(app_config, provider, script):
+    """Run ``script(post, report, now)`` against a proxy whose clock is ``now[0]``, so
+    that a pause can be waited out without sleeping."""
+    now = [START]
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(app_config, ledger=Ledger(), client=upstream, clock=lambda: now[0])
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                async def post(prompt="q", token="token-a"):
+                    return await client.post("/v1/chat/completions", headers={"authorization": f"Bearer {token}"},
+                                             json={"model": "frontier", "messages": [{"role": "user", "content": prompt}]})
+
+                async def report():
+                    return (await client.get("/v1/shadow", headers={"authorization": "Bearer token-a"})).json()
+                return await script(post, report, now)
+    return asyncio.run(scenario())
+
+
+def refusing(seen, refuse, status=429, retry_after=None):
+    """A provider that refuses the calls ``refuse(model, times)`` picks, ``times`` being
+    how often that model has been called so far, counting this call."""
+    async def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if refuse(model, seen.count(model)):
+            headers = {"retry-after": retry_after} if retry_after is not None else {}
+            return httpx.Response(status, headers=headers, json={"error": {"type": "rate_limit_error"}})
+        return httpx.Response(200, json=reply("B"))
+    return provider
+
+
+def test_a_shadow_call_refused_with_retry_after_pauses_shadow_mode_for_that_long():
+    seen = []
+
+    async def script(post, report, now):
+        answers = [await post("q1")]
+        paused = await report()
+        answers.append(await post("q2"))
+        during = await report()
+        now[0] += 121
+        answers.append(await post("q3"))
+        return answers, paused, during, await report()
+    answers, paused, during, after = with_clock(
+        config(), refusing(seen, lambda model, times: model == "small-b" and times == 1, retry_after="120"), script)
+    assert [answer.status_code for answer in answers] == [200, 200, 200]  # the callers saw nothing of it
+    # The refused call is not retried, and nothing is shadowed during the pause.
+    assert seen == ["frontier", "small-a", "small-b", "frontier", "frontier", "small-a", "small-b"]
+    pause = paused["shadow_paused"]["openai"]
+    assert pause["seconds_left"] == 120 and pause["paused_until"] == "2027-01-15T08:02:00+00:00"
+    assert pause["reason"] == "a shadow call got HTTP 429 from openai; the reply asked to wait 120 seconds"
+    # The refused run is kept for its spend, but it is not a shadowed request and its 429 cost nothing.
+    assert (paused["shadowed_requests"], paused["rate_limited_runs"], paused["sampled_requests"]) == (0, 1, 1)
+    assert paused["unknown_cost_shadow_calls"] == 0 and paused["failed_shadow_calls"] == 1
+    assert paused["shadow_spend_usd"] == pytest.approx(0.002) and paused["sampling"] == "on"
+    assert during["skipped_rate_limited"] == 1 and during["sampled_requests"] == 2 and during["shadow_coverage"] == 0
+    assert after["shadow_paused"] == {"openai": None} and after["shadowed_requests"] == 1
+    assert after["sampled_requests"] == 3 and after["shadow_coverage"] == pytest.approx(1 / 3)
+    assert after["projected_savings_fraction"] == pytest.approx(0.97)  # only the full run is projected
+    assert after["shadow_spend_usd"] == pytest.approx(0.008)
+    assert (after["shadow_max_calls_per_minute"], after["shadow_calls_last_minute"]) == (None, None)
+
+
+def test_without_retry_after_the_pause_doubles_and_a_good_run_resets_it():
+    seen = []
+
+    async def script(post, report, now):
+        pauses = []
+        await post()
+        pauses.append((await report())["shadow_paused"]["openai"])
+        now[0] += 31
+        await post()  # refused again: twice as long
+        pauses.append((await report())["shadow_paused"]["openai"])
+        now[0] += 31
+        await post()  # still paused
+        now[0] += 30
+        await post()  # a good run
+        await post()  # refused: back to the shortest pause
+        pauses.append((await report())["shadow_paused"]["openai"])
+        return pauses, await report()
+    pauses, body = with_clock(config(), refusing(seen, lambda model, times: model == "small-b" and times in (1, 2, 4),
+                                                 status=529), script)
+    assert [pause["seconds_left"] for pause in pauses] == [30, 60, 30]
+    assert pauses[1]["reason"] == ("a shadow call got HTTP 529 from openai; no retry-after, so 60 seconds "
+                                   "(pause 2 in a row)")
+    assert pauses[2]["reason"].endswith("(pause 1 in a row)")
+    assert seen.count("small-b") == 4 and seen.count("frontier") == 5
+    assert (body["rate_limited_runs"], body["skipped_rate_limited"], body["shadowed_requests"]) == (3, 1, 1)
+
+
+def test_the_pause_is_capped_honours_retry_after_and_is_only_lengthened_by_later_refusals():
+    now = [START]
+    limits = ShadowLimits(clock=lambda: now[0])
+    waits = []
+    for _ in range(7):
+        assert limits.limited("openai", 429, None, "a shadow call")
+        waits.append(limits.paused("openai")["until"] - now[0])
+        now[0] = limits.paused("openai")["until"]
+    assert waits == [30, 60, 120, 240, 480, 600, 600]
+    limits.succeeded("openai")
+    assert limits.limited("openai", 429, "5", "real traffic") and limits.paused("openai")["until"] == now[0] + 5
+    # A later refusal during the pause lengthens it only when it asks for longer; a
+    # retry-after that is not a number of seconds falls back on the doubling.
+    assert not limits.limited("openai", 429, "2", "real traffic") and limits.paused("openai")["until"] == now[0] + 5
+    assert not limits.limited("openai", 429, "Wed, 21 Oct 2026 07:28:00 GMT", "real traffic")
+    assert limits.paused("openai")["until"] == now[0] + 30 and "no retry-after" in limits.paused("openai")["reason"]
+    assert retry_after_seconds("1e9") == 3600 and retry_after_seconds("-1") is None
+    assert retry_after_seconds("nan") is None and retry_after_seconds(None) is None
+    assert limits.paused("anthropic") is None  # each provider has its own pause
+    # A good run during a pause leaves the doubling as it is.
+    limits.succeeded("openai")
+    assert limits.paused("openai")["in_a_row"] == 1
+
+
+def test_real_traffic_refused_for_the_rate_limit_pauses_shadow_mode_on_that_provider():
+    seen = []
+
+    async def script(post, report, now):
+        # Tenant b has no shadow policy, but it calls openai with the same key as tenant a.
+        refused_answer = await post("q1", token="token-b")
+        answers = [await post("q2")]
+        during = await report()
+        now[0] += 46
+        answers.append(await post("q3"))
+        return refused_answer, answers, during, await report()
+    refused_answer, answers, during, after = with_clock(
+        config(), refusing(seen, lambda model, times: model == "frontier" and times == 1, retry_after="45"), script)
+    # Real requests are passed through as before, the provider's retry-after with them.
+    assert refused_answer.status_code == 429 and refused_answer.headers["retry-after"] == "45"
+    assert [answer.status_code for answer in answers] == [200, 200]
+    assert seen == ["frontier", "frontier", "frontier", "small-a", "small-b"]
+    assert during["skipped_rate_limited"] == 1 and during["shadow_paused"]["openai"]["reason"] == (
+        "real traffic got HTTP 429 from openai; the reply asked to wait 45 seconds")
+    assert after["shadowed_requests"] == 1 and after["shadow_paused"] == {"openai": None}
+
+
+def test_a_run_stops_calling_a_provider_once_shadow_mode_has_paused_on_it():
+    later = {**POLICY, "stages": [*POLICY["stages"], {"models": ["small-c", "small-d"], "check": "agreement"}]}
+    prices = {**PRICES, **{f"openai:{name}": {"input_per_million": 1.0, "output_per_million": 1.0}
+                           for name in ("small-c", "small-d")}}
+    seen = []
+
+    async def script(post, report, now):
+        await post()
+        return await report()
+    body = with_clock(config(shadow_policies={"a": {"openai": later}}, prices=prices, shadow_max_calls_per_minute=4),
+                      refusing(seen, lambda model, times: model == "small-b"), script)
+    assert seen == ["frontier", "small-a", "small-b"]  # the second stage's models were not called
+    assert body["rate_limited_runs"] == 1 and body["shadow_calls"] == 4 and body["failed_shadow_calls"] == 3
+    assert body["unknown_cost_shadow_calls"] == 0 and body["shadow_spend_usd"] == pytest.approx(0.002)
+    # The run held room for 4 calls under the cap and gave back the 2 it did not make.
+    assert (body["shadow_max_calls_per_minute"], body["shadow_calls_last_minute"]) == (4, 2)
+
+
+def test_the_shadow_call_cap_per_minute_skips_and_counts_runs_that_could_pass_it():
+    seen = []
+
+    async def script(post, report, now):
+        for prompt in ("q1", "q2", "q3"):
+            await post(prompt)
+        capped = await report()
+        now[0] += 61
+        await post("q4")
+        return capped, await report()
+    capped, after = with_clock(config(shadow_max_calls_per_minute=5),
+                               refusing(seen, lambda model, times: False), script)
+    # Each run can make two calls: two runs fit in five, a third would not.
+    assert (capped["shadowed_requests"], capped["skipped_rate_cap"], capped["sampled_requests"]) == (2, 1, 3)
+    assert capped["shadow_calls_last_minute"] == 4 and capped["shadow_coverage"] == pytest.approx(2 / 3)
+    assert after["shadowed_requests"] == 3 and after["shadow_calls_last_minute"] == 2
+    assert seen.count("small-a") == 3
+    with pytest.raises(ValueError, match="can make 2 provider calls"):
+        create_app(config(shadow_max_calls_per_minute=1), ledger=Ledger())
+    for bad in (0, True, 2.5):
+        with pytest.raises(ValueError, match="calls_per_minute"):
+            create_app(config(shadow_max_calls_per_minute=bad), ledger=Ledger())
+
+
+def test_refused_calls_cost_nothing_and_a_webhook_429_is_not_a_provider_refusal():
+    outcome = {"calls": [{"model": "m", "cost_usd": None, "error": "HTTPStatusError", "status": 429},
+                         {"model": "n", "cost_usd": None, "error": "HTTPStatusError", "status": 500},
+                         {"model": "o", "cost_usd": 0.0, "error": "ShadowPaused"}],
+               "checks": [{"check": "judged", "model": "m", "passed": False, "cost_usd": None, "known_cost_usd": 0.25,
+                           "error": "judge HTTPStatusError", "status": 529,
+                           "steps": [{"type": "webhook", "passed": True, "cost_usd": 0.25},
+                                     {"type": "judge", "passed": False, "cost_usd": None,
+                                      "error": "judge HTTPStatusError", "status": 529}]},
+                          {"check": "tests", "model": "m", "passed": False, "cost_usd": None,
+                           "error": "webhook HTTPStatusError", "status": 429,
+                           "steps": [{"type": "webhook", "passed": False, "cost_usd": None,
+                                      "error": "webhook HTTPStatusError", "status": 429}]}]}
+    entries = shadow_entries(outcome)
+    assert [entry["cost_usd"] for entry in entries] == [0.0, None, 0.0, 0.25, None]
+    assert [refused(entry) for entry in entries] == [True, False, True, True, False]
+    judged = {**POLICY, "stages": [{"models": ["small-a"], "check": "judged"}]}
+    checks = {"judged": [{"type": "webhook", "url": "https://ci"}, {"type": "judge", "model": "j"}]}
+    assert most_calls(judged, checks) == 2 and most_calls(POLICY, {}) == 2
+    # A judge goes to Anthropic, so a shadow run of an OpenAI policy with one waits for both.
+    assert _providers_reached("openai", judged, checks) == {"openai", "anthropic"}
+    assert _providers_reached("openai", POLICY, checks) == {"openai"}
