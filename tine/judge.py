@@ -13,6 +13,7 @@ The API key is read from the environment by the SDK client the caller supplies.
 from __future__ import annotations
 
 import json
+import math
 import re
 
 PROMPT_VERSION = "2026-11-11"
@@ -150,8 +151,11 @@ def parse_verdict(text: str) -> dict:
 def judge_once(client, case: dict, *, model: str, effort: str = "medium", max_tokens: int = 8000,
                style: str = "verdict", prices: tuple[float, float] | None = None) -> dict:
     """One judge call on a Claude model. ``case`` needs ``repository``, ``issue`` and
-    ``patch``. Returns the verdict (``unparsed`` for a refusal or a reply with no
-    usable verdict), the tokens the API reported and what the call cost."""
+    ``patch``. Returns the verdict, the tokens the API reported and what the call cost.
+    The verdict is ``unparsed`` for a reply with no usable verdict and for a reply that
+    is not finished: a refusal, one cut off by the token limit, a paused one, or one
+    that calls a tool. An approval read out of such a reply is not the judge's answer.
+    The proxy's judge step holds the same rule (``tine.runtime_checks``)."""
     price_in, price_out = prices or ANTHROPIC_PRICES[model]
     messages = build_messages(case, style)
     response = client.messages.create(
@@ -161,13 +165,41 @@ def judge_once(client, case: dict, *, model: str, effort: str = "medium", max_to
     result = {"prompt_tokens": response.usage.input_tokens, "completion_tokens": response.usage.output_tokens,
               "cost_usd": (response.usage.input_tokens * price_in + response.usage.output_tokens * price_out) / 1e6}
     text = "".join(block.text for block in response.content if block.type == "text")
+    reason = str(response.stop_reason)
     try:
-        if response.stop_reason == "refusal":
-            raise ValueError("refusal")
+        if response.stop_reason not in ("end_turn", "stop_sequence"):
+            raise ValueError("unfinished")
+        if any(str(block.type).endswith("tool_use") for block in response.content):
+            reason = "tool_use"
+            raise ValueError("tool call")
         result.update(parse_verdict(text))
     except ValueError:
-        result.update({"verdict": "unparsed", "probability": None, "reason": str(response.stop_reason)[:200]})
+        result.update({"verdict": "unparsed", "probability": None, "reason": reason[:200]})
     return result
+
+
+def estimate_input_tokens(text: str) -> int:
+    """An estimate of the input tokens a prompt will be billed as, meant to err high.
+
+    This is an estimate, not a tokenizer: a third of a token for every character, one
+    more for every character that is not a lower-case ASCII letter or a space (capitals,
+    digits, punctuation and line breaks; a character outside ASCII counts as its UTF-8
+    bytes), and 8 for the message around the text. Spending caps use it to hold back a
+    call's worst case before the call is made; what was spent is always counted from
+    the usage the API reports.
+
+    The rule was picked on 2026-11-17 from the usage recorded for 4,787 prompts sent
+    alone as one user message (five public benchmarks and one company's IT support
+    tickets, artifacts/live-pilot/asked-*.jsonl). It is at or above the real count for
+    every one of them, and 23% to 48% above it per set in total. The rule it replaces,
+    characters / 3, was below the real count for 82% of them, and 21% below in total on
+    the tickets, which are full of capitals and punctuation. On recorded judge requests
+    (an issue and a patch; sets of 1,110 and 150, not used to pick the rule) it is above
+    the real count for every one, by 35% and 36% in total. Almost none of that text is
+    outside ASCII, so other scripts are not measured. A different tokenizer, or text
+    unlike these, can still come out above the estimate."""
+    plain = sum("a" <= character <= "z" or character == " " for character in text)
+    return math.ceil(len(text) / 3 + len(text.encode("utf-8", "surrogatepass")) - plain) + 8
 
 
 def worst_case_cost(case: dict, *, model: str, max_tokens: int = 8000, style: str = "verdict",
@@ -175,7 +207,7 @@ def worst_case_cost(case: dict, *, model: str, max_tokens: int = 8000, style: st
     """An upper estimate of one call's cost, for stopping before a spending cap."""
     price_in, price_out = prices or ANTHROPIC_PRICES[model]
     messages = build_messages(case, style)
-    return ((len(messages[0]["content"]) + len(messages[1]["content"])) / 3 * price_in
+    return (estimate_input_tokens(messages[0]["content"] + messages[1]["content"]) * price_in
             + max_tokens * price_out) / 1e6
 
 

@@ -1,0 +1,2 @@
+routed,held_out,audit_rate,held_out_share,routed_accuracy,held_out_accuracy,routed_cheaper_share,routed_mean_cost_usd,held_out_mean_cost_usd,holdout_saving,holdout_saving_low,holdout_saving_high,routed_latency_p50_s,held_out_latency_p50_s,routed_latency_p95_s,held_out_latency_p95_s,provider_errors,spent_usd
+216,84,0.3,0.28,0.8194,0.7619,1.0,0.005241,0.01036,0.4941,0.4793,0.5088,1.38,1.89,2.44,3.01,0,2.0024

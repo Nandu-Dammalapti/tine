@@ -276,8 +276,8 @@ the route deadline), the figure is only an upper limit on the saving.
 Built and tested with stand-ins only. A tenant's provider can have a shadow policy or a route policy,
 not both.
 `TINE_ROUTE_DEADLINE_SECONDS` is how long a route policy's cheaper stages may take together for one
-request before it goes to the frontier. It defaults to `TINE_TIMEOUT_SECONDS`. Raise it to cover the
-test run when a stage's check runs tests.
+request before it goes to the frontier. Default: 30 seconds, or `TINE_TIMEOUT_SECONDS` if that is
+shorter. Raise it to cover the test run when a stage's check runs tests.
 
 ## Back up the ledger
 

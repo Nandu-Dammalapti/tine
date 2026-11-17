@@ -14,15 +14,19 @@ called: [`PLAN.md`](PLAN.md). Summary tables: `models.csv`, `checks.csv`,
 ## Bottom line
 
 On real current models, end to end through the proxy, Tine did what it says on
-multiple-choice traffic.
+multiple-choice traffic at the 4% limit.
 
-- **Certification.** A policy certified at both 4% and 2%: Haiku and Sonnet
-  answer, the answer is used when they agree, and otherwise the request goes to
-  Opus.
+- **Certification.** A policy certified at 4%: Haiku and Sonnet answer, the
+  answer is used when they agree, and otherwise the request goes to Opus.
+- **Do not quote 2% for this policy.** The same policy also passed at 2%, on the
+  last allowed loss: 4 of the 495 certify questions, and a fifth would have
+  failed. That certificate did not hold up. The loss was 2.3% on the 2,305
+  questions outside the certify part (95% upper bound 2.8%) and 2.4% on the 1,800
+  new ones (Step 2).
 - **New questions.** On 300 new questions the loss against Opus was 2.0%. The
   limit was 4%.
-- **Shadow mode.** Cheaper models would have answered 89% of these questions, at
-  48% lower cost.
+- **Shadow mode.** Cheaper models would have answered 90% of the questions that
+  were shadowed, at 48% lower cost.
 - **Live routing.** On 200 more questions, 91.5% were answered by Haiku. Accuracy
   was 91.5%, against Opus's 91.7-92.2%. Cost was about 52% lower, and the median
   response was faster.
@@ -73,14 +77,35 @@ same policy came out at both limits.
 | | value |
 | --- | --- |
 | chain | Haiku + Sonnet must agree, else Opus |
-| certified at 4% and at 2% | yes and yes |
+| certified at 4% | yes: 4 losses on the 495 certify questions, 12 allowed |
+| at 2% | passed with no margin: 4 losses, 4 allowed. Not a figure to quote (below) |
 | upper bound on loss (95%) | 1.84% |
-| loss on the 495 certify questions | 0.81% |
-| held-out test part (197 questions) | 41.1% saving, 13.2% sent to Opus, 2.5% loss |
-| all 1,000 questions | 86.9% answered by cheaper models, 1.3% loss, 0.6% gain |
+| loss on the 495 certify questions | 0.81% (4) |
+| held-out test part (197 questions) | 41.1% saving, 13.2% sent to Opus, 2.5% loss (5; 95% upper bound 5.3%) |
+| all 1,000 questions | 86.9% answered by cheaper models, 1.3% loss (13), 0.6% gain |
 
-The held-out loss of 2.5% is above 2% on a small sample. Over all 1,000 questions
-the loss was 1.3%.
+**The 2% certificate did not hold up.** This part was added on 2026-11-17, after
+the longer shadow run (`../2026-11-17-concurrency-and-long-shadow`) and a recount
+of the recorded files.
+
+- **It passed on the last allowed loss.** With 495 certify questions the 2% limit
+  allows 4 losses, and there were 4.
+- **The history as a whole never supported 2%.** All 1,000 questions have 13
+  losses, which gives a 95% upper bound of 2.06%. The held-out part lost 2.5%.
+- **The split was a lucky one.** Freezing the same history with 300 other seeds
+  certifies at 2% in 17 of them with this split, and in 24 of 300 with the default
+  split. At 4% it certifies in all 300 with this split.
+- **Outside the certify part the loss is above 2%.** The 505 other history
+  questions and the 1,800 new ones (300 here, 1,500 in the longer run) lost 52 of
+  2,305: 2.3%, with a 95% upper bound of 2.8%. The new questions alone lost 43 of
+  1,800: 2.4%, upper bound 3.1%.
+- **Neither figure is far from 2%.** A true loss of exactly 2% would give 43 or
+  more losses in 1,800 about one time in seven. The data do not show that the
+  loss is above 2%. They show that 2% was never established.
+
+The certify part's 0.81% reads low because the policy passed on it. The held-out
+2.5% played no part in the choice and is the better guide. `freeze-policy` now
+prints the held-out loss beside the bound and warns in both of these cases.
 
 ### Step 3: shadow mode through the real proxy (300 new questions and 20 free text)
 
@@ -90,7 +115,7 @@ simulated pilots' fixes merged.
 | pre-registered check | pass mark | result | |
 | --- | --- | --- | --- |
 | loss on new questions | at most 4% | 2.0% (6 of 300) | pass |
-| share answered by cheaper models | within 7 points of 86.8% | 89.3% | pass |
+| share answered by cheaper models | within 7 points of 86.8% | 90.2% (268 of the 297 shadowed) | pass |
 | reader matched real replies | at least 98% for each model | Haiku 99.3%, Sonnet 100%, Opus 100% | pass |
 | free text accepted | none | 0 of 20 | pass |
 
@@ -99,6 +124,11 @@ simulated pilots' fixes merged.
 | multiple choice | 297 | 47.8% | 3.6s / 13.9s (5.0s / 10.4s) |
 | free text | 20 | -31% | 49.8s / 87.1s (34.7s / 51.7s) |
 | proxy's own report, both together | 317 | 28.4% | - |
+
+Three of the 300 questions were not shadowed, because the proxy was busy. The
+harness first counted them as turned down, which gave 89.3% (268 of 300). Over
+the 297 that were shadowed the share is 90.2%, and the loss is 6 of 297, still
+2.0%. The harness now counts shadowed requests only.
 
 What the proxy's shadow report said:
 
@@ -149,7 +179,8 @@ random frontier holdout exists.
 ## What this shows, and what it does not
 
 - **Shown.**
-  - The agreement check certified and held on new questions from the same source.
+  - The agreement check certified at 4% and held on new questions from the same
+    source.
   - The answer reader written into the policy read 99-100% of real replies.
   - Shadow mode's projection matched what live routing then did.
   - Free text was kept safe.
@@ -157,6 +188,8 @@ random frontier holdout exists.
 - **Not shown.**
   - **Different traffic.** That it holds on traffic unlike MMLU-Pro, or on a
     customer's own labels. The models may also have seen MMLU-Pro before.
+  - **The 2% limit.** The 2% certificate had no margin and did not hold up
+    (Step 2).
   - **Drift over time.** Everything ran in one afternoon.
   - **The deployed server.** It was not tested under real load. The proxy ran
     in-process, because this machine cannot open a port, and the container was
@@ -172,11 +205,16 @@ random frontier holdout exists.
    without reaching the provider. The harness's own transport ignored this
    machine's network proxy setting. Nothing was spent. The fix was in the
    harness only; Tine's proxy uses a normal client that honours the setting.
-2. **Shadow step, second attempt: stopped.** Long free-text replies took over 5
-   minutes each and held every request slot, because in-process calls wait for
-   their shadow work. They also cost about 4 times what the plan assumed. The run
-   was stopped after 42 requests, with $1.14 recorded, plus at most about $0.70
-   for calls in flight. The rerun used:
+2. **Shadow step, second attempt: stopped.** 55 requests were sent and 49 were
+   answered. Six that were in flight together (4 multiple choice and 2 free text)
+   got no reply within the harness's 300-second timeout. The cause is not known:
+   the 8 free-text replies that did complete took 6 to 54 seconds. In-process
+   calls wait for their shadow work, so the stalled requests held their slots.
+   Free text also cost about 4 times what the plan assumed. The run was stopped
+   with $1.14 recorded ($0.853 for frontier answers and $0.285 for 90 shadow
+   calls), plus at most about $0.70 for calls in flight. An earlier version of
+   this item said free-text replies took over 5 minutes each and that the run
+   stopped after 42 requests; the run's ledger shows neither. The rerun used:
    - 20 free-text prompts instead of 60,
    - 12 requests at a time instead of 6,
    - a 600-second upstream timeout.

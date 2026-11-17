@@ -127,8 +127,18 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
                         if model != frontier and (models is None or model in models))
     pairs = [group for group in combinations(candidates, group_size)
              if sum(mean_cost[model] for model in group) <= max_cost_share * mean_cost[frontier]]
+    no_pair = {}
     if not pairs:
-        raise ValueError("No pair of models is cheap enough; raise max_cost_share or pass models")
+        costs = [sum(mean_cost[model] for model in group) for group in combinations(candidates, group_size)]
+        share = float(min(costs) / mean_cost[frontier]) if costs else None
+        cheapest = "there are too few models to form one" if share is None else \
+            f"the cheapest costs {share:.1%} of the frontier, over max_cost_share {max_cost_share:.1%}"
+        if not (include_singles and any(mean_cost[model] <= max_cost_share * mean_cost[frontier]
+                                        for model in candidates)):
+            raise ValueError(f"No pair of models is cheap enough ({cheapest}); raise max_cost_share or pass models")
+        # Single models are still worth offering: say why they are all there is.
+        no_pair = {"no_pair_cheap_enough": f"{cheapest}; only single models are offered",
+                   "cheapest_pair_cost_share": None if share is None else round(share, 4)}
     names = ["+".join(group) for group in pairs]
     if len(set(names)) != len(names) or set(names) & set(outcomes.model):
         raise ValueError("Agreement group identifiers collide with existing models or another group")
@@ -183,7 +193,7 @@ def build_pairs(outcomes, answers: dict, frontier: str, *, max_cost_share: float
     return frame, checks, {"frontier": frontier, "group_size": group_size, "pairs": len(pairs),
                            "models_in_pairs": candidates, "include_singles": include_singles,
                            "grade_conflicts_counted_wrong": conflicts, "answer_compare": answer_compare,
-                           "max_cost_share": max_cost_share, "agreement_rate": agreement}
+                           "max_cost_share": max_cost_share, "agreement_rate": agreement, **no_pair}
 
 
 def main(argv=None) -> None:

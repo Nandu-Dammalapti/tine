@@ -147,6 +147,10 @@ python scripts/judge_patches.py judge --provider anthropic --model claude-haiku-
   cost to net from savings.
 - A refusal or a reply with no usable verdict is recorded as `unparsed` and scored as a rejection. No
   fallback model is configured: the point is to measure one named model.
+- So is a reply that did not finish (cut off at `--max-tokens`, paused, or calling a tool), even when
+  it holds an approval; the call is still charged. The proxy's judge step has the same rule. In the
+  six recorded verdict tables the longest reply was 3,896 tokens against the 8,000 limit, so no
+  recorded verdict was cut off at that limit.
 
 ## From verdicts to a chain
 

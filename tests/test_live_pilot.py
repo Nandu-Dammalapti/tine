@@ -293,3 +293,272 @@ def test_batch_create_that_may_have_gone_through_is_never_repeated(tmp_path):
     other.mkdir()
     assert ask_batch(other, FakeBatches(create_error=refused))["unconfirmed_batches"] == 0
     assert ask_batch(other, FakeBatches())["asked"] == 8
+
+
+class Killed(BaseException):
+    """Stands in for the process dying: nothing in the proxy or the pilot catches it."""
+
+
+def counting(calls: list, die_at: int | None = None):
+    """The stand-in provider, keeping each prompt it is asked and dying at one call."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if die_at is not None and len(calls) + 1 == die_at:
+            raise Killed
+        calls.append(json.loads(request.content)["messages"][-1]["content"])
+        return provider(request)
+    return httpx.MockTransport(handler)
+
+
+def run_lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def proxy_run(tmp_path, calls, **options):
+    options = {"mode": "shadow", "max_cost_usd": 1.0, "concurrency": 1, **options}
+    return asyncio.run(live_pilot.through_proxy(
+        options.pop("policy", policy()), options.pop("questions", QUESTIONS),
+        ledger_path=options.pop("ledger_path", tmp_path / "l.db"), run_file=tmp_path / "out.json.run.jsonl",
+        inner=counting(calls, options.pop("die_at", None)), **options))
+
+
+def test_proxy_run_killed_part_way_keeps_what_it_paid_for_and_resumes(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    run_file = tmp_path / "out.json.run.jsonl"
+    # Each request is three calls (the frontier, then the two shadowed models). The run dies
+    # on the eighth: two requests are finished and the third has paid for its frontier call.
+    with pytest.raises(Killed):
+        proxy_run(tmp_path, [], die_at=8)
+    kept = run_lines(run_file)
+    assert [line["kind"] for line in kept] == (["header"] + ["call"] * 3 + ["request"] + ["call"] * 3 + ["request"]
+                                               + ["call"])
+    finished = [line for line in kept if line["kind"] == "request"]
+    assert [line["task_id"] for line in finished] == ["q0", "q1"]
+    assert all(line["accepted"] == 1 and line["ledger_model"] == "claude-opus-5-5" for line in finished)
+    # A line cut off by the kill is dropped, and a run file is never started over by accident.
+    with run_file.open("a") as stream:
+        stream.write('{"kind": "call", "model": "claude-op')
+    with pytest.raises(SystemExit, match="--resume"):
+        proxy_run(tmp_path, [])
+    # Under a cap that the recorded spend already reaches, a resume sends nothing.
+    spent = sum(line["cost_usd"] for line in kept if line["kind"] == "call")
+    capped = []
+    held = proxy_run(tmp_path, capped, resume=True, max_cost_usd=spent)
+    assert capped == [] and len(held["requests"]) == 2 and held["spent_usd"] == round(spent, 4)
+    second = []
+    result = proxy_run(tmp_path, second, resume=True)
+    # q0 and q1 are not asked again; q2, in flight when the run died, is asked in full.
+    assert sorted(set(second)) == ["Question 2?", "Question 3?"] and len(second) == 6
+    assert sorted(row["task_id"] for row in result["requests"]) == ["q0", "q1", "q2", "q3"]
+    assert (result["resumes"], len(result["calls"])) == (2, 13)
+    assert result["spent_usd"] == round(sum(call["cost_usd"] for call in result["calls"]), 4) > round(spent, 4)
+    # The result is what the file holds, and it grades as an unbroken run would.
+    lines = run_lines(run_file)
+    assert result["calls"] == [{key: value for key, value in line.items() if key != "kind"}
+                               for line in lines if line["kind"] == "call"]
+    assert lines[-1]["kind"] == "end" and result["shadow_report"] == lines[-1]["shadow_report"]
+    summary = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert (summary["accepted_share_graded"], summary["loss_rate"], summary["policy_accuracy"]) == (0.75, 0.0, 1.0)
+
+
+def test_resume_refuses_a_changed_policy_question_set_or_ledger(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    with pytest.raises(SystemExit, match="no run to resume"):
+        proxy_run(tmp_path, [], resume=True, mode="route")
+    proxy_run(tmp_path, [], mode="route")
+    before = (tmp_path / "out.json.run.jsonl").read_text()
+    other_policy = {**policy(), "stages": [{"models": ["claude-sonnet-5-5", "claude-haiku-5-5"], "check": "agreement"}]}
+    changed = {"policy_sha256": {"policy": other_policy}, "questions_sha256": {"questions": QUESTIONS[:3] + FREE},
+               "mode": {"mode": "shadow"}, "max_tokens": {"max_tokens": 1024},
+               "does not exist": {"ledger_path": tmp_path / "missing.db"}}
+    for message, change in changed.items():
+        calls = []
+        with pytest.raises(SystemExit, match=message):
+            proxy_run(tmp_path, calls, resume=True, **{"mode": "route", **change})
+        assert calls == []
+    # A ledger that is there but is not this run's: its requests are not in it.
+    from tine.ledger import Ledger
+
+    Ledger(tmp_path / "other.db").close()
+    with pytest.raises(SystemExit, match="does not hold 4 of the requests"):
+        proxy_run(tmp_path, [], resume=True, mode="route", ledger_path=tmp_path / "other.db")
+    assert (tmp_path / "out.json.run.jsonl").read_text() == before
+    with pytest.raises(SystemExit, match="more than once"):
+        proxy_run(tmp_path, [], mode="route", questions=QUESTIONS + QUESTIONS[:1])
+
+
+def test_proxy_command_writes_its_result_from_the_run_file_and_resumes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    calls, real = [], live_pilot.through_proxy
+    monkeypatch.setattr(live_pilot, "through_proxy",
+                        lambda *args, **options: real(*args, inner=counting(calls), **options))
+    (tmp_path / "policy.json").write_text(json.dumps(policy()))
+    output = tmp_path / "run" / "out.json"
+    command = ["proxy", "--policy", str(tmp_path / "policy.json"), "--questions",
+               str(write_questions(tmp_path / "q.jsonl", QUESTIONS)), "--mode", "route", "--max-cost-usd", "1",
+               "--ledger", str(tmp_path / "l.db"), "--output", str(output), "--concurrency", "1"]
+    live_pilot.main(command)
+    whole = json.loads(output.read_text())
+    assert len(whole["requests"]) == 4 and whole["resumes"] == 0 and len(calls) == 9
+    assert json.loads(capsys.readouterr().out)["resumes"] == 0
+    with pytest.raises(SystemExit, match="that run finished"):
+        live_pilot.main(command + ["--resume"])
+    # Killed after the last request but before the result was written: the run file has it all.
+    output.unlink()
+    with pytest.raises(SystemExit, match="--resume"):
+        live_pilot.main(command)
+    live_pilot.main(command + ["--resume"])
+    again = json.loads(output.read_text())
+    assert len(calls) == 9 and again["requests"] == whole["requests"] and again["calls"] == whole["calls"]
+    assert again["resumes"] == 1 and json.loads(capsys.readouterr().out)["resumes"] == 1
+
+
+def test_sample_help_does_not_offer_the_ticket_sets(capsys):
+    with pytest.raises(SystemExit) as shown:
+        live_pilot.main(["sample", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert shown.value.code == 0 and "{arcc,finqa,math500,medqa,mmlupro}" in text
+    assert "scripts/ticket_pilot_prep.py" in text
+    with pytest.raises(SystemExit) as refused:
+        live_pilot.main(["sample", "--bench-dir", "b", "--output", "o", "--dataset", "tickets"])
+    assert refused.value.code == 2 and "invalid choice: 'tickets'" in capsys.readouterr().err
+
+
+def test_worst_case_counts_text_that_is_not_plain_english_higher():
+    from tine.judge import build_messages, estimate_input_tokens, worst_case_cost
+
+    plain = "the printer on the second floor stopped working after the update last night"
+    ticket = "RE: [TICKET #48213] VPN-GW01 DOWN!! Kd. 0049-7731 / Fehler 0x80070005 (ACCESS_DENIED)"
+    # Plain lower-case English is a third of a token a character, plus 8 for the message.
+    assert estimate_input_tokens(plain) == -(-len(plain) // 3) + 8 and estimate_input_tokens("") == 8
+    # Capitals, digits, punctuation and line breaks each add a token.
+    assert estimate_input_tokens("Ab1!\n") == 2 + 4 + 8
+    assert estimate_input_tokens(ticket) / len(ticket) > 2 * estimate_input_tokens(plain) / len(plain)
+    # A character outside ASCII counts as its UTF-8 bytes: 2 for "ü", 3 for each of the others.
+    assert estimate_input_tokens("ü") == 1 + 2 + 8 and estimate_input_tokens("日本語") == 1 + 9 + 8
+    for text in (plain, ticket, "日本語", "x" * 1000):
+        assert estimate_input_tokens(text) >= len(text) / 3
+    # The caps are built on it: here with no reply allowed, at Opus's input price.
+    assert live_pilot._worst_case({"prompt": ticket}, "claude-opus-5-5", 0) == pytest.approx(
+        estimate_input_tokens(ticket) * 4.0 / 1e6)
+    case = {"repository": "o/r", "issue": ticket, "patch": "--- a/x.py\n+++ b/x.py\n"}
+    messages = build_messages(case, "verdict")
+    assert worst_case_cost(case, model="claude-opus-5-5", max_tokens=0) == pytest.approx(
+        estimate_input_tokens(messages[0]["content"] + messages[1]["content"]) * 4.0 / 1e6)
+
+
+def test_requests_the_proxy_did_not_shadow_are_not_counted_as_turned_down(tmp_path, monkeypatch):
+    """Haiku refuses its shadow call on the second question with a 429. The proxy leaves
+    that run out and holds shadow mode back, so the last two requests are never
+    shadowed. One request was shadowed and accepted: the share accepted is 1 of 1, not
+    1 of 4, and the loss is over that one request."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "claude-haiku-5-5" and body["messages"][-1]["content"] == "Question 1?":
+            return httpx.Response(429, json={"type": "error", "error": {"type": "rate_limit_error"}})
+        return provider(request)
+    result = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0, concurrency=1,
+                                                  ledger_path=tmp_path / "l.db", inner=httpx.MockTransport(limited)))
+    rows = {row["task_id"]: row for row in result["requests"]}
+    assert all(row["status"] == 200 for row in rows.values()) and rows["q0"]["accepted"] == 1
+    assert rows["q1"]["skip_reason"] == live_pilot.RATE_LIMITED_REASON and rows["q1"]["accepted"] == 0
+    assert "accepted" not in rows["q2"] and "accepted" not in rows["q3"]
+    assert result["shadow_report"]["rate_limited_runs"] == 1 and result["shadow_report"]["skipped_rate_limited"] == 2
+    scored = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")
+    summary = scored["summary"]
+    assert (summary["graded"], summary["shadowed_graded"], summary["compared"]) == (4, 1, 1)
+    assert (summary["accepted_share_graded"], summary["loss_rate"], summary["gain_rate"]) == (1.0, 0.0, 0.0)
+    assert [row["shadowed"] for row in scored["rows"]] == [True, False, False, False]
+    # A loss on a request that was shadowed still counts, and one that was not cannot.
+    wrong = {**result, "calls": [{**call, "answer": "C"} if call["model"] == "claude-haiku-5-5" else call
+                                 for call in result["calls"]]}
+    assert live_pilot.score_proxy(wrong, QUESTIONS, "claude-opus-5-5")["summary"]["loss_rate"] == 1.0
+    # Routed runs have no shadow rows: every request counts, as before. Only the one
+    # request that reached the frontier can be compared with it.
+    routed = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="route", max_cost_usd=1.0,
+                                                  ledger_path=tmp_path / "r.db", inner=httpx.MockTransport(provider)))
+    summary = live_pilot.score_proxy(routed, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert "shadowed_graded" not in summary and (summary["accepted_share_graded"], summary["compared"]) == (0.75, 1)
+
+
+def test_time_the_machine_slept_through_is_reported_beside_the_run(tmp_path, monkeypatch):
+    """The laptop slept for 106 seconds during one paid run: the wall clock moved on and
+    the monotonic clock, which the proxy times requests with, did not."""
+    import time
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    asleep = {"seconds": 0.0}
+    monkeypatch.setattr(live_pilot, "time", SimpleNamespace(
+        time=lambda: time.time() + asleep["seconds"], monotonic=time.monotonic, sleep=time.sleep))
+
+    def sleepy(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "claude-opus-5-5" and body["messages"][-1]["content"] == "Question 2?":
+            asleep["seconds"] += 106.0
+        return provider(request)
+    result = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0, concurrency=1,
+                                                  ledger_path=tmp_path / "l.db", inner=httpx.MockTransport(sleepy)))
+    rows = {row["task_id"]: row for row in result["requests"]}
+    assert rows["q2"]["client_seconds_including_shadow"] >= 106.0 and rows["q2"]["client_monotonic_seconds"] < 5.0
+    assert rows["q2"]["latency_ms"] < 5000  # the ledger's latency does not see the sleep
+    summary = live_pilot.score_proxy(result, QUESTIONS, "claude-opus-5-5")["summary"]
+    assert summary["suspended_requests"] == 1 and 105.0 <= summary["suspended_seconds"] <= 107.0
+    # No sleep, or a result recorded before the monotonic time was kept: nothing is reported.
+    awake = asyncio.run(live_pilot.through_proxy(policy(), QUESTIONS, mode="shadow", max_cost_usd=1.0,
+                                                 ledger_path=tmp_path / "a.db", inner=httpx.MockTransport(provider)))
+    assert "suspended_seconds" not in live_pilot.score_proxy(awake, QUESTIONS, "claude-opus-5-5")["summary"]
+    old = {**result, "requests": [{key: value for key, value in row.items() if key != "client_monotonic_seconds"}
+                                  for row in result["requests"]]}
+    assert "suspended_seconds" not in live_pilot.score_proxy(old, QUESTIONS, "claude-opus-5-5")["summary"]
+
+
+def bench_with_scores(tmp_path, monkeypatch, scores_by_model):
+    """A two-set medqa archive: 40 questions, each model's score per question index."""
+    monkeypatch.setitem(live_pilot.DATASETS, "medqa", {**live_pilot.DATASETS["medqa"],
+                                                       "sets": {"calibrate": 20, "shadow": 20}})
+    for model, scores in scores_by_model.items():
+        folder = tmp_path / "bench" / "medqa" / "test" / model
+        folder.mkdir(parents=True)
+        (folder / "run.json").write_text(json.dumps({"records": [
+            {"index": index, "prompt": f"Question {index}?", "ground_truth": "B", "score": scores[index]}
+            for index in range(40)]}))
+    return tmp_path / "bench"
+
+
+def test_sample_prints_how_hard_each_set_is_and_warns_about_an_uneven_draw(tmp_path, monkeypatch, capsys):
+    import random
+
+    order = list(range(40))
+    random.Random(0).shuffle(order)  # the draw sample_dataset makes: the first 20 are the history
+    history = set(order[:20])
+    # Model a solves everything; model b solves the later set and half of the history.
+    half = set(order[:10])
+    bench = bench_with_scores(tmp_path, monkeypatch, {
+        "model-a": [1.0] * 40, "model-b": [0.0 if index in half else 1.0 for index in range(40)]})
+    live_pilot.main(["sample", "--bench-dir", str(bench), "--output", str(tmp_path / "sets"), "--dataset", "medqa"])
+    printed = capsys.readouterr()
+    counts, scores = (json.loads(part) for part in printed.out.replace("}\n{", "}\x00{").split("\x00"))
+    assert counts == {"calibrate": 20, "shadow": 20}
+    drawn = {json.loads(line)["task_id"] for line in (tmp_path / "sets" / "medqa-calibrate.jsonl").read_text().splitlines()}
+    assert drawn == {f"medqa:{index}" for index in history}
+    assert scores["mean_recorded_score"] == {"medqa-calibrate": 0.75, "medqa-shadow": 1.0}
+    assert len(scores["uneven"]) == 1 and "medqa-shadow is 25.0 points easier than medqa-calibrate" in scores["uneven"][0]
+    assert printed.err.startswith("Warning: medqa-shadow is 25.0 points easier") and "not like for like" in printed.err
+    # --compare reads sets that exist, the history first, and samples nothing.
+    live_pilot.main(["sample", "--bench-dir", str(bench), "--compare", str(tmp_path / "sets" / "medqa-shadow.jsonl"),
+                     str(tmp_path / "sets" / "medqa-calibrate.jsonl")])
+    printed = capsys.readouterr()
+    assert "medqa-calibrate is 25.0 points harder than medqa-shadow" in printed.err
+    with pytest.raises(SystemExit) as refused:
+        live_pilot.main(["sample", "--bench-dir", str(bench)])
+    assert refused.value.code == 2 and "--output" in capsys.readouterr().err
+
+
+def test_an_even_draw_and_sets_outside_the_archive_give_no_warning(tmp_path, monkeypatch):
+    bench = bench_with_scores(tmp_path, monkeypatch, {"model-a": [1.0, 0.0] * 20, "model-b": [1.0] * 40})
+    sets = {"history": [{"task_id": f"medqa:{index}", "ground_truth": "B", "dataset": "medqa"} for index in range(20)],
+            "later": [{"task_id": f"medqa:{index}", "ground_truth": "B", "dataset": "medqa"} for index in range(20, 40)],
+            "freetext": FREE, "tickets": [{"task_id": "tickets:1", "ground_truth": "A", "dataset": "tickets"}]}
+    assert live_pilot.recorded_scores(bench, sets) == {"mean_recorded_score": {"history": 0.75, "later": 0.75},
+                                                       "uneven": []}

@@ -48,6 +48,16 @@ When it differs, the outcomes' tenant is kept in `provenance.outcomes_tenant`. D
 edit `tenant` by hand: it shows as an edit. `freeze-policy` refuses an epsilon of 0
 or 1. Without the new flags the output is unchanged apart from the digest field.
 
+After the JSON the command prints one line to read beside the bound: the losses on
+the held-out test part with their 95% upper bound, and the losses seen on the certify
+part against the number the limit allowed. It warns on stderr when the held-out loss
+is above epsilon, or when the certify part used every loss it was allowed. A chain
+that passed has a low count on the certify part partly by selection, so quote the
+held-out loss with the bound. The first live pilot's 2% policy shows why: it passed
+with 4 losses of 4 allowed, lost 2.5% on its test part and 2.4% on new questions
+(`results/2026-11-17-live-pilot`). The line is printed only; the policy file does not
+store these counts yet.
+
 ### The freeze digest
 
 `provenance.content_sha256` is the SHA-256 of the policy's canonical JSON
@@ -267,8 +277,11 @@ certification used whatever answers the answers file held.
 
 - The proxy can run a policy in shadow mode (report only) or serve answers from it,
   including code stages whose tests run behind a webhook and whose judge the proxy
-  calls ([PROXY.md](PROXY.md)). Both are tested with stand-in providers only; neither
-  has served real traffic.
+  calls ([PROXY.md](PROXY.md)). Shadow mode and routing through agreement policies
+  have run with real current models on public benchmark questions
+  (`results/2026-11-17-live-pilot`, `results/2026-11-17-live-pilot-more`), never on a
+  customer's traffic. Code stages (the tests webhook and the judge call) are tested
+  with stand-in providers only.
 - Running a repository's tests on a live patch happens outside Tine, behind a webhook
   the tenant hosts; Tine supplies the judge half of a `tests+judge` check.
 - `run_policy` calls the members of a stage one after another, and extracting the

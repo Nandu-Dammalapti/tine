@@ -218,6 +218,66 @@ def test_frontier_error_is_not_retried_and_error_details_are_not_leaked():
     run(scenario())
 
 
+class SlowProvider(httpx.AsyncBaseTransport):
+    """A provider whose reply takes ``seconds`` to arrive and whose address takes
+    ``connect_seconds`` to reach. Nothing sleeps: it answers a client that would have
+    waited that long and times out any other, as httpx itself would."""
+
+    def __init__(self, seconds, connect_seconds=0.1):
+        self.seconds, self.connect_seconds, self.timeouts = seconds, connect_seconds, []
+
+    async def handle_async_request(self, request):
+        timeout = request.extensions["timeout"]
+        self.timeouts.append(timeout)
+        if timeout["connect"] is not None and timeout["connect"] < self.connect_seconds:
+            raise httpx.ConnectTimeout("unreachable", request=request)
+        if timeout["read"] is not None and timeout["read"] < self.seconds:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "a long answer"}}]})
+
+
+def ask_own_client(monkeypatch, provider, app_config):
+    """One request through a proxy that opens its own provider clients, as ``tine
+    serve`` does, with ``provider`` in place of the network."""
+    class Wired(httpx.AsyncClient):
+        def __init__(self, **options):
+            super().__init__(transport=provider, **options)
+
+    async def scenario():
+        with monkeypatch.context() as patch:  # the proxy opens its clients when it is created
+            patch.setattr("tine.proxy.httpx.AsyncClient", Wired)
+            app = create_app(app_config, ledger=Ledger())
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                return await client.post("/v1/chat/completions", json={"messages": []},
+                                         headers={"authorization": "Bearer tenant-token-a"})
+    return run(scenario())
+
+
+def test_a_reply_slower_than_the_old_30_second_default_is_served_by_default(monkeypatch):
+    """Long frontier replies took 30 to 53 seconds in the live pilots. A proxy with no
+    timeout setting must wait for them; the old default returned 502."""
+    monkeypatch.delenv("TINE_TIMEOUT_SECONDS", raising=False)
+    assert ProxyConfig().timeout_seconds == 600.0 and ProxyConfig.from_env().timeout_seconds == 600.0
+    provider = SlowProvider(seconds=53)
+    response = ask_own_client(monkeypatch, provider, config())
+    assert response.status_code == 200 and response.json()["choices"][0]["message"]["content"] == "a long answer"
+    assert provider.timeouts[0]["read"] == 600.0
+    # The setting still applies: at 30 seconds the same reply is a 502, as it was.
+    response = ask_own_client(monkeypatch, SlowProvider(seconds=53), config(timeout_seconds=30.0))
+    assert response.status_code == 502
+
+
+def test_an_unreachable_provider_fails_at_the_connect_timeout_not_the_reply_timeout(monkeypatch):
+    provider = SlowProvider(seconds=1, connect_seconds=60)
+    response = ask_own_client(monkeypatch, provider, config())
+    assert response.status_code == 502 and provider.timeouts[0]["connect"] == 10.0
+    # A timeout set below it is used for connecting as well.
+    provider = SlowProvider(seconds=1)
+    ask_own_client(monkeypatch, provider, config(timeout_seconds=4.0))
+    assert provider.timeouts[0] == {"connect": 4.0, "read": 4.0, "write": 4.0, "pool": 4.0}
+
+
 @pytest.mark.parametrize("candidate", [False, True])
 def test_streaming_error_body_failure_closes_response_and_uses_fallback(candidate):
     class BrokenBody(httpx.AsyncByteStream):

@@ -35,9 +35,13 @@ def chat(text):
 
 
 def world(answers, seen, *, tests_pass=True, judge_probability=0.9, down=(), webhook_reply=None, judge_usage=True,
-          judge_requests=None, webhook_bodies=None):
+          judge_requests=None, webhook_bodies=None, judge_stop="end_turn", judge_blocks=(), judge_body=None):
     """One stand-in for the model provider, the customer's test webhook and the judge.
-    ``webhook_reply`` is the webhook's raw reply body, for replies JSON cannot carry."""
+    ``webhook_reply`` is the webhook's raw reply body, for replies JSON cannot carry.
+    The judge's reply ends with ``judge_stop`` (None leaves the stop reason out), holds
+    ``judge_blocks`` after its verdict, and reports ``judge_usage``: True for 500 tokens
+    in and 500 out, a pair for other counts, False for none. ``judge_body`` replaces the
+    whole reply with raw bytes."""
     def handler(request):
         if request.url.host == "ci.example":
             seen.append("webhook")
@@ -56,10 +60,13 @@ def world(answers, seen, *, tests_pass=True, judge_probability=0.9, down=(), web
                 judge_requests.append(sent)
             verdict = {"verdict": "accept" if judge_probability >= 0.5 else "reject",
                        "probability": judge_probability, "reason": "r"}
-            return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps(verdict)}],
-                                             "stop_reason": "end_turn",
-                                             **({"usage": {"input_tokens": 500, "output_tokens": 500}}
-                                                if judge_usage else {})})
+            if judge_body is not None:
+                return httpx.Response(200, content=judge_body, headers={"content-type": "application/json"})
+            tokens_in, tokens_out = (500, 500) if judge_usage is True else judge_usage or (None, None)
+            return httpx.Response(200, json={
+                "content": [{"type": "text", "text": json.dumps(verdict)}, *judge_blocks],
+                **({} if judge_stop is None else {"stop_reason": judge_stop}),
+                **({"usage": {"input_tokens": tokens_in, "output_tokens": tokens_out}} if judge_usage else {})})
         model = json.loads(request.content)["model"]
         seen.append(model)
         if model in down:
@@ -252,6 +259,93 @@ def test_shadow_runs_keep_each_checks_steps_and_the_report_counts_rejections_by_
                               {"type": "judge", "passed": False, "cost_usd": pytest.approx(0.01)}]
     assert report["check_step_rejections"] == {"tests+judge": {"judge": 2}}
     assert report["check_rejection_reasons"] == {}
+
+
+UNFINISHED = "not_a_finished_judge_reply"
+TOOL_CALL = {"type": "tool_use", "id": "t", "name": "review", "input": {}}
+
+
+def test_an_unfinished_judge_reply_escalates_and_the_ledger_row_keeps_what_the_judge_cost():
+    """Through the proxy with real prices: an approval in a judge reply that was cut off
+    is not used, and the call stays routing cost. Coder $0.01, webhook $0.01, judge
+    500 + 8,000 tokens at $10 per million = $0.085."""
+    routed = config(route_policies={"a": {"openai": CODE}}, checks=CHECKS)
+    answers = {"coder": "cheap patch", "frontier": "frontier patch"}
+    seen = []
+    response, row = ask(routed, world(answers, seen, judge_stop="max_tokens", judge_usage=(500, 8000)))
+    assert seen == ["coder", "webhook", "judge", "frontier"] and response.json() == chat("frontier patch")
+    assert row["model"] == "frontier" and row["cost_usd"] == pytest.approx(0.2)
+    assert row["routing_cost_usd"] == pytest.approx(0.105)
+    assert row["checks"] == [{"check": "tests+judge", "model": "coder", "passed": False, "error": None,
+                              "cost_usd": pytest.approx(0.095), "reason": UNFINISHED, "checked_model": "coder",
+                              "steps": [{"type": "webhook", "passed": True, "cost_usd": 0.01},
+                                        {"type": "judge", "passed": False, "cost_usd": pytest.approx(0.085),
+                                         "reason": UNFINISHED}]}]
+    # A tool call beside the approval, a paused reply and one with no stop reason: the same.
+    for change in ({"judge_blocks": [TOOL_CALL]}, {"judge_stop": "pause_turn"}, {"judge_stop": None}):
+        response, row = ask(routed, world(answers, [], **change))
+        assert response.headers["x-tine-route"] == "frontier" and row["routing_cost_usd"] == pytest.approx(0.03)
+        assert row["checks"][0]["steps"][-1] == {"type": "judge", "passed": False, "cost_usd": pytest.approx(0.01),
+                                                 "reason": UNFINISHED}
+    # No usage, or a body that is not a JSON object: the judge's cost is unknown, never
+    # zero, and the webhook's $0.01 is kept as the known part.
+    for change in ({"judge_stop": "max_tokens", "judge_usage": False},
+                   {"judge_body": b'[{"verdict": "accept", "probability": 1}]'}, {"judge_body": b"null"}):
+        response, row = ask(routed, world(answers, [], **change))
+        assert response.headers["x-tine-route"] == "frontier" and row["routing_cost_usd"] is None
+        check = row["checks"][0]
+        assert check["cost_usd"] is None and check["known_cost_usd"] == 0.01 and check["reason"] == UNFINISHED
+        assert check["steps"][-1] == {"type": "judge", "passed": False, "cost_usd": None, "reason": UNFINISHED}
+    # A finished reply with a thinking block in front, as real judges send, still approves.
+    seen = []
+    response, row = ask(routed, world(answers, seen, judge_stop="stop_sequence",
+                                      judge_blocks=[{"type": "thinking", "thinking": "", "signature": "s"}]))
+    assert seen == ["coder", "webhook", "judge"] and row["routing_cost_usd"] == pytest.approx(0.02)
+
+
+def test_shadow_mode_counts_unfinished_judge_replies_and_keeps_their_cost():
+    def run(replies):
+        replies = iter(replies)
+        healthy = world({"coder": "cheap patch", "frontier": "frontier patch"}, [])
+
+        def handler(request):
+            if request.url.path.endswith("/v1/messages"):
+                return world({}, [], **next(replies))(request)
+            return healthy(request)
+
+        async def scenario():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+                ledger = Ledger()
+                app = create_app(config(shadow_policies={"a": {"openai": CODE}}, shadow_sample_rate=1.0,
+                                        shadow_max_cost_usd=5.0, checks=CHECKS), ledger=ledger, client=upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                    headers = {"authorization": "Bearer token-a"}
+                    for index in range(3):
+                        await client.post("/v1/chat/completions", headers=headers, json={
+                            "model": "frontier", "messages": [{"role": "user", "content": f"q{index}"}]})
+                    report = (await client.get("/v1/shadow", headers=headers)).json()
+                    stored = ledger._db.execute("SELECT calls_json FROM shadow_runs ORDER BY rowid").fetchall()
+                    return report, [json.loads(row[0])[-1] for row in stored]
+        return asyncio.run(scenario())
+    # A finished approval, an approval cut off after 8,000 tokens, and a refusal.
+    report, checks = run([{}, {"judge_stop": "max_tokens", "judge_usage": (500, 8000)},
+                          {"judge_stop": "refusal", "judge_usage": (500, 0)}])
+    # Per run: coder $0.01 and webhook $0.01, then the judge: $0.01, $0.085 and $0.005.
+    spend = (0.01 + 0.01 + 0.01) + (0.01 + 0.01 + 0.085) + (0.01 + 0.01 + 0.005)
+    assert report["shadowed_requests"] == 3 and report["policy_would_accept"] == 1
+    assert report["shadow_spend_usd"] == pytest.approx(spend) and report["unknown_cost_shadow_calls"] == 0
+    assert report["check_rejection_reasons"] == {UNFINISHED: 2}
+    assert report["check_step_rejections"] == {"tests+judge": {"judge": 2}}
+    # The two rejected requests would also have paid the frontier's $0.20.
+    assert report["projected_policy_cost_usd"] == pytest.approx(spend + 0.4)
+    assert [check["cost_usd"] for check in checks] == [pytest.approx(0.02), pytest.approx(0.095), pytest.approx(0.015)]
+    assert checks[1]["steps"][-1] == {"type": "judge", "passed": False, "cost_usd": pytest.approx(0.085),
+                                      "reason": UNFINISHED}
+    # Cut off with no usage in the reply: the cost is unknown and the known part is kept.
+    report, checks = run([{"judge_stop": "max_tokens", "judge_usage": False}] * 3)
+    assert report["check_rejection_reasons"] == {UNFINISHED: 3} and report["unknown_cost_shadow_calls"] == 3
+    assert report["shadow_spend_usd"] == pytest.approx(3 * 0.02) and report["projected_savings_usd"] is None
+    assert all(check["cost_usd"] is None and check["known_cost_usd"] == 0.01 for check in checks)
 
 
 def test_policies_and_checks_are_validated_before_anything_runs():
@@ -527,6 +621,27 @@ def test_a_stalled_stage_gives_way_to_the_frontier_at_the_route_deadline():
                     {"checks": {"t": [{"type": "webhook", "url": "https://x.example", "timeout_seconds": float("nan")}]}}]:
         with pytest.raises(ValueError):
             create_app(config(**changes), ledger=Ledger())
+
+
+def test_the_route_deadline_stays_at_30_seconds_when_the_upstream_timeout_is_longer(monkeypatch):
+    """The upstream timeout's default went from 30 seconds to ten minutes. What routing
+    may add to a request did not: without a deadline of its own it is 30 seconds, or
+    the upstream timeout when that is shorter."""
+    import tine.proxy
+
+    deadlines = []
+
+    async def recording(*args, deadline_seconds=None, **options):
+        deadlines.append(deadline_seconds)
+        return await run_stages(*args, deadline_seconds=deadline_seconds, **options)
+    run_stages = tine.proxy.run_stages_async
+    monkeypatch.setattr(tine.proxy, "run_stages_async", recording)
+    answers = {"small-a": "42", "small-b": "42"}
+    for changes in ({}, {"timeout_seconds": 4.0}, {"timeout_seconds": 4.0, "route_deadline_seconds": 12.5},
+                    {"route_deadline_seconds": 90.0}):
+        response, _ = ask(config(route_policies={"a": {"openai": AGREE}}, **changes), world(answers, []))
+        assert response.headers["x-tine-route"] == "stage-0"
+    assert config().timeout_seconds == 600.0 and deadlines == [30.0, 4.0, 12.5, 90.0]
 
 
 def test_the_judge_is_not_asked_about_text_it_would_only_see_part_of():

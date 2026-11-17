@@ -11,10 +11,10 @@ Use the activated Python environment from the README. Configure these variables 
 | `TINE_TENANT_KEYS` | JSON object mapping incoming proxy tokens to tenant IDs |
 | `TINE_OPENAI_API_KEY` / `TINE_ANTHROPIC_API_KEY` | Provider credentials; configure only the providers you use |
 | `TINE_OPENAI_FRONTIER_MODEL` / `TINE_ANTHROPIC_FRONTIER_MODEL` | Exact frontier model name for each provider |
-| `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3` |
+| `TINE_LEDGER_PATH` | SQLite file, default `artifacts/ledger.sqlite3`. To copy it while the proxy runs, use `python -m tine backup-ledger --output PATH` ([REPORT.md](REPORT.md)): the main file copied alone can lack the newest rows |
 | `TINE_LEDGER_REQUIRED` | `1` or `true` (any case) returns 503 instead of an answer the ledger could not record. Default off |
 | `TINE_OPENAI_BASE_URL` / `TINE_ANTHROPIC_BASE_URL` | Optional API-compatible upstreams; defaults are official HTTPS endpoints. Every model a policy names for that provider is called here (see One base URL per provider) |
-| `TINE_TIMEOUT_SECONDS` | Upstream timeout, default 30 |
+| `TINE_TIMEOUT_SECONDS` | How long a provider may take over one reply, in seconds. Default 600. A reply that takes longer is a 502 with no retry. It was 30 until 2026-11-17: in the live pilots 12 of about 3,600 frontier replies through the proxy took longer than that (up to 53 seconds). Connecting to the provider is given 10 seconds, or this value if it is lower |
 | `TINE_MODEL_PRICES` | Explicit USD-per-million token rates keyed by `provider:model`. Optional, except that shadow sampling needs a price for every stage model and judge model of a shadow policy |
 | `TINE_VERIFIED_CACHE` | `true` by default; cache requires an explicit successful outcome |
 | `TINE_MAX_BODY_BYTES` | Largest request body on the provider routes, in bytes. Default 10485760 (10 MB). Larger gets 413 (see Request limits) |
@@ -174,7 +174,9 @@ Limits:
   cannot be filled in later (the 409 above). Find why routing cost went unknown (a model that fails,
   a webhook, the deadline) and fix it to get a point figure again. Held-out requests whose cost is not
   known are still left out, which can move the figure either way.
-- Built and tested with stand-in providers. Never run on real traffic or used by a real customer.
+- Built and tested with stand-in providers, and run with real current models on public benchmark questions in
+  `results/2026-11-17-live-pilot-more` (measured saving MedQA 56%, ARC 97%, FinQA 18%). Never run on a
+  customer's traffic.
 
 ### Audit trail
 
@@ -416,7 +418,8 @@ from older policy files too.
 
 Rate limits belong to the provider organisation, so shadow calls and the tenant's real calls share
 them. In a live pilot on an account with modest limits, shadow calls running beside real traffic led
-Anthropic to answer 429 to 19-45% of the real frontier requests. Shadow mode now holds back:
+Anthropic to answer 429 to 19-38% of the real frontier requests in the shadow runs, 25-58% in the routed
+runs and 65% in the server test (`results/2026-11-17-live-pilot-more`). Shadow mode now holds back:
 
 - A provider reply of 429 (rate limit) or 529 (overloaded) pauses shadow mode on that provider. This
   holds for a shadow call, a judge call made by a shadow run, a routed request's cheaper call and the
@@ -447,12 +450,17 @@ Anthropic to answer 429 to 19-45% of the real frontier requests. Shadow mode now
   `shadow_calls_last_minute` (null without a cap). `sampling` still says `on` during a pause.
 
 Status: built and tested with stand-in providers that answer 429 and 529, with and without
-`retry-after`, on a test clock. It has not been run against a real provider's limits. It lowers the
-load shadow mode adds; it cannot stop real traffic alone from reaching the limit.
+`retry-after`, on a test clock. It met a real provider's limit once
+(`results/2026-11-17-concurrency-and-long-shadow`): in a test added after that run's plan, the provider
+refused 9 of 69 real requests without the pause and none of 60 with it, and 55 of those 60 were not
+shadowed. The planned test did not meet its pass marks: no real request was refused in it, so it did
+not exercise the pause. The pause was not seen to end, and a `retry-after` header and a 529 were not met.
+It lowers the load shadow mode adds; it cannot stop real traffic alone from reaching the limit.
 
 The same report as a page to send to a customer:
 `python scripts/savings_report.py --ledger LEDGER --tenant TENANT --policy POLICY.json --output report.html`
-([REPORT.md](REPORT.md)). `--note` adds one line under the headline.
+([REPORT.md](REPORT.md)). `--note` adds one line under the headline. `POLICY.json` can be the
+`TINE_SHADOW_POLICIES` or `TINE_ROUTE_POLICIES` file itself: the script takes the tenant's policy from it.
 
 ### The spending cap
 
@@ -530,7 +538,8 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
   reply as it was written, not the rewritten answer.
 - `TINE_ROUTE_ESTIMATE_BASELINE`: `true` to estimate the frontier baseline for a routed answer (below).
 - `TINE_ROUTE_DEADLINE_SECONDS`: how long the cheaper stages may take together for one request. Default:
-  `TINE_TIMEOUT_SECONDS`. When it runs out the request goes to the frontier.
+  30 seconds, or `TINE_TIMEOUT_SECONDS` if that is shorter. When it runs out the request goes to the
+  frontier.
 - `TINE_AUDIT_RATE`: the share of requests held out for the frontier, between 0 and 1. Default 0, off
   (see Measuring the saving under live routing).
 

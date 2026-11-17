@@ -364,6 +364,66 @@ def test_freeze_policy_command_writes_the_tenant_and_reader_and_refuses_a_bad_pa
     assert "--answer-pattern" in capsys.readouterr().err and not (tmp_path / "bad.json").exists()
 
 
+def test_freeze_notes_give_the_held_out_loss_and_warn_when_a_certificate_has_no_margin():
+    from tine.__main__ import freeze_notes
+
+    # The figures of the first live pilot's 2% policy: it passed on the last allowed loss.
+    policy = {"stages": [{"models": ["a", "b"], "check": "agreement"}],
+              "guarantee": {"epsilon": 0.02, "delta": 0.05, "certify_tasks": 495, "certify_degradation_rate": 4 / 495},
+              "estimate": {"test_tasks": 197, "degradation_rate": 5 / 197}}
+    line, *warnings = freeze_notes(policy)
+    assert line == ("Held-out test part: 5 of 197 tasks lost (2.54%, 95% upper bound 5.26%). "
+                    "Certify part: 4 of 495 lost, 4 allowed at epsilon 2.00%.")
+    assert len(warnings) == 2 and all(warning.startswith("Warning: ") for warning in warnings)
+    assert "held-out loss (2.54%) is above epsilon (2.00%)" in warnings[0] and "(4 of 4)" in warnings[1]
+    # The same counts at 4% leave room on both: one line and no warning.
+    roomy = {**policy, "guarantee": {**policy["guarantee"], "epsilon": 0.04}}
+    assert freeze_notes(roomy) == [line.replace("4 allowed at epsilon 2.00%", "12 allowed at epsilon 4.00%")]
+    # Room on the certify part does not hide a held-out loss over the limit, and the reverse.
+    over = {**roomy, "estimate": {"test_tasks": 197, "degradation_rate": 10 / 197}}
+    assert [note[:40] for note in freeze_notes(over)[1:]] == ["Warning: the held-out loss (5.08%) is ab"]
+    tight = {**policy, "estimate": {"test_tasks": 197, "degradation_rate": 0.0}}
+    assert [note[:40] for note in freeze_notes(tight)[1:]] == ["Warning: the certify part used every los"]
+    assert freeze_notes({**policy, "stages": []}) == []
+
+
+def test_freeze_policy_command_prints_the_held_out_loss_and_warns_on_stderr(tmp_path, capsys):
+    """A pair that is right whenever it agrees, except on tasks planted after the split:
+    as many certify tasks as the 4% limit allows, and every fifth test task."""
+    from tine.pipeline import complete_tasks
+    from tine.planning import max_failures
+
+    frame, checks = recorded(tasks=600)
+    frame.loc[frame.model == "frontier", "success"] = True
+    _, tasks, _ = complete_tasks(frame, "frontier")
+    part = np.random.default_rng(42).choice(3, size=len(tasks), p=[0.4, 0.3, 0.3])
+    agreed = tasks.task_id.isin(checks.task_id[checks.passed]).to_numpy()
+    certify, test = tasks.task_id[(part == 1) & agreed], tasks.task_id[(part == 2) & agreed]
+    allowed = max_failures(int((part == 1).sum()), 0.04, 0.05)
+    planted = [*certify[:allowed], *test[::5]]
+    frame.loc[(frame.model == "a+b") & frame.task_id.isin(planted), "success"] = False
+    write_outcomes(frame, tmp_path / "outcomes.csv")
+    checks.to_csv(tmp_path / "checks.csv", index=False)
+    main(["freeze-policy", "--input", str(tmp_path / "outcomes.csv"), "--frontier", "frontier",
+          "--checks", str(tmp_path / "checks.csv"), "--epsilon", "0.04", "--output", str(tmp_path / "policy.json")])
+    printed = capsys.readouterr()
+    written = json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))
+    assert written["guarantee"]["certified"] and written["guarantee"]["bound"] <= 0.04
+    lost, held_out = len(test[::5]), int((part == 2).sum())
+    assert (f"Held-out test part: {lost} of {held_out} tasks lost" in printed.out
+            and f"Certify part: {allowed} of {int((part == 1).sum())} lost, {allowed} allowed" in printed.out)
+    assert lost / held_out > 0.04 and "is above epsilon (4.00%)" in printed.err
+    assert f"used every loss it was allowed ({allowed} of {allowed})" in printed.err
+    assert "Warning" not in printed.out and printed.out.rstrip().endswith(f"Policy: {tmp_path / 'policy.json'}")
+    # A clean history prints the line and no warning.
+    clean, clean_checks = recorded(tasks=600)
+    write_outcomes(clean, tmp_path / "clean.csv")
+    main(["freeze-policy", "--input", str(tmp_path / "clean.csv"), "--frontier", "frontier",
+          "--checks", str(tmp_path / "checks.csv"), "--epsilon", "0.04", "--output", str(tmp_path / "clean.json")])
+    printed = capsys.readouterr()
+    assert "Held-out test part: 0 of " in printed.out and printed.err == ""
+
+
 @pytest.mark.parametrize("guarantee", [
     {"epsilon": "0.02"}, {"epsilon": 0}, {"epsilon": 1}, {"epsilon": 1.5}, {"epsilon": float("nan")},
     {"delta": 0}, {"delta": True}, {"delta": "0.05"}, {"bound": "0.01"}, {"bound": 1.5}, {"bound": -0.1},

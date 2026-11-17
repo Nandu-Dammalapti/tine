@@ -62,6 +62,8 @@ def test_judge_tool_call_cannot_be_used_as_a_final_approval(tool_type):
     outcome = check_reply(tool_type=tool_type)
     assert outcome["accepted"] is False
     assert outcome["checks"][0]["cost_usd"] == 0.03
+    assert outcome["checks"][0]["steps"] == [{"type": "judge", "passed": False, "cost_usd": 0.03,
+                                              "reason": "not_a_finished_judge_reply"}]
 
 
 @pytest.mark.parametrize("stop_reason", ["end_turn", "stop_sequence"])

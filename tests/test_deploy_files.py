@@ -139,6 +139,15 @@ def test_example_configuration_validates_as_shipped(monkeypatch, tmp_path):
     assert set(config.shadow_policies) <= set(config.tenant_keys.values())
 
 
+def test_example_configuration_leaves_the_upstream_timeout_at_the_proxys_default(monkeypatch, tmp_path):
+    """The container's env file is a copy of the example, and a value set there replaces
+    the proxy's default. The example used to set 30 seconds, which the default no longer is."""
+    active, commented = env_example()
+    assert "TINE_TIMEOUT_SECONDS" not in active
+    assert float(commented["TINE_TIMEOUT_SECONDS"]) == ProxyConfig.timeout_seconds
+    assert load_example_config(monkeypatch, tmp_path).timeout_seconds == ProxyConfig.timeout_seconds
+
+
 def test_example_configuration_validates_with_shadow_sampling_on(monkeypatch, tmp_path):
     config = load_example_config(monkeypatch, tmp_path, TINE_SHADOW_SAMPLE_RATE="0.05",
                                  TINE_ANSWER_PATTERN=env_example()[1]["TINE_ANSWER_PATTERN"])

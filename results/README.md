@@ -10,13 +10,16 @@ commands that regenerate it. This page says what each experiment asked, what it
 found, and how the findings fit together. Update it whenever a results folder is
 added.
 
-All results but one are offline, on recorded benchmark answers (LLMRouterBench, and
-xRouteBench from 2026-11-14). The exceptions are the two live pilots (2026-11-17), where
-current Claude models answered public benchmark questions through the real proxy
-($23.65 and $60.00), in shadow mode and routed live. Otherwise models were called only to judge
+All results but four are offline, on recorded benchmark answers (LLMRouterBench, and
+xRouteBench from 2026-11-14). The exceptions are four paid live runs (2026-11-17), where
+current Claude models answered requests through the real proxy: the two live pilots on
+public benchmark questions ($23.65 and $60.00), in shadow mode and routed live; the
+rate-limit tests and a shadow run on 1,500 more benchmark questions ($26.43); and a pilot
+on a public set of one company's support tickets ($14.74), in shadow mode and routed
+live. None of them ran on a customer's traffic. Otherwise models were called only to judge
 or to read: a Claude Code session and open models as judges (judge-pilot), pinned
 Claude models through the paid API ($47.73: api-judge $12.69, judge-probes $31.02,
-judge-prompt $4.02; $131.38 in all with the live pilots),
+judge-prompt $4.02; $172.55 in all with the four live runs),
 and frozen encoders for embeddings and hidden states. Only small summary tables are in
 Git; the benchmark archives, per-task outputs, prompts and embeddings are not (see
 "Where the data is").
@@ -69,8 +72,10 @@ Git; the benchmark archives, per-task outputs, prompts and embeddings are not (s
 | 2026-11-16 | [judge-designs](2026-11-16-judge-designs/README.md) | Offline: does a tiered judge, a judge that picks among several cheap patches, or recalibration beat the plain chain? | No. A Haiku-then-Sonnet tier matches Sonnet's catch rate at 43-55% of its cost but judge calls are only 2.5% of frontier spend, so chains barely change. Selecting among patches adds little; its apparent gain comes from reaching more models, which longer chains also do. Recalibration halves calibration error without helping decisions. Reading 60 errors: 21 of 30 false rejects name a real flaw the hidden tests do not check, so the measured false-reject rate overstates the judge's mistakes. |
 | 2026-11-17 | [measured-shortlist](2026-11-17-measured-shortlist/README.md) | Does building chains from candidates ranked by their measured checks, not by savings under a perfect check, certify more? | Mixed. Opt-in `--shortlist measured` raises certified savings where there are hundreds of agreement groups (MMLU-Pro test_1000 wide pool triples at 4%: 15.0% to 30.5%; pool-wide triples: 5.9% to 23.0%) and xRouteBench pairs at 2% (45.2% to 54.3%), lowers 7 of 44 certified cells by 0.2-2.2 points, and changes nothing on code. The default is unchanged and reproduces every published number. |
 | 2026-11-17 | [judge-prompt](2026-11-17-judge-prompt/README.md) | Does a stricter judge prompt, written from the error reading, catch more wrong patches? (Paid: $4.02.) | No. Haiku and Sonnet catch slightly fewer wrong patches with it, within run-to-run noise. Prompt, context and hardening have all failed to move the judge; only a stronger model has. The original prompt stays. |
-| 2026-11-17 | [live-pilot](2026-11-17-live-pilot/README.md) | Does Tine work end to end with real current models, as one customer would run it? (Paid: $23.65; plan written before any call.) | Yes, on exact-answer traffic. Haiku+Sonnet agreement, else Opus 5.5, certified at 4% and 2% on 1,000 MMLU-Pro questions; on 300 new ones in shadow mode it lost 2.0% and would have saved 47.8%; routed live on 200 more it scored 91.5% against Opus's 91.7-92.2% at about 52% lower cost. Every pre-registered check passed. Free text on the same token cost 31% more; `/v1/savings` showed nothing under live routing. |
+| 2026-11-17 | [live-pilot](2026-11-17-live-pilot/README.md) | Does Tine work end to end with real current models, as one customer would run it? (Paid: $23.65; plan written before any call.) | Yes, on exact-answer traffic at the 4% limit. Haiku+Sonnet agreement, else Opus 5.5, certified at 4% on 1,000 MMLU-Pro questions. Its 2% certificate passed on the last allowed loss with 495 certify tasks and did not hold up (2.3% on 2,305 questions outside the certify part, 95% upper bound 2.8%; 2.4% on 1,800 new questions); the 1,800 include the 1,500 of [concurrency-and-long-shadow](2026-11-17-concurrency-and-long-shadow/README.md). Do not quote 2% for this policy. On 300 new questions in shadow mode it lost 2.0% and would have saved 47.8%; routed live on 200 more it scored 91.5% against Opus's 91.7-92.2% at about 52% lower cost. Every pre-registered check passed. Free text on the same token cost 31% more; `/v1/savings` showed nothing under live routing. |
 | 2026-11-17 | [live-pilot-more](2026-11-17-live-pilot-more/README.md) | Does the live pilot hold on four more kinds of traffic (MedQA, ARC-Challenge, FinQA, MATH-500)? (Paid: $60.00 from a credits key; plan written first.) | Yes at 4%, not at 2%. Shadow loss 0.5-2.5% on new questions. Measured saving under live routing with a random frontier holdout: MedQA 56% (49-64%), ARC 97% (Haiku alone certified), FinQA 18% (5-32%). Comparing answers by value raised MATH-500 from 44.5% to 60.5%. Shadow calls sharing rate limits with real traffic caused refused requests; `tine serve` ran as a real server. |
+| 2026-11-17 | [concurrency-and-long-shadow](2026-11-17-concurrency-and-long-shadow/README.md) | Where is this account's rate limit, does shadow mode's pause keep real requests from being refused there, and does the first pilot's policy hold on 1,500 more questions? (Paid: $26.43 from a credits key; plan committed after the rate-limit part had run.) | The 4% limit holds on 1,500 new MMLU-Pro questions in shadow mode: loss 2.47% (37), 95% upper bound 3.2%. 2% is not confirmed: the bound is above 2%, and the policy's 2% certificate did not hold up (see live-pilot). The key allows 25 requests in flight, and a refusal names no wait. The planned pause test did not meet its pass marks: no real request was refused with either code version, so it did not exercise the pause. In a test added after the plan, the provider refused 9 of 69 real requests without the pause and none of 60 with it; 55 of those 60 were not shadowed. Five blocks of 300 lost 1.3-3.3%, and the drift check warned in 2 of them while the loss in each was under the limit. |
+| 2026-11-17 | [ticket-pilot](2026-11-17-ticket-pilot/README.md) | Does the live pilot hold on real support tickets from one company, labelled by its staff? (Paid: $14.74 from a credits key. Public data labelled in 2020; the triage prompt is ours and the company is not a customer. Plan committed about two minutes after the first calls.) | Only just, at 4%. Sonnet alone, with no check, certified at 4% (bound 3.15%); nothing certified at 2%. On 300 new tickets in shadow mode the loss was exactly 4.0% (12), with a 95% upper bound of 6.4%, so the run does not show the loss on new tickets is under 4%. On the held-out part of the history it was 5.1% (10 of 197). Measured saving under live routing with a random 30% frontier holdout: 49.4% (47.9-50.9%). Opus matches the staff label on only 76-82% of tickets, so the labels are noisy. |
 
 ## How the findings fit together
 
@@ -174,8 +179,11 @@ Whether either becomes the default is still a team decision.
   type. Stated in [docs/PROXY.md](../docs/PROXY.md) and [docs/POLICY.md](../docs/POLICY.md).
 - Under live routing the saving is measured only with the random frontier holdout
   (`TINE_AUDIT_RATE`, off by default), which gives an estimate with a 95% interval from a
-  random sample and says nothing about quality. It is built and tested with stand-ins and
-  has never run on real traffic ([docs/PROXY.md](../docs/PROXY.md)).
+  random sample and says nothing about quality. It is built and tested with stand-ins, and
+  has run with real current models on public benchmark questions
+  ([live-pilot-more](2026-11-17-live-pilot-more/README.md)) and on a public set of one
+  company's support tickets ([ticket-pilot](2026-11-17-ticket-pilot/README.md)), never on a
+  customer's traffic ([docs/PROXY.md](../docs/PROXY.md)).
 - The certification planning figures in [docs/PLANNING.md](../docs/PLANNING.md) are
   for one chain tested alone. Nothing yet models the many-chain sequence that
   `tine cascade` and `tine freeze-policy` run today.

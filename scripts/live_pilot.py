@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """A live pilot with real models, as one customer would run it (results/2026-11-17-live-pilot).
 
-``sample``     Disjoint question sets from the local MMLU-Pro and Arena-Hard copies.
+``sample``     Disjoint question sets from the local MMLU-Pro and Arena-Hard copies. Prints
+               how the benchmark's own recorded models scored on each set, and warns when
+               a set is easier or harder than the first. ``--compare`` does the same for
+               set files that already exist.
 ``ask``        Ask models a set directly (the customer's graded history). Paid; capped.
                Writes canonical outcomes and an answers CSV for scripts/agreement_pairs.py.
                ``--batch`` sends the same requests through Anthropic's Message Batches API
@@ -11,6 +14,12 @@
                and never submits the same question twice.
 ``summarize``  Accuracy, reader match rate, cost and latency per model from ``ask`` output.
                Batch records have no latency.
+``proxy``      Send question sets through the real proxy, in shadow mode or routed. Paid;
+               capped. Every provider call and every finished request is appended to
+               ``<output>.run.jsonl`` as it happens, and the result JSON is written from
+               that file, so a run that dies keeps what it paid for. ``--resume`` goes on
+               with such a run: same policy, questions and ledger, nothing sent twice
+               except requests that were in flight, and the cap counts what is recorded.
 
 Answers are read with the proxy's own ``extract_answer``, so offline grading and the
 proxy read replies the same way. Nothing here executes model output. Prompts and
@@ -21,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import re
@@ -35,13 +45,20 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tine.judge import ANTHROPIC_PRICES  # noqa: E402
-from tine.shadow import extract_answer  # noqa: E402
+from tine.judge import ANTHROPIC_PRICES, estimate_input_tokens  # noqa: E402
+from tine.shadow import RATE_LIMITED_REASON, extract_answer  # noqa: E402
 
 ANSWER_PATTERN = r"Answer:\s*\**\s*\$?\(?([A-J])\b"
 # The content of the last \boxed{...}, with up to two levels of braces inside it.
 BOXED_PATTERN = r"\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}"
 TASK_TYPE = "mmlupro-live"
+# A request whose wall-clock time is this much longer than its time on the monotonic
+# clock ran while the machine was asleep or the process was stopped: the monotonic
+# clock stands still then, and the proxy times requests with it.
+SUSPENDED_SECONDS = 5.0
+# Two question sets whose mean recorded scores differ by this many standard errors are
+# reported as an uneven draw.
+UNEVEN_Z = 2.0
 TENANT = "live-pilot"
 SETS = {"calibrate": 1000, "shadow": 300, "live": 200}
 # Each benchmark: where its records are, how the proxy reads an answer, how an answer
@@ -121,17 +138,63 @@ def _records(folder: Path) -> list[dict]:
     return json.loads(files[0].read_text())["records"]
 
 
+def _model_folder(bench: Path, dataset: str) -> Path:
+    """The folder of one model's results for a benchmark; every model's file has the
+    same questions and keys."""
+    folder = bench / DATASETS[dataset]["folder"]
+    if not list(folder.glob("*.json")):
+        folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
+    return folder
+
+
+def recorded_scores(bench: Path, sets: dict[str, list[dict]]) -> dict:
+    """How the benchmark's own recorded models scored on each question set.
+
+    A set's figure is the mean, over its questions, of the share of the archive's models
+    that got the question right. It says how hard the set is before any money is spent:
+    a history that is harder than the questions that follow certifies a policy on
+    different work. ``uneven`` names each set whose mean differs by ``UNEVEN_Z`` standard
+    errors or more from the first set of the same benchmark, which should be the history.
+    Sets with questions the archive does not hold (free text, the tickets) are left out."""
+    by_dataset: dict[str, dict[str, float]] = {}
+
+    def score(question: dict) -> float | None:
+        dataset = _dataset(question)
+        if question.get("ground_truth") is None or not DATASETS.get(dataset, {}).get("folder"):
+            return None
+        if dataset not in by_dataset:
+            found: dict[str, list[float]] = {}
+            for folder in sorted(path for path in _model_folder(bench, dataset).parent.iterdir() if path.is_dir()):
+                for record in _records(folder) if list(folder.glob("*.json")) else []:
+                    if record.get("score") is not None:
+                        found.setdefault(str(record["index"]), []).append(float(record["score"]))
+            by_dataset[dataset] = {index: sum(values) / len(values) for index, values in found.items()}
+        return by_dataset[dataset].get(question["task_id"].rsplit(":", 1)[-1])
+
+    means, spread, first_of, uneven = {}, {}, {}, []
+    for name, questions in sets.items():
+        scores = [score(question) for question in questions]
+        if not scores or any(value is None for value in scores):
+            continue
+        mean = sum(scores) / len(scores)
+        variance = sum((value - mean) ** 2 for value in scores) / max(len(scores) - 1, 1)
+        means[name], spread[name] = round(mean, 4), variance / len(scores)
+        first = first_of.setdefault(frozenset(map(_dataset, questions)), name)
+        gap, error = mean - means[first], (spread[name] + spread[first]) ** 0.5
+        if name != first and error > 0 and abs(gap) / error >= UNEVEN_Z:
+            uneven.append(f"{name} is {abs(gap) * 100:.1f} points {'easier' if gap > 0 else 'harder'} than {first} "
+                          f"for the benchmark's recorded models ({gap / error:+.1f} standard errors)")
+    return {"mean_recorded_score": means, "uneven": uneven}
+
+
 def sample_dataset(bench: Path, output: Path, dataset: str, *, seed: int = 0) -> dict:
     """Disjoint calibrate / shadow / live sets from one more benchmark."""
     config = DATASETS[dataset]
     if config["folder"] is None:
         raise SystemExit(f"{dataset} is not in the benchmark archive; see scripts/ticket_pilot_prep.py")
-    folder = bench / config["folder"]
-    if not list(folder.glob("*.json")):
-        folder = sorted(path for path in folder.iterdir() if path.is_dir())[0]
     questions = [{"task_id": f"{dataset}:{r['index']}", "prompt": r["prompt"], "ground_truth": str(r["ground_truth"]),
                   "dataset": dataset}
-                 for r in _records(folder) if str(r.get("ground_truth") or "").strip()]
+                 for r in _records(_model_folder(bench, dataset)) if str(r.get("ground_truth") or "").strip()]
     random.Random(seed).shuffle(questions)
     output.mkdir(parents=True, exist_ok=True)
     counts, start = {}, 0
@@ -198,9 +261,10 @@ def _params(row: dict, model: str, max_tokens: int, effort: str) -> dict:
 
 
 def _worst_case(row: dict, model: str, max_tokens: int) -> float:
-    """The most one call can cost at standard prices: a long count of the prompt, a full reply."""
+    """The most one call should cost at standard prices: a high estimate of the prompt's
+    tokens (``tine.judge.estimate_input_tokens``, an estimate, not a count) and a full reply."""
     price_in, price_out = ANTHROPIC_PRICES[model]
-    return len(row["prompt"]) / 3 * price_in / 1e6 + max_tokens * price_out / 1e6
+    return estimate_input_tokens(row["prompt"]) * price_in / 1e6 + max_tokens * price_out / 1e6
 
 
 def _record(row: dict, model: str, payload: dict, *, latency_ms: int | None, discount: float = 1.0) -> dict:
@@ -446,25 +510,34 @@ class RecordingTransport(httpx.AsyncBaseTransport):
     the model, prompt, reply and token counts of each, so every model's answer to
     every request can be graded afterwards. Also stops new calls past a spending cap."""
 
-    def __init__(self, inner, max_cost_usd: float, pattern: str = ANSWER_PATTERN) -> None:
+    def __init__(self, inner, max_cost_usd: float, pattern: str = ANSWER_PATTERN, *, spent: float = 0.0,
+                 keep=None) -> None:
         self.inner, self.max_cost_usd, self.pattern = inner, max_cost_usd, pattern
         self.calls: list[dict] = []
-        self.spent = 0.0
+        # ``spent`` starts at what an interrupted run already recorded. ``keep`` is told of
+        # every call and every refusal as it happens (``RunFile.append``).
+        self.spent = spent
         self.refused = 0
+        self.keep = keep or (lambda kind, record: None)
+
+    def _called(self, record: dict) -> None:
+        self.calls.append(record)
+        self.keep("call", record)
 
     async def handle_async_request(self, request):
         body = json.loads(request.content)
         model = body.get("model")
         if self.spent >= self.max_cost_usd:
             self.refused += 1
+            self.keep("refused", {"model": model})
             return httpx.Response(529, json={"type": "error", "error": {"type": "overloaded_error",
                                                                             "message": "pilot spending cap reached"}})
         started = time.time()
         try:
             response = await self.inner.handle_async_request(request)
         except httpx.HTTPError as error:
-            self.calls.append({"model": model, "prompt": body["messages"][-1]["content"], "status": 599,
-                               "error": type(error).__name__, "seconds": round(time.time() - started, 2)})
+            self._called({"model": model, "prompt": body["messages"][-1]["content"], "status": 599,
+                          "error": type(error).__name__, "seconds": round(time.time() - started, 2)})
             raise
         raw = await response.aread()
         record = {"model": model, "prompt": body["messages"][-1]["content"], "status": response.status_code,
@@ -478,7 +551,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             record.update(answer=extract_answer("anthropic", payload, self.pattern), cost_usd=round(cost, 8),
                           stop_reason=payload.get("stop_reason"),
                           reply=extract_answer("anthropic", payload, None))
-        self.calls.append(record)
+        self._called(record)
         # aread() decoded the body, so the encoding and length headers no longer apply.
         headers = [(k, v) for k, v in response.headers.items()
                    if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
@@ -488,11 +561,83 @@ class RecordingTransport(httpx.AsyncBaseTransport):
         await self.inner.aclose()
 
 
+def _run_file(output: Path) -> Path:
+    return output.with_name(output.name + ".run.jsonl")
+
+
+def _digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+class RunFile:
+    """What a proxy run has done so far, one JSON line per event, written as it happens:
+    a header naming the policy and the question set, every provider call (``call``),
+    every call refused at the spending cap (``refused``), every finished request
+    (``request``), each resume (``resumed``) and the closing reports (``end``). A run
+    killed part way keeps every line it wrote, and the run's result is put together
+    from the lines alone. With no path the lines are kept in memory only."""
+
+    def __init__(self, path: Path | None, header: dict, *, resume: bool = False) -> None:
+        self.path, self.lines = path, []
+        if path is not None and path.exists():
+            if not resume:
+                raise SystemExit(f"{path} holds a run that did not finish; pass --resume to go on with it, "
+                                 "or use a new --output")
+            raw = path.read_bytes()
+            if not raw.endswith(b"\n"):  # killed while writing a line: drop the unfinished one
+                raw = raw[:raw.rfind(b"\n") + 1]
+                path.write_bytes(raw)
+            self.lines = [json.loads(line) for line in raw.decode().splitlines() if line]
+        elif resume:
+            raise SystemExit(f"{path} does not exist; there is no run to resume")
+        if not self.lines:
+            self.append("header", header)
+            return
+        was = self.lines[0]
+        changed = [key for key in header if was.get(key) != header[key]]
+        if was.get("kind") != "header" or changed:
+            raise SystemExit(f"{path} was recorded with a different {', '.join(changed) or 'header'}; a run resumes "
+                             "only with the same policy, questions and settings. Use a new --output")
+
+    def append(self, kind: str, record: dict) -> None:
+        line = {"kind": kind, **record}
+        self.lines.append(line)
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(line, default=str) + "\n")
+
+    def of(self, kind: str) -> list[dict]:
+        return [{key: value for key, value in line.items() if key != "kind"}
+                for line in self.lines if line["kind"] == kind]
+
+    def result(self) -> dict:
+        """The run's result, read back from the file when there is one."""
+        if self.path is not None:
+            self.lines = [json.loads(line) for line in self.path.read_text().splitlines() if line]
+        calls, requests, end = self.of("call"), self.of("request"), (self.of("end") or [{}])[-1]
+        return {"mode": self.lines[0]["mode"], "requests": requests, "calls": calls,
+                "shadow_report": end.get("shadow_report"), "savings_report": end.get("savings_report"),
+                "spent_usd": round(sum(call.get("cost_usd") or 0.0 for call in calls), 4),
+                "refused_at_cap": len(self.of("refused")),
+                "client_retries": sum(row.get("client_retries", 0) for row in requests),
+                "resumes": len(self.of("resumed"))}
+
+
 async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_cost_usd: float, ledger_path: Path,
                         concurrency: int = 6, effort: str = "medium", max_tokens: int = 4096,
-                        ca_bundle: str | None = None, inner=None, audit_rate: float = 0.0) -> dict:
+                        ca_bundle: str | None = None, inner=None, audit_rate: float = 0.0,
+                        run_file: Path | None = None, resume: bool = False) -> dict:
     """Send every question to the real proxy as the customer's app would, in shadow mode
-    (sample rate 1) or routing through the policy, with the real provider behind it."""
+    (sample rate 1) or routing through the policy, with the real provider behind it.
+
+    With ``run_file`` every provider call and every finished request is appended to it
+    as it happens, and the result is read back from it. ``resume`` goes on with the run
+    file an interrupted run left: requests it records are not sent again, whatever their
+    status, and the spending cap counts the calls it records. It refuses a different
+    policy, question set, mode or setting, and a ledger that does not hold the requests
+    already recorded. A request that was in flight when the run died is sent again, so
+    its first calls stay in ``calls`` and in the ledger, paid for and counted."""
     import asyncio
     import os
     import ssl
@@ -502,6 +647,15 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
     from tine.ledger import Ledger
     from tine.proxy import ProxyConfig, create_app
 
+    if len({question["task_id"] for question in questions}) != len(questions):
+        raise SystemExit("a task_id appears more than once in the questions; a run is recorded by task_id")
+    run = RunFile(run_file, {"version": 1, "mode": mode, "policy_sha256": _digest(policy),
+                             "questions_sha256": _digest(sorted(questions, key=lambda q: q["task_id"])),
+                             "questions": len(questions), "effort": effort, "max_tokens": max_tokens,
+                             "audit_rate": audit_rate}, resume=resume)
+    recorded = run.of("request")
+    if recorded and not Path(ledger_path).exists():
+        raise SystemExit(f"{ledger_path} does not exist; resume with the ledger the run was recorded with")
     frontier = policy["frontier"]
     prices = {f"anthropic:{model}": {"input_per_million": rates[0], "output_per_million": rates[1]}
               for model, rates in ANTHROPIC_PRICES.items()}
@@ -515,10 +669,20 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
     # A bare transport ignores HTTPS_PROXY, which httpx clients and the SDK honour.
     network_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     recorder = RecordingTransport(inner or httpx.AsyncHTTPTransport(verify=verify, retries=2, proxy=network_proxy),
-                                  max_cost_usd, policy.get("answer_pattern") or ANSWER_PATTERN)
+                                  max_cost_usd, policy.get("answer_pattern") or ANSWER_PATTERN,
+                                  spent=sum(call.get("cost_usd") or 0.0 for call in run.of("call")), keep=run.append)
     ledger = Ledger(ledger_path)
-    sent: dict[str, dict] = {}
-    retries = [0]
+    missing = [row["task_id"] for row in recorded
+               if row.get("ledger_model") is not None and ledger.get(TENANT, row["request_id"]) is None]
+    if missing:
+        raise SystemExit(f"{ledger_path} does not hold {len(missing)} of the requests {run_file} records "
+                         f"(first: {missing[0]}); resume with the ledger the run was recorded with")
+    done = {row["task_id"] for row in recorded}
+    pending = [question for question in questions if question["task_id"] not in done]
+    if resume:
+        run.append("resumed", {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                               "requests_recorded": len(done), "requests_left": len(pending),
+                               "spent_usd_recorded": round(recorder.spent, 4)})
     gate = asyncio.Semaphore(concurrency)
     async with httpx.AsyncClient(transport=recorder, timeout=600) as upstream:
         app = create_app(config, ledger=ledger, client=upstream, policy_client=upstream)
@@ -529,7 +693,7 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                 async with gate:
                     if recorder.spent >= max_cost_usd:
                         return
-                    started = time.time()
+                    started, started_monotonic, retries = time.time(), time.monotonic(), 0
                     # As a customer's app would: a rate-limited or overloaded reply is retried
                     # after a pause. Each try is a new request to the proxy with its own ledger row.
                     for attempt in range(6):
@@ -538,38 +702,48 @@ async def through_proxy(policy: dict, questions: list[dict], *, mode: str, max_c
                             "messages": [{"role": "user", "content": question["prompt"]}]})
                         if response.status_code not in (429, 529) or recorder.spent >= max_cost_usd:
                             break
-                        retries[0] += 1
+                        retries += 1
                         await asyncio.sleep(min(60.0, float(response.headers.get("retry-after") or 2 ** (attempt + 2))))
-                    sent[response.headers.get("x-tine-request-id", question["task_id"])] = {
-                        "task_id": question["task_id"], "status": response.status_code,
-                        "served_model": response.headers.get("x-tine-model"),
-                        "route": response.headers.get("x-tine-route"),
-                        "answer": extract_answer("anthropic", response.json(), recorder.pattern)
-                        if response.status_code < 400 else None,
-                        "client_seconds_including_shadow": round(time.time() - started, 2)}
+                    request_id = response.headers.get("x-tine-request-id", question["task_id"])
+                    row = {"task_id": question["task_id"], "status": response.status_code,
+                           "served_model": response.headers.get("x-tine-model"),
+                           "route": response.headers.get("x-tine-route"),
+                           "answer": extract_answer("anthropic", response.json(), recorder.pattern)
+                           if response.status_code < 400 else None,
+                           "client_seconds_including_shadow": round(time.time() - started, 2),
+                           # The same wait on the clock that stands still while the machine sleeps.
+                           "client_monotonic_seconds": round(time.monotonic() - started_monotonic, 2),
+                           "client_retries": retries}
+                    # The proxy has written the ledger row, and in shadow mode finished the shadow
+                    # run, by the time its reply is back here: the row is complete and is kept now.
+                    entry = ledger.get(TENANT, request_id) or {}
+                    row.update(request_id=request_id, ledger_model=entry.get("model"), cost_usd=entry.get("cost_usd"),
+                               routing_cost_usd=entry.get("routing_cost_usd"), latency_ms=entry.get("latency_ms"),
+                               holdout=entry.get("holdout"))
+                    shadowed = ledger._db.execute(
+                        "SELECT accepted, stage, served_by, matches_frontier, shadow_cost_usd, skip_reason "
+                        "FROM shadow_runs WHERE request_id=?", (request_id,)).fetchone() if mode == "shadow" else None
+                    row.update(dict(shadowed) if shadowed else {})
+                    run.append("request", row)
 
             # One request first: shadow mode admits one run at a time until a run has
             # finished and its cost is known (ShadowStore.admit).
-            await one(questions[0])
-            await asyncio.gather(*(one(q) for q in questions[1:]))
+            if pending:
+                await one(pending[0])
+            await asyncio.gather(*(one(question) for question in pending[1:]))
             shadow = (await client.get("/v1/shadow", headers=headers)).json()
             savings = (await client.get("/v1/savings", headers=headers)).json()
-    for request_id, row in sent.items():
-        entry = ledger.get(TENANT, request_id) or {}
-        row.update(request_id=request_id, ledger_model=entry.get("model"), cost_usd=entry.get("cost_usd"),
-                   routing_cost_usd=entry.get("routing_cost_usd"), latency_ms=entry.get("latency_ms"),
-                   holdout=entry.get("holdout"))
-        run = ledger._db.execute("SELECT accepted, stage, served_by, matches_frontier, shadow_cost_usd "
-                                 "FROM shadow_runs WHERE request_id=?", (request_id,)).fetchone() \
-            if mode == "shadow" else None
-        row.update(dict(run) if run else {})
-    return {"mode": mode, "requests": list(sent.values()), "calls": recorder.calls, "shadow_report": shadow,
-            "savings_report": savings, "spent_usd": round(recorder.spent, 4), "refused_at_cap": recorder.refused,
-            "client_retries": retries[0]}
+    run.append("end", {"shadow_report": shadow, "savings_report": savings})
+    return run.result()
 
 
 def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
-    """Grade what the proxy did against the known answers."""
+    """Grade what the proxy did against the known answers.
+
+    In shadow mode the share accepted, the loss and the gain are over the requests the
+    proxy shadowed (``shadowed_graded``). A request it did not shadow (busy, paused or
+    stopped) and a run it left out because a provider refused a shadow call say nothing
+    about the policy, so they are not counted as requests the policy turned down."""
     truth = {q["task_id"]: q.get("ground_truth") for q in questions}
     dataset_of = {q["task_id"]: _dataset(q) for q in questions}
     prompt_of = {q["task_id"]: q["prompt"] for q in questions}
@@ -585,6 +759,9 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
             policy_answer = r["answer"]
         rows.append({"task_id": r["task_id"], "freetext": gold is None, "accepted": bool(r.get("accepted"))
                      if result["mode"] == "shadow" else r.get("ledger_model") != frontier,
+                     # Shadow mode: the policy ran on this request and the run was kept.
+                     "shadowed": result["mode"] != "shadow" or (
+                         r.get("accepted") is not None and r.get("skip_reason") != RATE_LIMITED_REASON),
                      # A frontier call with no readable answer is wrong; no frontier call is unknown.
                      "holdout": bool(r.get("holdout")),
                      "frontier_right": None if gold is None or (prompt, frontier) not in answers
@@ -597,15 +774,18 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
     graded = [row for row in rows if not row["freetext"]]
     free = [row for row in rows if row["freetext"]]
     known = [row for row in graded if row["frontier_right"] is not None]
+    shadowed = [row for row in graded if row["shadowed"]]
+    compared = [row for row in known if row["shadowed"]]
     summary = {"mode": result["mode"], "requests": len(rows), "graded": len(graded), "freetext": len(free),
-               "accepted_share_graded": _share(r["accepted"] for r in graded),
+               **({"shadowed_graded": len(shadowed)} if result["mode"] == "shadow" else {}),
+               "accepted_share_graded": _share(r["accepted"] for r in shadowed),
                "freetext_accepted": sum(r["accepted"] for r in free),
                "policy_accuracy": _share(r["policy_right"] for r in graded)}
     if known:
         summary.update(frontier_accuracy=_share(r["frontier_right"] for r in known),
-                       loss_rate=_share(r["frontier_right"] and not r["policy_right"] for r in known),
-                       gain_rate=_share(r["policy_right"] and not r["frontier_right"] for r in known),
-                       compared=len(known))
+                       loss_rate=_share(r["frontier_right"] and not r["policy_right"] for r in compared),
+                       gain_rate=_share(r["policy_right"] and not r["frontier_right"] for r in compared),
+                       compared=len(compared))
     held = [r for r in graded if r["holdout"]]
     if held:
         routed = [r for r in graded if not r["holdout"]]
@@ -623,6 +803,13 @@ def score_proxy(result: dict, questions: list[dict], frontier: str) -> dict:
     if latencies:
         summary.update(caller_latency_p50_s=round(float(np.percentile(latencies, 50)) / 1000, 2),
                        caller_latency_p95_s=round(float(np.percentile(latencies, 95)) / 1000, 2))
+    # Wall-clock time beyond the monotonic clock's: the machine slept, or the process was
+    # stopped, while these requests waited. The proxy's own latency does not include it.
+    gaps = [r["client_seconds_including_shadow"] - r["client_monotonic_seconds"] for r in result["requests"]
+            if r.get("client_monotonic_seconds") is not None]
+    if any(gap > SUSPENDED_SECONDS for gap in gaps):
+        summary.update(suspended_seconds=round(max(gaps), 1),
+                       suspended_requests=sum(gap > SUSPENDED_SECONDS for gap in gaps))
     calls = result["calls"]
     summary["provider_calls"] = len(calls)
     summary["provider_errors"] = sum(c["status"] >= 400 for c in calls)
@@ -668,9 +855,13 @@ def main(argv=None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     pick = commands.add_parser("sample")
     pick.add_argument("--bench-dir", type=Path, required=True, help="extracted bench-release folder")
-    pick.add_argument("--output", type=Path, required=True)
-    pick.add_argument("--dataset", choices=sorted(DATASETS),
-                      help="sample one more benchmark instead of the original MMLU-Pro and free-text sets")
+    pick.add_argument("--output", type=Path, help="folder for the new sets; required unless --compare")
+    pick.add_argument("--compare", type=Path, nargs="+", metavar="SET.jsonl",
+                      help="sample nothing: print the mean recorded benchmark score of these existing sets, "
+                           "the history first, and warn when a later one is easier or harder than it")
+    pick.add_argument("--dataset", choices=sorted(name for name in DATASETS if DATASETS[name]["folder"]),
+                      help="sample one more benchmark instead of the original MMLU-Pro and free-text sets. "
+                           "The tickets sets are not sampled here: scripts/ticket_pilot_prep.py makes them")
     run = commands.add_parser("ask")
     run.add_argument("--questions", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
@@ -698,7 +889,12 @@ def main(argv=None) -> None:
     serve.add_argument("--mode", choices=("shadow", "route"), required=True)
     serve.add_argument("--max-cost-usd", type=float, required=True)
     serve.add_argument("--ledger", type=Path, required=True)
-    serve.add_argument("--output", type=Path, required=True, help="full result JSON (local only)")
+    serve.add_argument("--output", type=Path, required=True,
+                       help="full result JSON (local only); the run is recorded beside it in <output>.run.jsonl "
+                            "as it goes")
+    serve.add_argument("--resume", action="store_true",
+                       help="go on with an interrupted run from <output>.run.jsonl: same policy, questions and "
+                            "ledger; recorded requests are not sent again and recorded spend counts toward the cap")
     serve.add_argument("--summary", type=Path, help="summary JSON (safe to publish)")
     serve.add_argument("--concurrency", type=int, default=6)
     serve.add_argument("--max-tokens", type=int, default=4096)
@@ -713,27 +909,42 @@ def main(argv=None) -> None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise SystemExit("ANTHROPIC_API_KEY is not set")
         if args.output.exists():
-            raise SystemExit(f"{args.output} exists; a proxy run is not resumable, use a new name")
+            raise SystemExit(f"{args.output} exists; that run finished, use a new name")
         questions = [json.loads(line) for path in args.questions for line in path.read_text().splitlines() if line]
         random.Random(0).shuffle(questions)  # free text arrives mixed in with the rest, as it would
         policy = json.loads(args.policy.read_text())
         result = asyncio.run(through_proxy(policy, questions, mode=args.mode, max_cost_usd=args.max_cost_usd,
                                            ledger_path=args.ledger, concurrency=args.concurrency,
                                            ca_bundle=args.ca_bundle, audit_rate=args.audit_rate,
-                                           max_tokens=args.max_tokens))
+                                           max_tokens=args.max_tokens, run_file=_run_file(args.output),
+                                           resume=args.resume))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, default=str))
         scored = score_proxy(result, questions, policy["frontier"])
         published = {**scored["summary"], "shadow_report": result["shadow_report"],
                      "savings_report": result["savings_report"], "refused_at_cap": result["refused_at_cap"],
-                     "client_retries": result.get("client_retries", 0)}
+                     "client_retries": result.get("client_retries", 0), "resumes": result.get("resumes", 0)}
         if args.summary:
             args.summary.write_text(json.dumps(published, indent=2, default=str) + "\n")
         print(json.dumps(published, indent=2, default=str))
         return
     if args.command == "sample":
-        print(json.dumps(sample_dataset(args.bench_dir, args.output, args.dataset) if args.dataset
-                         else sample(args.bench_dir, args.output)))
+        if args.compare:
+            paths = args.compare
+        elif args.output is None:
+            parser.error("sample needs --output (or --compare)")
+        else:
+            counts = (sample_dataset(args.bench_dir, args.output, args.dataset) if args.dataset
+                      else sample(args.bench_dir, args.output))
+            print(json.dumps(counts))
+            prefix = f"{args.dataset}-" if args.dataset else ""
+            paths = [args.output / f"{prefix}{name}.jsonl" for name in counts if name != "probe"]
+        scores = recorded_scores(args.bench_dir, {path.stem: [json.loads(line) for line in
+                                                               path.read_text().splitlines() if line]
+                                                  for path in paths})
+        print(json.dumps(scores, indent=2))
+        for line in scores["uneven"]:
+            print(f"Warning: {line}. Figures from these sets are not like for like.", file=sys.stderr)
     elif args.command == "ask":
         import os
 

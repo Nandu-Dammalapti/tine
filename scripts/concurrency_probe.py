@@ -7,8 +7,9 @@
           with only a few slots free (results/2026-11-17-concurrency-and-long-shadow).
 
 Paid, but small: every request is ``claude-haiku-5-5`` writing a few hundred tokens.
-Both stop at ``--max-cost-usd``, counted from the API's own token counts. The key
-comes from the environment.
+Both stop at ``--max-cost-usd``, counted from the API's own token counts. ``load``
+also stops on SIGINT or SIGTERM and still prints its totals. The key comes from the
+environment.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import ssl
 import sys
 import time
@@ -89,23 +91,61 @@ async def ramp(levels: list[int], max_cost_usd: float, ca_bundle: str | None,
     return table
 
 
-async def load(in_flight: int, seconds: float, max_cost_usd: float, ca_bundle: str | None) -> dict:
+async def load(in_flight: int, seconds: float, max_cost_usd: float, ca_bundle: str | None,
+               grace_seconds: float = 5.0) -> dict:
     """Keep ``in_flight`` requests going. A refused worker waits half a second and asks
-    again, so the load presses on the limit the way busy real traffic would."""
+    again, so the load presses on the limit the way busy real traffic would.
+
+    SIGINT or SIGTERM stops it: no new request starts, requests in flight get
+    ``grace_seconds`` to finish so that their cost is counted, and the rest are dropped
+    and counted as ``abandoned_in_flight`` (the provider may still bill those; their
+    cost is not in ``spent_usd``). The totals are returned either way."""
     spend = Spend(max_cost_usd)
     counts = {"accepted": 0, "refused_429": 0, "other": 0}
     deadline = time.monotonic() + seconds
+    stop, stopped_by, flying = asyncio.Event(), [], [0]
 
-    async with new_client(ca_bundle) as client:
-        async def worker() -> None:
-            while time.monotonic() < deadline and spend.spent < max_cost_usd:
-                row = await one(client, spend)
-                key = "accepted" if row["status"] < 400 else "refused_429" if row["status"] == 429 else "other"
-                counts[key] += 1
-                if key != "accepted":
-                    await asyncio.sleep(0.5)
-        await asyncio.gather(*(worker() for _ in range(in_flight)))
-    return {"in_flight": in_flight, "seconds": seconds, **counts, "spent_usd": round(spend.spent, 4)}
+    def stop_on(name: str) -> None:
+        stopped_by.append(name)
+        stop.set()
+
+    # Handlers of our own: a process started in the background can have SIGINT ignored,
+    # and the default SIGTERM would end it before any total is printed.
+    loop, handled = asyncio.get_running_loop(), []
+    for number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(number, stop_on, number.name)
+            handled.append(number)
+        except (NotImplementedError, RuntimeError, ValueError):  # not the main thread, or no signals here
+            pass
+    try:
+        async with new_client(ca_bundle) as client:
+            async def worker() -> None:
+                while time.monotonic() < deadline and spend.spent < max_cost_usd and not stop.is_set():
+                    flying[0] += 1
+                    row = await one(client, spend)
+                    flying[0] -= 1
+                    key = "accepted" if row["status"] < 400 else "refused_429" if row["status"] == 429 else "other"
+                    counts[key] += 1
+                    if key != "accepted":
+                        await asyncio.sleep(0.5)
+            workers = asyncio.gather(*(worker() for _ in range(in_flight)))
+            stopping = asyncio.ensure_future(stop.wait())
+            await asyncio.wait({workers, stopping}, return_when=asyncio.FIRST_COMPLETED)
+            stopping.cancel()
+            if not workers.done():
+                await asyncio.wait({workers}, timeout=grace_seconds)
+            if not workers.done():
+                workers.cancel()
+            try:
+                await workers
+            except asyncio.CancelledError:
+                pass
+    finally:
+        for number in handled:
+            loop.remove_signal_handler(number)
+    return {"in_flight": in_flight, "seconds": seconds, **counts, "spent_usd": round(spend.spent, 4),
+            "stopped_by": stopped_by[0] if stopped_by else None, "abandoned_in_flight": flying[0]}
 
 
 def main(argv=None) -> None:

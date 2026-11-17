@@ -2,7 +2,36 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+
+def freeze_notes(policy: dict) -> list[str]:
+    """What to read beside a new policy's bound: one line with the held-out loss and
+    the losses seen against the losses allowed, then a warning for each sign that the
+    certificate has no margin. The counts are read from the policy's own figures. A
+    chain that passed has a low count on the certify part by selection; the test part
+    played no role in the choice, so its loss is the one to expect."""
+    from tine.calibration import clopper_pearson_upper
+    from tine.planning import max_failures
+
+    guarantee, estimate = policy["guarantee"], policy["estimate"]
+    if not policy["stages"]:
+        return []
+    epsilon, certify, test = guarantee["epsilon"], guarantee["certify_tasks"], estimate["test_tasks"]
+    seen = round(guarantee["certify_degradation_rate"] * certify)
+    allowed = max_failures(certify, epsilon, guarantee["delta"])
+    lost = round(estimate["degradation_rate"] * test)
+    upper = clopper_pearson_upper(lost, test, 0.05)
+    notes = [f"Held-out test part: {lost} of {test} tasks lost ({lost / test:.2%}, 95% upper bound {upper:.2%}). "
+             f"Certify part: {seen} of {certify} lost, {allowed} allowed at epsilon {epsilon:.2%}."]
+    if lost / test > epsilon:
+        notes.append(f"Warning: the held-out loss ({lost / test:.2%}) is above epsilon ({epsilon:.2%}). "
+                     "Quote the held-out loss beside the bound.")
+    if allowed is not None and seen >= allowed:
+        notes.append(f"Warning: the certify part used every loss it was allowed ({seen} of {allowed}). "
+                     "One more loss would not have certified; this certificate has no margin.")
+    return notes
 
 
 def main(argv=None):
@@ -110,6 +139,13 @@ def main(argv=None):
     preflight.add_argument("--seed", type=int, default=42)
     inspect = commands.add_parser("inspect", help="Validate canonical outcomes and show models/coverage")
     inspect.add_argument("--input", type=Path, required=True)
+    backup = commands.add_parser("backup-ledger",
+                                 help="Copy the ledger to one consistent file, also while the proxy is running")
+    backup.add_argument("--ledger", type=Path,
+                        help="Ledger SQLite file; opened read-only (default: TINE_LEDGER_PATH, as the proxy reads it)")
+    backup.add_argument("--output", type=Path, required=True,
+                        help="File to write, with mode 600. Only its directory needs to be writable")
+    backup.add_argument("--force", action="store_true", help="Replace --output if it exists")
     server = commands.add_parser("serve", help="Start the authenticated development proxy")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8000)
@@ -190,6 +226,8 @@ def main(argv=None):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(args.output, dumps(policy))
         print(json.dumps({key: policy[key] for key in ("stages", "guarantee", "estimate")}, indent=2, default=float))
+        for line in freeze_notes(policy):
+            print(line, file=sys.stderr if line.startswith("Warning") else sys.stdout)
         print(f"Policy: {args.output}")
     elif args.command == "combine-outcomes":
         from tine.data import combine_outcomes, read_outcomes, write_outcomes
@@ -227,6 +265,18 @@ def main(argv=None):
                           "tenants": sorted(frame.tenant.unique()),
                           "task_types": sorted(frame.task_type.unique()),
                           "model_coverage": frame.groupby("model").size().to_dict()}, indent=2))
+    elif args.command == "backup-ledger":
+        import os
+        import sqlite3
+
+        from tine.ledger import DEFAULT_LEDGER_PATH, backup_ledger
+
+        source = args.ledger or Path(os.environ.get("TINE_LEDGER_PATH") or DEFAULT_LEDGER_PATH)
+        try:
+            result = backup_ledger(source, args.output, force=args.force)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise SystemExit(f"tine backup-ledger: {error}") from error
+        print(json.dumps(result, indent=2))
     else:
         import logging
 
