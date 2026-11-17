@@ -1,12 +1,16 @@
 # Tine development proxy, one container.
-# NOT YET BUILT OR RUN BY ANYONE. See docs/DEPLOY.md.
+# NOT YET BUILT OR STARTED BY A DOCKER DAEMON. "docker compose config", which needs no
+# daemon, accepts this file (Docker Compose v5.7.0, 2026-11-17). See docs/DEPLOY.md.
 #
-# Before the first start:
+# Before the first start, and before "docker compose build" (every compose command
+# stops with "env file ... not found" until deploy/tine.env exists):
 #   cp deploy/tine.env.example deploy/tine.env            (then fill it in)
 #   mkdir -p deploy/config
 #   cp deploy/checks.example.json deploy/config/checks.json
 #   cp deploy/shadow-policies.example.json deploy/config/shadow-policies.json
 # deploy/tine.env and deploy/config/ are ignored by git. Keep them that way.
+#
+# To try the image without any of that: python3 scripts/container_selftest.py
 
 services:
   tine:
@@ -19,8 +23,10 @@ services:
       - deploy/tine.env
     # Published on this host's loopback only. The proxy does not terminate TLS:
     # put your own gateway in front of it and do not publish this port wider.
+    # TINE_HOST_PORT in the shell that runs compose moves the host port, for a
+    # machine where 8000 is taken. The address stays 127.0.0.1.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${TINE_HOST_PORT:-8000}:8000"
     volumes:
       # The ledger (prompts, responses, costs, outcomes).
       - tine-ledger:/data
@@ -37,6 +43,9 @@ services:
       - no-new-privileges:true
     init: true
     restart: unless-stopped
+    # On a stop the proxy lets requests in flight finish for 20 seconds, then cuts
+    # them and closes the ledger ("tine serve --shutdown-seconds"). Keep this longer,
+    # or Docker kills the process before the ledger is closed.
     stop_grace_period: 30s
     logging:
       driver: json-file

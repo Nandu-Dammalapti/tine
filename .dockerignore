@@ -1,6 +1,7 @@
 # Allow-list: ignore everything, then admit only what the image needs.
 *
 !pyproject.toml
+!requirements-dev.lock
 !tine
 
 # Never in the build context, even if the allow-list above is loosened later.

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from decimal import Decimal
 
 import httpx
@@ -276,6 +277,28 @@ def test_an_unreachable_provider_fails_at_the_connect_timeout_not_the_reply_time
     provider = SlowProvider(seconds=1)
     ask_own_client(monkeypatch, provider, config(timeout_seconds=4.0))
     assert provider.timeouts[0] == {"connect": 4.0, "read": 4.0, "write": 4.0, "pool": 4.0}
+
+
+def test_an_upstream_that_does_not_answer_is_logged_by_host_and_kind_of_failure(caplog):
+    """The caller gets a bare 502. The log says which host and what kind of failure, so
+    a wrong base URL (127.0.0.1 inside a container is the container) can be found."""
+    def provider(request):
+        raise httpx.ConnectError("contains provider-secret-o", request=request)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(config(openai_base_url="http://127.0.0.1:9"), ledger=Ledger(), client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                response = await client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "private words"}]},
+                                             headers={"authorization": "Bearer tenant-token-a"})
+                assert response.status_code == 502
+
+    with caplog.at_level(logging.WARNING, logger="tine.proxy"):
+        run(scenario())
+    messages = [record.getMessage() for record in caplog.records if record.name == "tine.proxy"]
+    assert messages == ["no reply from the openai upstream at 127.0.0.1:9 for model 'frontier': ConnectError"]
+    for secret in ("provider-secret", "tenant-token", "private words", "/v1/chat"):
+        assert secret not in caplog.text
 
 
 @pytest.mark.parametrize("candidate", [False, True])
@@ -1002,3 +1025,98 @@ def test_anthropic_beta_allowlist_refuses_other_values_and_unset_forwards_all():
     seen.clear()
     assert run(scenario(None, values)) == ([200] * 5, 5)
     assert seen == values
+
+
+POLICY_FILES = ("TINE_CHECKS", "TINE_TENANT_CHECKS", "TINE_SHADOW_POLICIES", "TINE_ROUTE_POLICIES")
+NOT_JSON, NOT_A_NUMBER, NOT_WHOLE = "is not valid JSON", "must be a number", "must be a whole number"
+
+
+@pytest.mark.parametrize("variable,value,message", [
+    # Quotes kept by "docker run --env-file", a missing brace, and plain words.
+    ("TINE_TENANT_KEYS", "'{\"tenant-token-q\":\"a\"}'", NOT_JSON + ".*remove the quotes"),
+    ("TINE_TENANT_KEYS", '{"tenant-token-q":"a"', NOT_JSON),
+    ("TINE_MODEL_PRICES", '{"openai:frontier":{"input_per_million":10.0}', NOT_JSON),
+    ("TINE_ALLOWED_MODELS", "openai=cheap-v2", NOT_JSON),
+    ("TINE_DENIED_FIELDS", '{"openai":["store"]', NOT_JSON),
+    ("TINE_TIMEOUT_SECONDS", "30s", NOT_A_NUMBER),
+    ("TINE_SHADOW_SAMPLE_RATE", "5%", NOT_A_NUMBER),
+    ("TINE_SHADOW_MAX_COST_USD", "5usd", NOT_A_NUMBER),
+    ("TINE_SHADOW_MAX_UNKNOWN_COST_SHARE", "20%", NOT_A_NUMBER),
+    ("TINE_ROUTE_DEADLINE_SECONDS", "2min", NOT_A_NUMBER),
+    ("TINE_AUDIT_RATE", "5%", NOT_A_NUMBER),
+    ("TINE_MAX_BODY_BYTES", "10MB", NOT_WHOLE),
+    ("TINE_SHADOW_MAX_CONCURRENT", "8.5", NOT_WHOLE),
+    ("TINE_SHADOW_MAX_CONCURRENT_PER_TENANT", "4each", NOT_WHOLE),
+    ("TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "20calls", NOT_WHOLE),
+    ("TINE_SHADOW_MAX_CALLS_PER_MINUTE", "60/min", NOT_WHOLE),
+    ("TINE_VERIFIED_CACHE", "yes", "must be 1 or true, or 0 or false"),
+    ("TINE_ROUTE_ESTIMATE_BASELINE", "enabled", "must be 1 or true, or 0 or false"),
+    ("TINE_LEDGER_REQUIRED", "always", "must be 1 or true, or 0 or false"),
+])
+def test_a_setting_that_cannot_be_read_names_its_variable_and_never_its_value(monkeypatch, variable, value, message):
+    """In a container this error is the last line of the log before a restart. It has to
+    say which of thirty variables is wrong, and TINE_TENANT_KEYS holds tokens."""
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"tenant-token-q": "a"}')
+    for name in POLICY_FILES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValueError, match=f"^{variable} {message}") as refused:
+        ProxyConfig.from_env()
+    assert value not in str(refused.value) and "tenant-token-q" not in str(refused.value)
+    # Raised "from None": the traceback does not go on to print the parser's own error.
+    assert refused.value.__cause__ is None and (refused.value.__context__ is None or refused.value.__suppress_context__)
+
+
+def test_an_empty_setting_means_its_default(monkeypatch):
+    """A line left as "NAME=" in an env file sets the variable to nothing."""
+    for name in POLICY_FILES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    default = ProxyConfig.from_env()
+    for name in ("TINE_TIMEOUT_SECONDS", "TINE_SHADOW_SAMPLE_RATE", "TINE_SHADOW_MAX_COST_USD", "TINE_AUDIT_RATE",
+                 "TINE_SHADOW_MAX_CONCURRENT", "TINE_SHADOW_MAX_CONCURRENT_PER_TENANT", "TINE_MAX_BODY_BYTES",
+                 "TINE_SHADOW_MAX_UNKNOWN_COST_CALLS", "TINE_SHADOW_MAX_UNKNOWN_COST_SHARE",
+                 "TINE_SHADOW_MAX_CALLS_PER_MINUTE", "TINE_ROUTE_DEADLINE_SECONDS", "TINE_MODEL_PRICES",
+                 "TINE_ALLOWED_MODELS", "TINE_DENIED_FIELDS", "TINE_VERIFIED_CACHE", "TINE_ROUTE_ESTIMATE_BASELINE",
+                 "TINE_LEDGER_REQUIRED"):
+        monkeypatch.setenv(name, "")
+    empty = ProxyConfig.from_env()
+    empty.validate()
+    assert vars(empty) == vars(default)
+    assert (empty.timeout_seconds, empty.max_body_bytes, empty.shadow_max_cost_usd) == (600.0, 10_485_760, None)
+    monkeypatch.setenv("TINE_TENANT_KEYS", "")
+    with pytest.raises(ValueError, match="Configure nonempty TINE_TENANT_KEYS"):
+        ProxyConfig.from_env().validate()
+
+
+@pytest.mark.parametrize("value,expected", [("1", True), ("true", True), ("TRUE", True), (" true ", True),
+                                            ("0", False), ("false", False), ("False", False)])
+def test_the_three_switches_read_one_and_true_alike(monkeypatch, value, expected):
+    """TINE_VERIFIED_CACHE=1 used to turn the cache off, because only the word counted."""
+    for name in POLICY_FILES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TINE_TENANT_KEYS", '{"token": "a"}')
+    for name in ("TINE_VERIFIED_CACHE", "TINE_ROUTE_ESTIMATE_BASELINE", "TINE_LEDGER_REQUIRED"):
+        monkeypatch.setenv(name, value)
+    loaded = ProxyConfig.from_env()
+    assert (loaded.verified_cache, loaded.route_estimate_baseline, loaded.ledger_required) == (expected,) * 3
+    for name in ("TINE_VERIFIED_CACHE", "TINE_ROUTE_ESTIMATE_BASELINE", "TINE_LEDGER_REQUIRED"):
+        monkeypatch.delenv(name)
+    default = ProxyConfig.from_env()
+    assert (default.verified_cache, default.route_estimate_baseline, default.ledger_required) == (True, False, False)
+
+
+def test_starting_the_proxy_loads_none_of_the_offline_toolkit():
+    """The proxy imports tine.policy to run a policy. Freezing one needs numpy, pandas,
+    scikit-learn and matplotlib; serving must not load them: they add seconds and about
+    160 MB to every start, and matplotlib needs a writable cache folder."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    probe = ("import sys; import tine.proxy, tine.__main__; "
+             "print(sorted(name for name in ('numpy', 'pandas', 'scipy', 'sklearn', 'matplotlib') if name in sys.modules))")
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert done.returncode == 0, done.stderr[-500:]
+    assert done.stdout.strip() == "[]"

@@ -15,6 +15,7 @@ node_modules/
 !.env.example
 deploy/*.env
 deploy/config/
+deploy/client-token.txt
 
 # Downloaded data, models, and generated reports
 /artifacts/
