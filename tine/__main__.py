@@ -110,6 +110,13 @@ def main(argv=None):
     preflight.add_argument("--seed", type=int, default=42)
     inspect = commands.add_parser("inspect", help="Validate canonical outcomes and show models/coverage")
     inspect.add_argument("--input", type=Path, required=True)
+    backup = commands.add_parser("backup-ledger",
+                                 help="Copy the ledger to one consistent file, also while the proxy is running")
+    backup.add_argument("--ledger", type=Path,
+                        help="Ledger SQLite file; opened read-only (default: TINE_LEDGER_PATH, as the proxy reads it)")
+    backup.add_argument("--output", type=Path, required=True,
+                        help="File to write, with mode 600. Only its directory needs to be writable")
+    backup.add_argument("--force", action="store_true", help="Replace --output if it exists")
     server = commands.add_parser("serve", help="Start the authenticated development proxy")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8000)
@@ -227,6 +234,18 @@ def main(argv=None):
                           "tenants": sorted(frame.tenant.unique()),
                           "task_types": sorted(frame.task_type.unique()),
                           "model_coverage": frame.groupby("model").size().to_dict()}, indent=2))
+    elif args.command == "backup-ledger":
+        import os
+        import sqlite3
+
+        from tine.ledger import DEFAULT_LEDGER_PATH, backup_ledger
+
+        source = args.ledger or Path(os.environ.get("TINE_LEDGER_PATH") or DEFAULT_LEDGER_PATH)
+        try:
+            result = backup_ledger(source, args.output, force=args.force)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise SystemExit(f"tine backup-ledger: {error}") from error
+        print(json.dumps(result, indent=2))
     else:
         import logging
 

@@ -670,6 +670,104 @@ def test_cli_warns_about_an_edited_policy_and_refuses_a_bound_written_as_text(tm
             cli.read_policy(broken, "acme")
 
 
+def test_cli_takes_the_tenants_policy_from_the_file_the_proxy_reads(tmp_path, capsys):
+    """TINE_SHADOW_POLICIES and TINE_ROUTE_POLICIES files map tenant to provider to policy."""
+    claude = {**POLICY, "frontier": "opus", "stages": POLICY["stages"][:1]}
+    deployed = tmp_path / "shadow-policies.json"
+    deployed.write_text(json.dumps({"acme": {"openai": POLICY, "anthropic": claude},
+                                    "zenith": {"anthropic": {**claude, "tenant": "zenith"}}}), encoding="utf-8")
+    assert cli.read_policy(deployed, "zenith") == {**claude, "tenant": "zenith"}  # its only policy needs no --provider
+    assert cli.read_policy(deployed, "zenith", "anthropic")["frontier"] == "opus"
+    assert cli.read_policy(deployed, "acme", "openai") == POLICY
+    assert cli.read_policy(deployed, "acme", "anthropic") == claude
+    # Every refusal says what the file does hold.
+    for tenant, provider, message in (
+            ("acme", None, "holds 2 policies for tenant 'acme', for providers 'anthropic', 'openai'. Choose one "
+                           "with --provider"),
+            ("acme", "vertex", "holds no 'vertex' policy for tenant 'acme'. It is in the proxy's format (tenant to "
+                               "provider to policy) and holds that tenant's policy for 'anthropic', 'openai'"),
+            ("zenith", "openai", "holds that tenant's policy for 'anthropic'"),
+            ("nobody", None, "holds no policy for tenant 'nobody'. It is in the proxy's format (tenant to provider "
+                             "to policy) and holds policies for 'acme', 'zenith'")):
+        with pytest.raises(ValueError) as refused:
+            cli.read_policy(deployed, tenant, provider)
+        assert message in str(refused.value) and str(deployed) in str(refused.value)
+    assert "Policy version" not in str(refused.value)
+
+    # The page is the one the single policy file gives, shadow digests included.
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    add_shadow_rows(ledger)
+    ledger.close()
+    single = tmp_path / "policy.json"
+    single.write_text(json.dumps(POLICY), encoding="utf-8")
+    output = tmp_path / "report.html"
+    cli.main(["--ledger", str(path), "--tenant", "acme", "--policy", str(deployed), "--provider", "openai",
+              "--generated-at", "2026-11-17", "--output", str(output)])
+    page = output.read_text(encoding="utf-8")
+    assert page == cli.build(tenant="acme", ledger=path, policy=single, generated_at="2026-11-17")
+    assert "Ask mid ." in text_of(page) and "Note." not in text_of(page)
+    other = text_of(cli.build(tenant="acme", ledger=path, policy=deployed, provider="anthropic"))
+    assert "send the request to opus ." in other and "Ask mid ." not in other
+    assert "4 of the 4 shadowed requests were run with a different policy file" in other
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["--ledger", str(path), "--tenant", "acme", "--policy", str(deployed), "--output", str(output)])
+    assert "savings_report:" in str(stopped.value) and "Choose one with --provider" in str(stopped.value)
+    assert output.read_text(encoding="utf-8") == page  # a refused run leaves the earlier page alone
+
+
+def test_cli_refuses_policy_files_it_cannot_place_and_says_why(tmp_path):
+    def refusal(document, tenant="acme", provider=None) -> str:
+        path = tmp_path / "policies.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ValueError) as refused:
+            cli.read_policy(path, tenant, provider)
+        return str(refused.value)
+
+    assert "holds no tenants" in refusal({})
+    assert "holds no policy for tenant 'acme': its entry there is empty" in refusal({"acme": {}})
+    # A broken policy inside the proxy's file is named by tenant and provider.
+    assert "the openai policy of tenant 'acme': Policy version must be 1" in refusal({"acme": {"openai": {"stages": []}}})
+    # Listed under one tenant, frozen for another: never shown beside the first one's figures.
+    assert "names tenant 'acme', not 'zed'" in refusal({"zed": {"openai": POLICY}}, tenant="zed")
+    # --provider means nothing for a single policy; saying so beats describing the wrong one.
+    assert "is not one" in refusal(POLICY, provider="openai")
+    assert "Policy version must be 1" in refusal({**POLICY, "version": 2})
+    for neither in ([POLICY], {"acme": POLICY}, {"acme": "policy.json"}):
+        assert "is neither one frozen policy" in refusal(neither)
+    saved = tmp_path / "report.json"
+    saved.write_text(json.dumps({"shadow_report": None}), encoding="utf-8")
+    with pytest.raises(ValueError, match="give --policy too"):
+        cli.build(tenant="acme", report_json=saved, provider="openai")
+
+
+def test_cli_reports_from_a_backup_of_a_ledger_the_proxy_still_has_open(tmp_path):
+    """The main file copied alone has no tables while the rows are in the WAL."""
+    import shutil
+
+    from tine.ledger import backup_ledger
+
+    path = tmp_path / "data" / "ledger.sqlite3"
+    ledger = Ledger(path)
+    ledger.record(tenant="acme", provider="openai", model="small-a", request_body={}, success=True, cost_usd=0.25,
+                  routing_cost_usd=0.05, baseline_cost_usd=1.0)
+    add_shadow_rows(ledger)
+    naive = tmp_path / "naive.sqlite3"
+    shutil.copy(path, naive)
+    output = tmp_path / "report.html"
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["--ledger", str(naive), "--tenant", "acme", "--output", str(output)])
+    assert "it has no requests table" in str(stopped.value) and "python -m tine backup-ledger" in str(stopped.value)
+    copy = tmp_path / "copy.sqlite3"
+    backup_ledger(path, copy)
+    cli.main(["--ledger", str(copy), "--tenant", "acme", "--output", str(output)])
+    text = text_of(output.read_text(encoding="utf-8"))
+    assert "a net saving of $0.70 (70.0%)" in text and "Requests shadowed 4" in text
+    assert [item.name for item in tmp_path.iterdir() if item.name.startswith("copy")] == ["copy.sqlite3"]
+    ledger.close()
+
+
 def test_a_ledger_from_before_skip_reasons_still_reports_and_is_upgraded(tmp_path):
     path = tmp_path / "ledger.sqlite3"
     Ledger(path).close()

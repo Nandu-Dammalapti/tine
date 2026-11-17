@@ -13,6 +13,11 @@ Under live routing with a frontier holdout (``TINE_AUDIT_RATE``), ``holdout`` ma
 requests a route policy could have served: 1 for those held out and sent to the
 frontier, 0 for those routed through the policy. ``report`` compares the mean cost per
 request of the two groups (``holdout_estimate``).
+
+The file is in WAL mode: while a proxy has it open, the newest rows are in
+``ledger.sqlite3-wal``, and a copy of ``ledger.sqlite3`` alone can have rows missing or
+no tables at all. ``backup_ledger`` (``python -m tine backup-ledger --output PATH``)
+writes a consistent copy as one file while the proxy keeps running. Copy that file.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import statistics
 import threading
@@ -32,6 +38,8 @@ from typing import Any
 
 _UNSET = object()
 MAX_TOKEN_COUNT = 2**63 - 1  # SQLite INTEGER storage limit.
+# Where the proxy keeps its ledger when TINE_LEDGER_PATH is not set (ProxyConfig.ledger_path).
+DEFAULT_LEDGER_PATH = "artifacts/ledger.sqlite3"
 # Where a baseline cost came from. Only a baseline the proxy measured, by calling the
 # frontier model for this request, counts toward verified savings.
 BASELINE_SOURCES = ("proxy_measured", "caller", "estimated")
@@ -120,6 +128,72 @@ def _cost_sum(values) -> float | None:
     except OverflowError:
         return None
     return total if math.isfinite(total) else None
+
+
+def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False) -> dict[str, Any]:
+    """Write a consistent copy of the ledger at ``source`` to ``output``, as one file.
+
+    Safe while a proxy is writing to the ledger: SQLite's online backup API reads one
+    snapshot, WAL pages included, through a read-only connection that does not block
+    writers. The copy is switched to a rollback journal, so it has no ``-wal`` or
+    ``-shm`` file beside it and can be read from a read-only place. It is written with
+    mode 600 (a ledger holds prompts and responses) under a temporary name in
+    ``output``'s directory and renamed when complete, so only that directory needs to
+    be writable. An existing ``output`` is replaced only with ``force``.
+
+    The ledger file is never changed. When no process has it open, the read-only
+    connection leaves an empty ``-wal`` and a ``-shm`` file beside it.
+    """
+    source, output = Path(source), Path(output)
+    if not source.is_file():
+        raise FileNotFoundError(f"No ledger file at {source}")
+    if output.is_dir():
+        raise IsADirectoryError(f"{output} is a directory: name the file to write")
+    if output.exists():
+        if output.samefile(source):
+            raise ValueError(f"{output} is the ledger itself: write the copy somewhere else")
+        if not force:
+            raise FileExistsError(f"{output} already exists: choose another name, or replace it with --force")
+    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError as error:
+        # In the container only the ledger's directory and /tmp can be written.
+        raise OSError(f"Cannot write in {output.parent} ({error.strerror}): put the copy where files can be "
+                      "written, such as the ledger's own directory") from error
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)  # whatever the umask
+        finally:
+            os.close(descriptor)
+        reader = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+        try:
+            copy = sqlite3.connect(str(temporary))
+            try:
+                reader.backup(copy)
+                # The copied header says WAL. Without this the first reader of the copy
+                # would need to create -wal and -shm files beside it.
+                if copy.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+                    raise sqlite3.OperationalError("could not switch the copy to a rollback journal")
+                tables = {row[0] for row in copy.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "requests" not in tables:
+                    raise ValueError(f"{source} is not a Tine ledger: it has no requests table")
+                rows = {name: copy.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                        for name in ("requests", "outcome_events", "shadow_runs") if name in tables}
+            finally:
+                copy.close()
+        finally:
+            reader.close()
+        # Checked again: the backup of a large ledger takes a while. Two backups racing
+        # for one name can still both finish; each is a complete copy.
+        if output.exists() and not force:
+            raise FileExistsError(f"{output} already exists: choose another name, or replace it with --force")
+        os.replace(temporary, output)
+    finally:
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            temporary.with_name(temporary.name + suffix).unlink(missing_ok=True)
+    return {"ledger": str(source), "output": str(output), "bytes": output.stat().st_size, "rows": rows}
 
 
 def holdout_estimate(routed: list[float], holdout: list[float], *, routed_unknown: Sequence[float] = (),
