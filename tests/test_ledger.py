@@ -726,6 +726,91 @@ def test_a_backup_never_replaces_a_file_unasked_or_the_ledger_itself(tmp_path):
     ledger.close()
 
 
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("alias", [False, True])
+def test_backup_rejects_live_sqlite_sidecar_paths_before_opening_the_source(tmp_path, monkeypatch,
+                                                                           suffix, force, alias):
+    import tine.ledger as ledger_module
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    request_id = row(ledger)
+    source = path
+    if alias:
+        source = tmp_path / "ledger-alias.sqlite3"
+        source.symlink_to(path)
+    output = path.with_name(path.name + suffix)
+    before = output.read_bytes() if output.exists() else None
+
+    def unexpected_connection(*args, **kwargs):
+        pytest.fail("A reserved output must be rejected before opening SQLite")
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", unexpected_connection)
+    try:
+        with pytest.raises(ValueError, match="SQLite sidecar"):
+            backup_ledger(source, output, force=force)
+        assert (output.read_bytes() if output.exists() else None) == before
+        assert ledger.get("a", request_id) is not None
+    finally:
+        ledger.close()
+
+
+def test_backup_rejects_an_existing_sidecar_under_another_name(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    row(ledger)
+    wal = path.with_name(path.name + "-wal")
+    output = tmp_path / "LEDGER.SQLITE3-WAL"
+    # Same path on a case-insensitive volume; use a hard link to test the same
+    # file-identity protection when the test filesystem distinguishes case.
+    if not output.exists():
+        output.hardlink_to(wal)
+    before = wal.read_bytes()
+    try:
+        assert output.samefile(wal)
+        with pytest.raises(ValueError, match="SQLite sidecar"):
+            backup_ledger(path, output, force=True)
+        assert output.samefile(wal) and wal.read_bytes() == before
+    finally:
+        ledger.close()
+
+
+def test_backup_does_not_replace_a_destination_created_during_publication(tmp_path, monkeypatch):
+    import tine.ledger as ledger_module
+
+    path, output = tmp_path / "ledger.sqlite3", tmp_path / "copy.sqlite3"
+    Ledger(path).close()
+
+    def racing(publication):
+        def publish(source, destination, *args, **kwargs):
+            if destination == output:
+                output.write_text("another writer's file", encoding="utf-8")
+            return publication(source, destination, *args, **kwargs)
+        return publish
+
+    # The competitor creates the destination after any existence check but before
+    # the publication syscall, whether publication renames or hard-links the copy.
+    for name in ("replace", "link"):
+        monkeypatch.setattr(ledger_module.os, name, racing(getattr(ledger_module.os, name)))
+    with pytest.raises(FileExistsError, match="--force"):
+        backup_ledger(path, output)
+    assert output.read_text(encoding="utf-8") == "another writer's file"
+    assert not list(tmp_path.glob(".*.tmp*"))
+
+
+def test_backup_without_force_preserves_a_dangling_destination_symlink(tmp_path):
+    path, output = tmp_path / "ledger.sqlite3", tmp_path / "copy.sqlite3"
+    Ledger(path).close()
+    target = tmp_path / "not-created-yet"
+    output.symlink_to(target)
+    with pytest.raises(FileExistsError, match="--force"):
+        backup_ledger(path, output)
+    assert output.is_symlink() and output.readlink() == target
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.tmp*"))
+
+
 def test_backup_ledger_command_reads_the_ledger_the_proxy_does(tmp_path, monkeypatch, capsys):
     import json
 
