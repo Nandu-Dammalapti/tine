@@ -819,24 +819,24 @@ def create_app(
             pass
 
     def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict,
-                    *, request_id: str, mode: str, run: dict | None = None):
+                    *, request_id: str, mode: str, reservation=None):
         """How a policy's cheaper stages call a model and run a named check for one request.
         ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks.
 
         Every provider reply is looked at on the way: a 429 or 529 pauses shadow mode on
-        that provider. In a shadow run (``run``), a provider call is not sent while shadow
-        mode is paused on its provider, and the calls sent are counted in ``run["calls"]``
-        for the per-minute cap. Webhooks pass through untouched."""
+        that provider. In a shadow run (``reservation``), a provider call is not sent while
+        shadow mode is paused on its provider. Each call consumes a reserved slot and is
+        counted from its own start for the per-minute cap. Webhooks pass through untouched."""
         judge_url = _upstream_url(config.anthropic_base_url, "/v1/messages")
         providers = {judge_url: "anthropic", url: provider}
         where = "a shadow call" if mode == "shadow" else "a routed cheaper call"
 
         async def post(target: str, **kwargs):
             reached = providers.get(target)
-            if reached is not None and run is not None:
+            if reached is not None and reservation is not None:
                 if shadow_limits.paused(reached) is not None:
                     raise ShadowPaused()
-                run["calls"] += 1
+                shadow_limits.started(reservation)
             response = await side.post(target, **kwargs)
             if reached is not None:
                 note_limit(reached, response, where)
@@ -908,7 +908,7 @@ def create_app(
                 admitted = shadow_store.admit(identity, *limits)
             finally:
                 if not admitted:  # the run will not start: its calls are not held
-                    shadow_limits.release(reservation, 0)
+                    shadow_limits.release(reservation)
             if not admitted:
                 # The cap's room is held by runs in flight, or no run has finished yet
                 # to say what one costs.
@@ -920,10 +920,9 @@ def create_app(
         shadow_running += 1
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
-        run = {"calls": 0}
         try:
             call, checks = stage_tools(identity, provider, policy, body, url, headers,
-                                       request_id=request_id, mode="shadow", run=run)
+                                       request_id=request_id, mode="shadow", reservation=reservation)
             outcome = await shadow_stages(policy, call, checks)
             entries = shadow_entries(outcome)
             limited = any(refused(entry) for entry in entries)
@@ -940,7 +939,7 @@ def create_app(
         finally:
             shadow_running -= 1
             shadow_running_by_tenant[identity] -= 1
-            shadow_limits.release(reservation, run["calls"])
+            shadow_limits.release(reservation)
             shadow_store.settle(identity, entries)
 
     def count_safely(identity: str, name: str) -> None:
