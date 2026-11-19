@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 
 PROMPT_VERSION = "2026-11-11"
 INSTRUCTIONS = """You are reviewing a proposed code change before it is accepted.
@@ -119,23 +118,64 @@ def build_messages(case: dict, style: str = "verdict", *, tests_passed: bool = T
             {"role": "user", "content": case_text(case)}]
 
 
+def _json_containers(text: str):
+    """Whole outer objects/arrays, respecting JSON strings and escaped quotes.
+
+    Never extract a nested example as a verdict, even inside a malformed or
+    unfinished outer object. JSON decoding below validates each complete span.
+    """
+    start, depth, quoted, escaped = 0, 0, False, False
+    for index, char in enumerate(text):
+        if depth == 0:
+            if char in "{[":
+                start, depth, quoted, escaped = index, 1, False, False
+        elif quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                yield text[start:index + 1]
+
+
+def _unique_fields(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("The judge reply contains duplicate JSON fields")
+        value[key] = item
+    return value
+
+
 def parse_verdict(text: str) -> dict:
-    """The judge's JSON object from its reply: the last one that is a verdict. Raises
-    ValueError if there is none, or if the reply holds verdict objects that disagree:
+    """The last outer JSON object that is a verdict; nested examples are not verdicts.
+    Raises ValueError for duplicate fields, no usable verdict, or objects that disagree:
     a judge that rejects and then quotes an "accept" object from the text it was
     reading has not accepted, and which object is its own cannot be told apart."""
     found = []
-    for candidate in re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL):
+    for candidate in _json_containers(text):
         try:
-            value = json.loads(candidate)
+            value = json.loads(candidate, object_pairs_hook=_unique_fields)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
             continue
         verdict = str(value.get("verdict", "")).strip().lower()
         if verdict not in ("accept", "reject"):
             continue
+        if isinstance(value.get("probability"), bool):
+            continue
         try:
             probability = float(value.get("probability"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if not 0 <= probability <= 1:
             continue
