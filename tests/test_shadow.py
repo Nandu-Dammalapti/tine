@@ -763,6 +763,59 @@ def test_the_pause_is_capped_honours_retry_after_and_is_only_lengthened_by_later
     assert limits.paused("openai")["in_a_row"] == 1
 
 
+@pytest.mark.parametrize("retry_after", [None, "1"])
+def test_long_refusal_sequences_keep_the_backoff_bounded_and_can_recover(retry_after):
+    now = [START]
+    limits = ShadowLimits(clock=lambda: now[0])
+    for count in range(1, 1101):
+        assert limits.limited("openai", 429, retry_after, "real traffic")
+        pause = limits.paused("openai")
+        expected = 1 if retry_after else [30, 60, 120, 240, 480, 600][min(count - 1, 5)]
+        assert pause["until"] - now[0] == expected
+        assert pause["in_a_row"] == count
+        now[0] = pause["until"]
+    # A provider can stop sending retry-after after a long sequence of short waits.
+    assert limits.limited("openai", 529, None, "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 600
+    assert "pause 1101 in a row" in limits.paused("openai")["reason"]
+    # Explicit provider waits still take precedence, and recovery resets the series.
+    assert not limits.limited("openai", 429, "900", "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 900
+    now[0] = limits.paused("openai")["until"]
+    limits.succeeded("openai")
+    assert limits.limited("openai", 429, None, "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 30
+    assert limits.paused("anthropic") is None
+
+
+def test_long_provider_refusal_history_still_pauses_shadow_through_the_proxy(caplog):
+    caplog.set_level(logging.ERROR, logger="tine.proxy")
+    seen, refusals = [], [0]
+
+    async def provider(request):
+        body = json.loads(request.content)
+        seen.append(body["model"])
+        if body["messages"][0]["content"] == "refuse":
+            refusals[0] += 1
+            headers = {"retry-after": "1"} if refusals[0] <= 1100 else {}
+            return httpx.Response(429, headers=headers, json={"error": {"type": "rate_limit_error"}})
+        return httpx.Response(200, json=reply("B"))
+
+    async def script(post, report, now):
+        # Tenant b's real calls share the provider key with a's shadow calls.
+        for _ in range(1100):
+            assert (await post("refuse", token="token-b")).status_code == 429
+            now[0] += 1
+        assert (await post("refuse", token="token-b")).status_code == 429
+        assert (await post("usable frontier reply")).status_code == 200
+        return await report()
+
+    body = with_clock(config(), provider, script)
+    assert body["skipped_rate_limited"] == 1 and body["shadowed_requests"] == 0
+    assert body["shadow_paused"]["openai"]["seconds_left"] == 600
+    assert set(seen) == {"frontier"}  # real traffic is served; shadow calls stay paused
+
+
 def test_real_traffic_refused_for_the_rate_limit_pauses_shadow_mode_on_that_provider():
     seen = []
 
