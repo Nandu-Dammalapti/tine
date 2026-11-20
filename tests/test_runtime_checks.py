@@ -72,3 +72,51 @@ def test_completed_judge_approval_retains_acceptance_and_known_or_unknown_cost(s
     outcome = check_reply(stop_reason=stop_reason, threshold=0.8, cost=cost)
     assert outcome["accepted"] is True
     assert outcome["checks"][0]["cost_usd"] == cost
+
+
+@pytest.mark.parametrize("deadline", [False, True])
+def test_interrupted_check_preserves_completed_step_costs(deadline):
+    from tine.policy import run_stages_async
+
+    async def scenario():
+        entered = asyncio.Event()
+
+        async def webhook(request):
+            if request.url.path == "/first":
+                return httpx.Response(200, json={"passed": True, "cost_usd": 0.03})
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def candidate(model):
+            return {"model": model, "answer": "x", "cost_usd": 0.01}
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(webhook)) as upstream:
+            checks = build_checks(
+                {"review": [{"type": "webhook", "url": "https://checks/first"},
+                            {"type": "webhook", "url": "https://checks/second"}]},
+                upstream=upstream, tenant="tenant", provider="openai", body={},
+                anthropic_url="https://judge/messages", anthropic_key="test", cost_of=lambda *args: 0.03)
+            policy = {"version": 1, "frontier": "frontier",
+                      "guarantee": {"certified": True, "epsilon": 0.04, "delta": 0.05, "bound": 0.03},
+                      "stages": [{"models": ["cheap"], "check": "review"}]}
+            audit = {}
+            task = asyncio.create_task(run_stages_async(
+                policy, candidate, checks=checks, audit=audit, deadline_seconds=0.05 if deadline else None))
+            await asyncio.wait_for(entered.wait(), 2)
+            if deadline:
+                outcome = await task
+                assert not outcome["accepted"]
+                assert outcome["checks"] == audit["checks"]
+            else:
+                task.cancel("shutdown")
+                with pytest.raises(asyncio.CancelledError, match="shutdown"):
+                    await task
+            assert audit["calls"] == [{"model": "cheap", "cost_usd": 0.01, "error": None}]
+            assert len(audit["checks"]) == 1
+            check = audit["checks"][0]
+            assert check["cost_usd"] is None and check["known_cost_usd"] == 0.03
+            assert check["error"] == ("DeadlineExceeded" if deadline else "CancelledError")
+            assert check["steps"] == [
+                {"type": "webhook", "passed": True, "cost_usd": 0.03},
+                {"type": "webhook", "passed": False, "cost_usd": None, "error": check["error"]}]
+    asyncio.run(scenario())
