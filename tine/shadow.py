@@ -115,6 +115,8 @@ RETRY_AFTER_MAX_SECONDS = 3600.0
 # call was not sent because shadow mode had paused. Its row keeps what was spent; the
 # report leaves it out of the projection and counts it as ``rate_limited_runs``.
 RATE_LIMITED_REASON = "rate_limited: a provider refused a shadow call (429 or 529), so the run is left out"
+# Interrupted runs likewise retain costs without contributing a projected result.
+CANCELLED_REASON = "cancelled: the shadow run was interrupted, so the run is left out"
 
 
 def sampled(request_id: str, rate: float) -> bool:
@@ -245,7 +247,7 @@ def validate_shadow_policy(policy: dict, frontier: str, available_checks=()) -> 
     return policy
 
 
-async def shadow_stages(policy: dict, call, checks: dict | None = None) -> dict:
+async def shadow_stages(policy: dict, call, checks: dict | None = None, *, audit: dict | None = None) -> dict:
     """Run the cheaper stages of ``policy`` and say what it would have done.
 
     ``call(model)`` is awaited and returns a mapping with ``answer`` and ``cost_usd``.
@@ -253,7 +255,7 @@ async def shadow_stages(policy: dict, call, checks: dict | None = None) -> dict:
     fails has no answer, so its stage does not pass. A model that appears in two
     stages is called once.
     """
-    outcome = await run_stages_async(policy, call, checks=checks)
+    outcome = await run_stages_async(policy, call, checks=checks, audit=audit)
     result = outcome["result"] or {}
     return {"accepted": outcome["accepted"], "stage": outcome["stage"], "served_by": outcome["served_by"],
             "answer": result.get("answer"), "calls": outcome["calls"], "checks": outcome["checks"],
@@ -491,6 +493,8 @@ class ShadowStore:
                frontier_answer: str | None, frontier_cost_usd: float | None, skip_reason: str | None = None) -> None:
         """Store one shadow run. ``skip_reason`` marks a request the policy would have
         sent to the frontier without trying its stages; ``outcome`` then has no calls.
+        Rate-limited and cancelled runs instead keep their partial costs under their
+        respective skip reasons, and are excluded from projections and drift checks.
         The accepted answer is compared with the frontier's the way the policy's
         agreement compares answers (``answer_compare``)."""
         matches = None
@@ -655,11 +659,12 @@ class ShadowStore:
                 "SELECT accepted,matches_frontier,shadow_cost_usd,frontier_cost_usd,calls_json,policy_sha256,"
                 f"{skipped},{chain_column(self._ledger)} FROM shadow_runs WHERE tenant=? ORDER BY created_at, rowid",
                 (tenant,)).fetchall()
-        # What every run spent counts, but a run in which a provider refused a call does
-        # not show what the policy would do, so it is left out of everything else.
+        # All spend counts, but refused or interrupted runs do not show what the
+        # policy would do, so they are left out of projections and drift checks.
         calls = [entry for row in rows for entry in json.loads(row["calls_json"])]
         limited = sum(row["skip_reason"] == RATE_LIMITED_REASON for row in rows)
-        rows = [row for row in rows if row["skip_reason"] != RATE_LIMITED_REASON]
+        cancelled = sum(row["skip_reason"] == CANCELLED_REASON for row in rows)
+        rows = [row for row in rows if row["skip_reason"] not in (RATE_LIMITED_REASON, CANCELLED_REASON)]
         accepted = [row for row in rows if row["accepted"]]
         compared = [row for row in accepted if row["matches_frontier"] is not None]
         matching = sum(row["matches_frontier"] == 1 for row in compared)
@@ -697,7 +702,7 @@ class ShadowStore:
             # Which step of each named check rejected: a step that failed counts, since a
             # check fails closed. Runs stored before steps were kept are not counted.
             "check_step_rejections": step_rejections(calls),
-            **coverage(len(rows), self.counts(tenant), rate_limited_runs=limited),
+            **coverage(len(rows), self.counts(tenant), rate_limited_runs=limited, cancelled_shadow_runs=cancelled),
             **_drift_fields(rows, epsilon, min_compared, policies),
             # Over every request, like the matching count above; the drift check's own
             # counts are drift_differing and drift_compared.
@@ -788,14 +793,16 @@ def _why_unknown(entry: dict) -> str:
     return f"{entry.get('model')}: {why}"
 
 
-def coverage(shadowed: int, counts: dict[str, int] | None, rate_limited_runs: int = 0) -> dict[str, Any]:
+def coverage(shadowed: int, counts: dict[str, int] | None, rate_limited_runs: int = 0,
+             cancelled_shadow_runs: int = 0) -> dict[str, Any]:
     """What became of the sampled requests: how many were shadowed, and why the rest
     were not.
 
     ``sampled_requests`` counts the sampled requests a shadow run could have taken
     (answered by the frontier without streaming) once their run ended or was skipped:
     the ``shadowed`` ones, which have a row, the skipped and failed ones, which are
-    counted, and the ``rate_limited_runs``, whose rows are left out of the projection.
+    counted, and the ``rate_limited_runs`` and ``cancelled_shadow_runs``, whose rows
+    are left out of the projection.
     Requests skipped while shadow mode was paused on a provider are
     ``skipped_rate_limited``; those over the per-minute call cap are
     ``skipped_rate_cap``. ``shadow_coverage`` is the share that were shadowed. Busy
@@ -806,14 +813,15 @@ def coverage(shadowed: int, counts: dict[str, int] | None, rate_limited_runs: in
     """
     if counts is None:
         return dict.fromkeys(("sampled_requests", "skipped_busy", "skipped_stopped", "failed_shadow_runs",
-                              "skipped_rate_limited", "skipped_rate_cap", "rate_limited_runs",
+                              "skipped_rate_limited", "skipped_rate_cap", "rate_limited_runs", "cancelled_shadow_runs",
                               "streamed_not_shadowed", "shadow_coverage"))
     sampled = (shadowed + counts["skipped_busy"] + counts["skipped_stopped"] + counts["failed"]
-               + counts["skipped_rate_limited"] + counts["skipped_rate_cap"] + rate_limited_runs)
+               + counts["skipped_rate_limited"] + counts["skipped_rate_cap"] + rate_limited_runs + cancelled_shadow_runs)
     return {"sampled_requests": sampled, "skipped_busy": counts["skipped_busy"],
             "skipped_stopped": counts["skipped_stopped"], "failed_shadow_runs": counts["failed"],
             "skipped_rate_limited": counts["skipped_rate_limited"], "skipped_rate_cap": counts["skipped_rate_cap"],
-            "rate_limited_runs": rate_limited_runs, "streamed_not_shadowed": counts["streamed"],
+            "rate_limited_runs": rate_limited_runs, "cancelled_shadow_runs": cancelled_shadow_runs,
+            "streamed_not_shadowed": counts["streamed"],
             "shadow_coverage": shadowed / sampled if sampled else None}
 
 

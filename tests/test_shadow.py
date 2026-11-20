@@ -884,3 +884,75 @@ def test_a_proxy_restarted_with_the_policy_frozen_again_keeps_the_drift_warning(
     assert (healthy["drift_requests"], healthy["drift_differing"], healthy["drift_other_policy_requests"]) == (45, 40, 0)
     assert (healthy["accepted_differing_from_frontier"], healthy["accepted_matching_frontier"],
             healthy["accepted_compared_with_frontier"]) == (40, 5, 45)
+
+
+@pytest.mark.parametrize("during_check", [0, 1, 2])
+@pytest.mark.parametrize("record_fails", [False, True])
+def test_cancelled_shadow_keeps_spend_and_unknown_cost_stop_after_restart(during_check, record_fails, monkeypatch):
+    async def scenario():
+        waiting = asyncio.Event()
+        seen = []
+        policy = POLICY if not during_check else {**POLICY, "stages": [{"models": ["small-a"], "check": "verify"}]}
+        steps = [{"type": "webhook", "url": "https://checks/verify"}]
+        if during_check == 2:
+            steps.insert(0, {"type": "webhook", "url": "https://checks/first"})
+        checks = {} if not during_check else {"a": {"verify": steps}}
+        spent = 0.005 if during_check == 2 else 0.002
+
+        async def provider(request):
+            model = "verify" if request.url.host == "checks" else json.loads(request.content)["model"]
+            seen.append(model)
+            if request.url.path == "/first":
+                return httpx.Response(200, json={"passed": True, "cost_usd": 0.003})
+            if model == ("verify" if during_check else "small-b"):
+                waiting.set()
+                await asyncio.Event().wait()
+            return httpx.Response(200, json=reply("B"))
+
+        if record_fails:
+            def fail_record(*args, **kwargs):
+                raise RuntimeError("ledger unavailable")
+            monkeypatch.setattr(ShadowStore, "record", fail_record)
+
+        ledger = Ledger()
+        settings = config(shadow_policies={"a": {"openai": policy}}, tenant_checks=checks,
+                          shadow_max_unknown_cost_calls=0, shadow_max_unknown_cost_share=0.0)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+            app = create_app(settings, ledger=ledger, client=upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                headers = {"authorization": "Bearer token-a"}
+
+                async def post():
+                    return await client.post("/v1/chat/completions", headers=headers,
+                                             json={"model": "frontier", "messages": [{"role": "user", "content": "q"}]})
+
+                task = asyncio.create_task(post())
+                await asyncio.wait_for(waiting.wait(), 2)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                body = (await client.get("/v1/shadow", headers=headers)).json()
+                assert body["sampling"].startswith("stopped: too many shadow calls of unknown cost")
+                await post()
+                assert seen.count("small-a") == 1  # the stop still applies if the row could not be written
+                if record_fails:
+                    assert body["failed_shadow_runs"] == body["sampled_requests"] == 1
+                    assert body["cancelled_shadow_runs"] == 0
+                    return  # a failed write cannot preserve the stop across restart
+                assert body["shadow_spend_usd"] == pytest.approx(spent)
+                assert body["unknown_cost_shadow_calls"] == 1
+                assert body["shadow_calls"] == 2
+                assert body["cancelled_shadow_runs"] == body["sampled_requests"] == 1
+                assert body["shadowed_requests"] == body["drift_requests"] == 0
+                assert body["projected_savings_fraction"] is None
+                assert body["shadow_coverage"] == 0
+                restarted = ShadowStore(ledger)
+                assert restarted.spend("a") == pytest.approx(spent)
+                assert restarted.state("a", 1.0, 0).startswith("stopped: too many shadow calls of unknown cost")
+                assert restarted.state("b", 1.0, 0) == "on"
+                entries = restarted._runs("a")[0]
+                assert entries[-1]["error"] == "CancelledError"
+                if during_check == 2:
+                    assert entries[-1]["known_cost_usd"] == 0.003
+                    assert entries[-1]["steps"][-1]["error"] == "CancelledError"
+    asyncio.run(scenario())

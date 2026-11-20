@@ -390,7 +390,7 @@ More fields of `GET /v1/shadow`:
   - `sampled_requests`: sampled requests a shadow run could have taken (answered by the frontier without
     streaming, no fallback, no error), counted once their run ended or was skipped. It equals
     `shadowed_requests` + `skipped_busy` + `skipped_stopped` + `failed_shadow_runs` +
-    `skipped_rate_limited` + `skipped_rate_cap` + `rate_limited_runs`.
+    `skipped_rate_limited` + `skipped_rate_cap` + `rate_limited_runs` + `cancelled_shadow_runs`.
   - `skipped_busy`: sampled but not run because a concurrency limit was full, or because the spending
     cap could not reserve room. That happens while runs in flight hold the room, or before the tenant's
     first run has finished, when one run at a time is let through.
@@ -402,6 +402,12 @@ More fields of `GET /v1/shadow`:
   - `rate_limited_runs`: runs in which a provider refused a call with 429 or 529, or a call was not
     sent because shadow mode had paused. Their rows are kept, so their spend is in `shadow_spend_usd`
     and `shadow_calls`, but they are not in `shadowed_requests`, the projection or the drift check.
+  - `cancelled_shadow_runs`: runs interrupted by task cancellation (for example, server shutdown).
+    Completed calls and check steps retain their known costs; unfinished calls and checks have unknown
+    costs. These costs still count toward the spending and unknown-cost stops, including after a restart
+    when the row was successfully written. Incomplete runs are excluded from savings projections and drift
+    checks. Cancellation still propagates to the server. A process killed without cleanup cannot record
+    its unfinished run.
   - `streamed_not_shadowed`: sampled requests that streamed. Shadow mode never runs them; they are
     counted only when they would otherwise have been shadowed.
   - `shadow_coverage`: `shadowed_requests` / `sampled_requests`, or null when nothing was sampled.

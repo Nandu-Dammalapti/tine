@@ -326,7 +326,8 @@ def _coverage_sentence(shadow: dict | None) -> str | None:
             (_whole(shadow.get("failed_shadow_runs")), "because the shadow run failed"),
             (_whole(shadow.get("skipped_rate_limited")), "while shadow mode was paused for the provider's rate limit"),
             (_whole(shadow.get("skipped_rate_cap")), "over the shadow call cap per minute"),
-            (_whole(shadow.get("rate_limited_runs")), "because the provider refused a shadow call (429 or 529)"))
+            (_whole(shadow.get("rate_limited_runs")), "because the provider refused a shadow call (429 or 529)"),
+            (_whole(shadow.get("cancelled_shadow_runs")), "because the shadow run was cancelled"))
             if number]
         skipped = f" ({_listed(reasons)})" if reasons else ""
         parts.append(f"Shadow mode ran on {count(shadowed)} of {_plural(sampled, 'sampled request')} "
@@ -636,6 +637,8 @@ def _shadow_section(shadow: dict | None) -> str:
             ("Shadow runs left out because the provider refused a call (429 or 529)",
              count(shadow.get("rate_limited_runs"))),
         ]
+    if "cancelled_shadow_runs" in shadow:
+        pairs.append(("Shadow runs left out because they were cancelled", count(shadow.get("cancelled_shadow_runs"))))
     if isinstance(shadow.get("shadow_paused"), dict):  # added by GET /v1/shadow; held in memory by the proxy
         pairs.append(("Paused for a provider's rate limit when the report was read", _pauses(shadow["shadow_paused"])))
     if "drift_check" in shadow:

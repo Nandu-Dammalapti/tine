@@ -55,6 +55,7 @@ missing stop reason is unknown completion, not permission to accept.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
@@ -240,6 +241,18 @@ def build_checks(checks: dict, *, upstream, tenant: str, provider: str, body: di
                     else:
                         # The judge is told the tests passed only if a test step did, just before.
                         verdict = await judge(step, result, tested)
+                except asyncio.CancelledError as error:
+                    # Earlier steps may already have been billed. The interrupted
+                    # step's cost remains unknown even when those costs are known.
+                    # Keep the original exception type: asyncio's timeout handling
+                    # needs CancelledError to convert its own cancellation to TimeoutError.
+                    error.check_verdict = {
+                        "passed": False, "cost_usd": None, "error": "CancelledError",
+                        "known_cost_usd": math.fsum(cost for cost in costs if cost is not None),
+                        "steps": [*ran, {"type": step["type"], "passed": False,
+                                         "cost_usd": None, "error": "CancelledError"}],
+                    }
+                    raise
                 except Exception as error:  # fail closed: an unusable check rejects
                     verdict = {"passed": False, "cost_usd": None}
                     # Kept so that a report can say which step failed and how (an HTTP status, if any).
