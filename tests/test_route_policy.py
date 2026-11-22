@@ -1271,3 +1271,13 @@ def test_the_audit_rate_is_read_from_the_environment(monkeypatch):
     assert ProxyConfig.from_env().audit_rate == 0.0
     monkeypatch.setenv("TINE_AUDIT_RATE", "0.05")
     assert ProxyConfig.from_env().audit_rate == 0.05
+
+
+def test_math_agreement_escalates_when_digits_beyond_decimal_precision_differ():
+    seen = []
+    a, b = "1234567890123456789012345678901", "1234567890123456789012345678902"
+    response, row = ask(config(route_policies={"a": {"openai": {**AGREE, "answer_compare": "math"}}}),
+                        world({"small-a": a, "small-b": b, "frontier": b}, seen))
+    assert seen == ["small-a", "small-b", "frontier"]
+    assert response.json() == chat(b) and response.headers["x-tine-route"] == "frontier"
+    assert row["routing_cost_usd"] == pytest.approx(0.006)

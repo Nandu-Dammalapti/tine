@@ -738,3 +738,29 @@ def test_freeze_policy_command_writes_the_drift_baseline_and_still_prints_the_he
     assert f"Held-out test part: {len(test[::5])} of {int((part == 2).sum())} tasks lost" in printed.out
     assert "is above epsilon (4.00%)" in printed.err
     assert f"used every loss it was allowed ({allowed} of {allowed})" in printed.err
+
+
+@pytest.mark.parametrize("precision", [2, 28])
+@pytest.mark.parametrize("number", [
+    "1234567890123456789012345678901",
+    "0.1234567890123456789012345678901",
+    "-1234567890123456789012345678901.123456789",
+    "0." + "0" * 100 + "123456789",
+])
+def test_math_comparison_preserves_every_digit_regardless_of_decimal_context(precision, number):
+    from decimal import Inexact, Rounded, localcontext
+
+    with localcontext() as context:
+        context.prec = precision
+        context.Emax, context.Emin = 9, -9
+        context.traps[Inexact] = context.traps[Rounded] = True
+        assert canonical_answer(number, "math") == number
+        equivalent = number + ("00" if "." in number else ".00")
+        assert same_answer([number, equivalent], "math")
+        assert not same_answer([number, number[:-1] + "2"], "math")
+
+
+def test_math_comparison_keeps_distinct_numbers_beyond_28_digits_distinct():
+    a, b = "1234567890123456789012345678901", "1234567890123456789012345678902"
+    assert not same_answer([a, b], "math")
+    assert not same_answer(["0." + a, "0." + b], "math")
