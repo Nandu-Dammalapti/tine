@@ -75,6 +75,10 @@ the row's token counts and answer cost (`cost_usd`) from that usage and `TINE_MO
   `"stream_options": {"include_usage": true}`. The proxy does not add that option to a request.
 - No usage, or a stream that broke off before the final count: the cost stays unknown, as before. What
   arrived is kept (an Anthropic stream cut off mid-reply keeps its input tokens).
+- The usage reader buffers at most 1 MiB per line and 1 MiB of joined data per event. An oversized
+  line or event causes that entire event to be ignored for accounting, and parsing resumes at the
+  next event boundary. Malformed usage events are ignored too. Previously read usage is kept;
+  missing counts remain unknown. These limits do not truncate or alter the stream sent to the caller.
 - A stream served after a fallback gets token counts and no cost, as a buffered reply does.
 - Only empty fields are filled. A cost the caller sent through the outcome endpoint first is kept.
 
