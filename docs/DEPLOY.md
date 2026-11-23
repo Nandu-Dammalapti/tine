@@ -1,5 +1,39 @@
 # Deploying the proxy in a container
 
+## Start the Anthropic proxy in one command
+
+Start your local Docker daemon with Docker Compose available. From the repository root, run this with
+Python 3 and your Anthropic key file, exact frontier model ID and prices.
+
+```bash
+python3 scripts/container_env.py --start \
+  --key-file /path/to/anthropic.env \
+  --frontier YOUR-FRONTIER-MODEL \
+  --prices /path/to/prices.json
+```
+
+Keep the key file outside the repository with an `ANTHROPIC_API_KEY=...` or
+`TINE_ANTHROPIC_API_KEY=...` line. In the prices JSON, use the key `anthropic:YOUR-FRONTIER-MODEL`
+with numeric `input_per_million` and `output_per_million` rates in USD. Replace `YOUR-FRONTIER-MODEL`
+in both places with the same model ID.
+
+The command writes `deploy/tine.env` and `deploy/client-token.txt` with mode `600`, builds and starts
+the frontier-only proxy, waits for it to become healthy, and checks that the tenant token can read
+`/v1/savings`. The checks use only local endpoints and leave provider credentials unverified. The
+proxy stays running at `http://127.0.0.1:8000`. Use that as the Anthropic client base URL and use the
+token from `deploy/client-token.txt` as its API key. Prefix the command with `TINE_HOST_PORT=8010` to
+use port 8010 instead.
+
+Rerun with the same provider settings to retry a failed start or restart a stopped proxy with its
+existing token and ledger. The command refuses conflicting configuration files. To change an
+existing deployment or configure a policy, use the [manual setup](#run-it). Run
+`docker compose stop tine` from the repository root to stop the proxy and keep the ledger.
+
+To try Docker without a key, run `python3 scripts/container_selftest.py`. It uses a stand-in provider.
+See [Check the image with one command](#check-the-image-with-one-command).
+
+## Docker verification
+
 **A Docker daemon built these files and ran the self-test once, on 2026-11-17: 18 of 18 checks passed
 against a stand-in provider** (`results/2026-11-17-container-selftest`; Docker 29.9.3, macOS arm64). The
 image has never been deployed or used by a customer. Before that, a daemon built the image once, on
@@ -26,10 +60,6 @@ and `cp` among its commands, in its own project, with a generated env file and i
 override. The `docker` commands of [Test the container on your own
 machine](#test-the-container-on-your-own-machine), with your own env file and key, have not been run on
 these files by a daemon.
-
-The quickest first run needs no key and costs nothing: `python3 scripts/container_selftest.py` builds
-the image and tests a running container against a stand-in provider. See
-[Check the image with one command](#check-the-image-with-one-command).
 
 This page covers packaging only. What the proxy does, its routes and its limits are in
 [PROXY.md](PROXY.md). Frozen policies are in [POLICY.md](POLICY.md).

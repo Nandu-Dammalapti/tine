@@ -4,6 +4,19 @@ Tine aims to route AI requests to the cheapest model that meets a calibrated qua
 
 Read [AGENTS.md](AGENTS.md) for the project context, Gacrux routing design, constraints, and build order.
 
+## Start the proxy
+
+Run this from the repository root with Python 3 and local Docker Compose to start a frontier-only Anthropic proxy.
+
+```bash
+python3 scripts/container_env.py --start \
+  --key-file /path/to/anthropic.env \
+  --frontier YOUR-FRONTIER-MODEL \
+  --prices /path/to/prices.json
+```
+
+The command starts Tine on `http://127.0.0.1:8000` and checks health, authentication and the savings endpoint without calling a model. See the [deployment quick start](docs/DEPLOY.md#start-the-anthropic-proxy-in-one-command) for the input file formats and a key-free Docker self-test.
+
 ## Current state
 
 The offline toolkit is implemented: validated outcome import, logistic/kNN/cluster routers, held-out calibration, independent test evaluation, cost-quality reports, escalation chains with measured or simulated checks (`tine cascade`), agreement and judge checks, and frozen policies (`tine freeze-policy`). There is also an authenticated development proxy with a SQLite ledger, late outcome updates and a verified exact-answer cache. The proxy sends every request to the frontier unless a frozen policy is configured; it can then run that policy in shadow mode (report only) or serve answers from it. Shadow mode and policy routing are tested with stand-in providers and a replay of recorded answers only. Nothing has served real traffic. See AGENTS.md section 12 for the current state.
@@ -34,6 +47,7 @@ Agreement on more exact-answer datasets: [results/2026-11-16-agreement-more-data
 - [docs/EVIDENCE.md](docs/EVIDENCE.md): evidence brief for outside readers, with a source for every number.
 - [docs/PROXY.md](docs/PROXY.md): the development proxy, ledger, shadow mode, routing through a policy and named checks.
 - [docs/POLICY.md](docs/POLICY.md): frozen policies.
+- [Certification builds](docs/CERTIFICATION_BUILDS.md) for recorded outcomes and Claude Code.
 - [docs/REPORT.md](docs/REPORT.md): the savings report page. `scripts/savings_report.py` writes a tenant's savings report as one HTML file.
 - [docs/DEPLOY.md](docs/DEPLOY.md): container packaging. The image was built and run once from an earlier Dockerfile (40 paid requests, 2026-11-17); the current files were built and self-tested once the same day (18 of 18 checks, a stand-in provider; `results/2026-11-17-container-selftest`) and have never been deployed or used by a customer.
 - [docs/PLANNING.md](docs/PLANNING.md): how many graded tasks certification needs.

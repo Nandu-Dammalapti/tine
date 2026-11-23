@@ -23,18 +23,25 @@ A policy that names a check other than ``agreement`` or ``none`` (a judge, a web
 refused by any Python. The proxy runs such a check only from a checks file, and this
 script writes none.
 
-Standard library only. No request is sent anywhere.
+With ``--start``, build and start the frontier-only proxy in local Docker Compose and
+check its local HTTP endpoints. No model request is sent.
+
+Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -319,6 +326,8 @@ def build(args) -> tuple[list[tuple[Path, str, int]], str, list[str], list[str]]
     if unpriced and sampling:
         raise KitError(f"shadow mode's spending cap counts known costs only: --prices needs an input and an output "
                        f"price for {[f'{PROVIDER}:{model}' for model in unpriced]}")
+    if unpriced and args.start:
+        raise KitError(f"--prices needs an input and an output price for {PROVIDER}:{args.frontier}")
     if unpriced:
         warnings.append(f"no input and output price for {[f'{PROVIDER}:{model}' for model in unpriced]}: "
                         "their costs will be recorded as unknown")
@@ -333,6 +342,116 @@ def build(args) -> tuple[list[tuple[Path, str, int]], str, list[str], list[str]]
     notes.insert(0, f"provider key from the {key_name} line of {shown(args.key_file)} (not shown), "
                     f"tenant {tenant!r}, frontier {args.frontier}")
     return files, token, notes, warnings
+
+
+def check_docker(port: int) -> tuple[str, dict[str, str]]:
+    binary = shutil.which("docker")
+    desktop = Path.home() / ".docker" / "bin"
+    if binary is None:
+        binary = shutil.which("docker", path=str(desktop))
+    if binary is None:
+        raise KitError("Docker was not found. Install Docker with Compose, start it, and run this command again.")
+    env = {**os.environ, "TINE_HOST_PORT": str(port),
+           "PATH": str(Path(binary).parent) + os.pathsep + os.environ.get("PATH", "")}
+    for arguments, failure in (
+        (("compose", "version"), "Docker Compose is unavailable."),
+        (("version", "--format", "{{.Server.Version}}"), "Docker is installed but its daemon did not answer."),
+    ):
+        result = subprocess.run([binary, *arguments], env=env, cwd=ROOT, timeout=30,
+                                stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        if result.returncode:
+            raise KitError(f"{failure} Start Docker and run this command again.")
+    return binary, env
+
+
+def start_proxy(docker: tuple[str, dict[str, str]], port: int, token_path: Path) -> int:
+    binary, env = docker
+    print(f"Building and starting Tine on http://127.0.0.1:{port} ...", flush=True)
+    command = [binary, "compose", "-f", str(ROOT / "docker-compose.yml"), "up", "-d", "--build",
+               "--wait", "--wait-timeout", "120", "tine"]
+    result = subprocess.run(command, env=env, cwd=ROOT, timeout=1920, stdin=subprocess.DEVNULL, check=False)
+    if result.returncode:
+        raise KitError("Docker Compose could not start Tine. Check the output above or run docker compose logs tine, "
+                       "then retry with the same options.")
+    smoke = subprocess.run([sys.executable, str(ROOT / "scripts" / "container_smoke.py"), "--base-url",
+                            f"http://127.0.0.1:{port}", "--token-file", str(token_path),
+                            "--wait", "5", "--timeout", "5"], cwd=ROOT, timeout=45, check=False)
+    if smoke.returncode == 0:
+        print(f"Tine is ready at http://127.0.0.1:{port}. Tenant token file: {shown(token_path)}")
+    return smoke.returncode
+
+
+@contextmanager
+def deployment_lock(deploy: Path):
+    """Serialize changes made by the env helper without leaving a lock file."""
+    deploy.mkdir(parents=True, exist_ok=True)
+    handle = os.open(deploy, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise KitError("another container setup is in progress; retry after it finishes") from None
+        yield
+    finally:
+        os.close(handle)
+
+
+def reuse_frontier_config(files, token: str) -> None:
+    """Reuse matching setup files and complete a setup interrupted after publishing its env."""
+    (env_path, env_text, _), (token_path, _, _) = files
+    conflict = KitError("existing deployment files differ from this setup. Use the matching key, model, prices "
+                        "and tenant to retry, or manage this deployment with docker compose.")
+    if not env_path.is_file() or env_path.is_symlink() or env_path.stat().st_mode & 0o077:
+        raise conflict
+    try:
+        env = env_path.read_text(encoding="utf-8")
+        values = parse_env(env)
+        tenants = json.loads(values["TINE_TENANT_KEYS"])
+        if not isinstance(tenants, dict):
+            raise conflict
+        (existing_token,) = tenants
+        expected = parse_env(env_text)
+        expected["TINE_TENANT_KEYS"] = expected["TINE_TENANT_KEYS"].replace(f'"{token}":', f'"{existing_token}":', 1)
+        prices = values.pop("TINE_MODEL_PRICES")
+        expected_prices = json.loads(expected.pop("TINE_MODEL_PRICES"))
+        if (re.fullmatch(r"[A-Za-z0-9_-]{43}", existing_token) is None or values != expected
+                or not prices.startswith("{") or not env_safe(prices) or load_prices(prices) != expected_prices):
+            raise conflict
+        if token_path.exists() or token_path.is_symlink():
+            if (token_path.is_symlink() or not token_path.is_file() or token_path.stat().st_mode & 0o077
+                    or token_path.read_text(encoding="utf-8") != existing_token + "\n"):
+                raise conflict
+        else:
+            write_new(token_path, existing_token + "\n", 0o600)
+    except (KeyError, TypeError, ValueError, KitError):
+        raise conflict from None
+
+
+def write_configuration(deploy: Path, files, force: bool) -> str | None:
+    (deploy / "config").mkdir(exist_ok=True)
+    staged = []
+    try:
+        for path, text, mode in files:
+            # Temporary names end in .env, which deploy/.gitignore keeps out of git.
+            temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp.env")
+            staged.append((temporary, path))
+            write_new(temporary, text, mode)
+        inside = {f"/config/{path.name}": temporary for temporary, path in staged if path.parent.name == "config"}
+        skipped = check_like_the_proxy(staged[0][0].read_text(encoding="utf-8"), inside)
+        if skipped is not None and inside:
+            raise KitError("a policy is put in place only after the proxy's own start-up validation has passed, "
+                           f"and this Python cannot import the tine package ({skipped}). No file was written. "
+                           "Run this script with the development environment's Python: "
+                           ".tine-dev/venv/bin/python scripts/container_env.py ...")
+        for temporary, path in staged:
+            if force:
+                os.replace(temporary, path)
+            else:
+                os.link(temporary, path)
+        return skipped
+    finally:
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def main(argv=None) -> int:
@@ -361,39 +480,37 @@ def main(argv=None) -> int:
     parser.add_argument("--deploy-dir", type=Path, default=ROOT / "deploy",
                         help="where to write; default: this repository's deploy/")
     parser.add_argument("--force", action="store_true", help="replace an existing tine.env, token and policy file")
+    parser.add_argument("--start", action="store_true",
+                        help="start a local frontier-only proxy in Docker Compose and check it without model calls")
     args = parser.parse_args(argv)
     deploy = args.deploy_dir
-    pending: list[Path] = []
     try:
         if args.tenant is not None and not args.tenant.strip():
             raise KitError("--tenant must not be empty")
+        if args.start:
+            if (args.route_policy or args.shadow_policy or args.force or args.answer_pattern is not None
+                    or args.audit_rate is not None or args.shadow_sample_rate is not None
+                    or args.shadow_max_cost_usd is not None or deploy.resolve() != ROOT / "deploy"):
+                raise KitError("--start is for the default deploy directory and a frontier-only configuration")
+            host_port = os.environ.get("TINE_HOST_PORT") or "8000"
+            if not re.fullmatch(r"[0-9]{1,5}", host_port) or not 1 <= int(host_port) <= 65535:
+                raise KitError("TINE_HOST_PORT must be an integer from 1 to 65535")
+            port = int(host_port)
         files, token, notes, warnings = build(args)
-        existing = [path for path, _, _ in files if path.exists() or path.is_symlink()]
-        if existing and not args.force:
-            raise KitError(f"{', '.join(shown(path) for path in existing)} already exist(s). Nothing was changed. "
-                           "Pass --force to replace them. A new tenant token is made, so a running container "
-                           "must then be recreated: docker compose up -d --force-recreate")
-        (deploy / "config").mkdir(parents=True, exist_ok=True)
-        # Each file is written beside its place, checked, and only then moved into place,
-        # so a refused configuration changes nothing. The temporary names end in ".env",
-        # which deploy/.gitignore keeps out of git like the env file itself.
-        staged = []
-        for path, text, mode in files:
-            temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp.env")
-            pending.append(temporary)
-            write_new(temporary, text, mode)
-            staged.append((temporary, path))
-        inside = {f"/config/{path.name}": temporary for temporary, path in staged if path.parent.name == "config"}
-        skipped = check_like_the_proxy(staged[0][0].read_text(encoding="utf-8"), inside)
-        if skipped is not None and inside:
-            # Without a policy, every value written is one this script made or checked
-            # itself. A policy has rules that only the proxy's own code knows.
-            raise KitError("a policy is put in place only after the proxy's own start-up validation has passed, "
-                           f"and this Python cannot import the tine package ({skipped}). No file was written. "
-                           "Run this script with the development environment's Python: "
-                           ".tine-dev/venv/bin/python scripts/container_env.py ...")
-        for temporary, path in staged:
-            os.replace(temporary, path)
+        docker = check_docker(port) if args.start else None
+        with deployment_lock(deploy):
+            existing = [path for path, _, _ in files if path.exists() or path.is_symlink()]
+            if existing and args.start:
+                reuse_frontier_config(files, token)
+                print("Reusing the existing deployment and tenant token.", flush=True)
+            elif existing and not args.force:
+                raise KitError(f"{', '.join(shown(path) for path in existing)} already exist(s). Nothing was changed. "
+                               "Pass --force to replace them. A new tenant token is made, so a running container "
+                               "must then be recreated: docker compose up -d --force-recreate")
+            else:
+                skipped = write_configuration(deploy, files, args.force)
+            if args.start:
+                return start_proxy(docker, port, files[-1][0])
     except KitError as error:
         print(f"container_env: {error}", file=sys.stderr)
         return 1
@@ -401,10 +518,9 @@ def main(argv=None) -> int:
         # A folder that cannot be written, for instance. The message names a path, never a value.
         print(f"container_env: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    finally:
-        for temporary in pending:
-            if temporary.exists():
-                temporary.unlink()
+    except subprocess.TimeoutExpired:
+        print("container_env: Docker or the proxy check timed out. Retry with the same options.", file=sys.stderr)
+        return 1
     env_path, token_path = files[0][0], files[-1][0]
     print(f"Wrote {shown(env_path)} (mode 600): {notes[0]}")
     print(f"Wrote {shown(token_path)} (mode 600): the tenant token, ending in ...{token[-4:]}")

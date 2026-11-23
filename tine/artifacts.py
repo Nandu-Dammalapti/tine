@@ -40,7 +40,7 @@ def atomic_write_text(path, contents):
 
 
 @contextmanager
-def experiment_output(destination):
+def experiment_output(destination, *, artifacts=RUN_FILES):
     """Stage a run and replace its directory only after generation succeeds.
 
     A sibling advisory lock serializes cooperating writers. It stays on disk so
@@ -64,7 +64,7 @@ def experiment_output(destination):
             raise RuntimeError(f"Another experiment is writing to {destination}") from None
         if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
             raise ValueError("Experiment output must be a directory, excluding symbolic links")
-        for name in RUN_FILES:
+        for name in artifacts:
             target = destination / name
             if target.is_symlink() or (target.exists() and not target.is_file()):
                 raise ValueError(f"Experiment artifact must be a regular file: {target}")
@@ -74,7 +74,7 @@ def experiment_output(destination):
             staged.mkdir(mode=0o700)
             if destination.exists():
                 for source in destination.iterdir():
-                    if source.name in RUN_FILES:
+                    if source.name in artifacts:
                         continue
                     target = staged / source.name
                     if source.is_dir() and not source.is_symlink():

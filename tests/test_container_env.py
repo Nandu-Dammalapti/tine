@@ -52,6 +52,11 @@ def run(folder, *extra, key_file="key.txt") -> int:
                      "--deploy-dir", str(folder / "deploy"), *extra])
 
 
+def start(folder, *extra, key_file="key.txt") -> int:
+    return kit.main(["--start", "--key-file", str(folder / key_file), "--frontier", FRONTIER,
+                     "--prices", json.dumps(PRICES), *extra])
+
+
 def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
@@ -130,6 +135,110 @@ def test_force_tightens_a_file_that_was_left_readable(folder):
     (deploy / "tine.env").chmod(0o644)
     assert run(folder, "--force") == 0
     assert mode(deploy / "tine.env") == 0o600
+
+
+@pytest.fixture
+def local_start(folder, monkeypatch):
+    monkeypatch.setattr(kit, "ROOT", folder)
+    monkeypatch.setenv("TINE_HOST_PORT", "18017")
+
+
+def test_start_reuses_the_token_after_a_failed_launch(folder, local_start, capsys, monkeypatch):
+    deploy = folder / "deploy"
+    token_path = deploy / "client-token.txt"
+    docker = object()
+    launched = []
+
+    def check_docker(port):
+        assert port == 18017
+        return docker
+
+    def start_proxy(checked_docker, port, path):
+        assert checked_docker is docker
+        assert port == 18017
+        assert path == token_path
+        token = path.read_text(encoding="utf-8").strip()
+        assert json.loads(env_of(folder)["TINE_TENANT_KEYS"]) == {token: "local-test"}
+        assert mode(path) == mode(deploy / "tine.env") == 0o600
+        launched.append(token)
+        return 1 if len(launched) == 1 else 0
+
+    monkeypatch.setattr(kit, "check_docker", check_docker)
+    monkeypatch.setattr(kit, "start_proxy", start_proxy)
+    assert start(folder) == 1
+    before = (deploy / "tine.env").read_bytes()
+    assert start(folder) == 0
+    first_token, retried_token = launched
+    assert retried_token == first_token
+    assert (deploy / "tine.env").read_bytes() == before
+    printed = "".join(capsys.readouterr())
+    assert FAKE_KEY not in printed and first_token not in printed
+
+
+def test_start_recovers_missing_token_with_equivalent_prices(folder, local_start, monkeypatch):
+    monkeypatch.setattr(kit, "check_docker", lambda port: object())
+    monkeypatch.setattr(kit, "start_proxy", lambda *args: 0)
+    assert start(folder) == 0
+    token_path = folder / "deploy" / "client-token.txt"
+    original = token_path.read_bytes()
+    token_path.unlink()
+    prices = json.dumps(PRICES, sort_keys=True).replace("5.0", "5")
+
+    assert start(folder, "--prices", prices) == 0
+    assert token_path.read_bytes() == original
+    assert mode(token_path) == 0o600
+
+
+def test_start_refuses_changed_configuration_without_restarting(folder, local_start, capsys, monkeypatch):
+    launches = []
+
+    def start_proxy(*args):
+        launches.append(args)
+        return 0
+
+    monkeypatch.setattr(kit, "check_docker", lambda port: object())
+    monkeypatch.setattr(kit, "start_proxy", start_proxy)
+    assert start(folder) == 0
+    paths = [folder / "deploy" / name for name in ("tine.env", "client-token.txt")]
+    before = [path.read_bytes() for path in paths]
+
+    (folder / "other.txt").write_text("ANTHROPIC_API_KEY=changed-" + FAKE_KEY + "\n", encoding="utf-8")
+    assert start(folder, key_file="other.txt") == 1
+    assert len(launches) == 1
+    assert [path.read_bytes() for path in paths] == before
+    assert FAKE_KEY not in "".join(capsys.readouterr())
+
+
+def test_start_writes_no_credentials_when_docker_is_unavailable(folder, local_start, capsys, monkeypatch):
+    def unavailable(port):
+        raise kit.KitError("Docker daemon unavailable")
+
+    def start_proxy(*args):
+        pytest.fail("The proxy must not start after the Docker check fails")
+
+    monkeypatch.setattr(kit, "check_docker", unavailable)
+    monkeypatch.setattr(kit, "start_proxy", start_proxy)
+    assert start(folder) == 1
+    assert written(folder) == []
+    printed = "".join(capsys.readouterr())
+    assert "Docker daemon unavailable" in printed and FAKE_KEY not in printed
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--force"],
+    ["--deploy-dir", "other-deploy"],
+    ["--route-policy", "policy.json"],
+    ["--shadow-policy", "policy.json"],
+])
+def test_start_rejects_options_for_managing_existing_configuration(folder, local_start, capsys, monkeypatch,
+                                                                   arguments):
+    def check_docker(port):
+        pytest.fail("Argument validation must happen before checking Docker")
+
+    monkeypatch.setattr(kit, "check_docker", check_docker)
+    assert start(folder, *arguments) == 1
+    assert "--start is for the default deploy directory and a frontier-only configuration" in capsys.readouterr().err
+    assert written(folder) == []
 
 
 @pytest.mark.parametrize("line,name", [
