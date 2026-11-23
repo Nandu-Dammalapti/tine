@@ -623,13 +623,16 @@ runs and 65% in the server test (`results/2026-11-17-live-pilot-more`). Shadow m
   So refusals do not count toward the unknown-cost stop.
 - `TINE_SHADOW_MAX_CALLS_PER_MINUTE` caps a tenant's shadow provider calls in any 60 seconds. A run
   reserves the most calls it can make (each stage model once, plus each judge step) when it starts,
-  and gives back the ones it did not make when it ends. A sampled request whose run would pass the cap
+  and gives back the ones it did not make when it ends. Unused slots remain reserved even when a run
+  lasts longer than a minute; each sent call counts for 60 seconds from its own start, including a
+  call that later fails or times out. A sampled request whose run would pass the cap
   is skipped and counted as `skipped_rate_cap`. The proxy refuses to start when one run of a shadow
   policy can make more calls than the cap.
 - The pauses and the call count are kept in memory, in each proxy process. A restart clears them.
 - `GET /v1/shadow` also returns `shadow_paused` (provider to null, or to `{paused_until, seconds_left,
   reason}`, for each provider the tenant's shadow policies call), `shadow_max_calls_per_minute` and
-  `shadow_calls_last_minute` (null without a cap). `sampling` still says `on` during a pause.
+  `shadow_calls_last_minute` (sent calls in the last 60 seconds plus slots held for calls not yet
+  sent; null without a cap). `sampling` still says `on` during a pause.
 
 Status: built and tested with stand-in providers that answer 429 and 529, with and without
 `retry-after`, on a test clock. It met a real provider's limit once
