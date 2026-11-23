@@ -80,9 +80,32 @@ the row's token counts and answer cost (`cost_usd`) from that usage and `TINE_MO
 
 A streamed row has no baseline: `baseline_cost_usd` and routing cost stay unknown, so streams never
 count in `verified_savings_usd`. The caller may still supply both, as for any request the proxy did not
-measure. Streams are still never cached, shadowed or routed; `streamed_not_shadowed` counts them as
-before. Built and tested with stand-in streams for both providers; never used by a real customer or run
-against a real provider's stream.
+measure. Streams are never cached. Built and tested with stand-in streams for both providers; never used
+by a real customer or run against a real provider's stream.
+
+### Shadowing and routing streams
+
+`tine/streams.py` reads a relayed stream back into the reply the same request would have had without
+`stream`, and writes a buffered reply as the events a streamed caller expects. It knows text, tool calls
+and Anthropic thinking blocks. A stream that was cut off, reported an error, or holds anything else is
+not put back together, and a reply holding anything else is not written as a stream.
+
+- **Shadow mode** (`TINE_SHADOW_STREAMS`, on by default): a sampled stream is shadowed after it has
+  ended. The cheaper models are asked without `stream` and `stream_options`, and their answers are
+  compared with the frontier's reply as put back together. The frontier's cost is the stream's usage
+  cost, unknown when the stream carried none (an OpenAI caller that did not ask for
+  `include_usage`), and such a run counts in `unknown_cost_requests`. A sampled stream that cannot be put
+  back together, or any sampled stream with `TINE_SHADOW_STREAMS=0`, is counted in
+  `streamed_not_shadowed`, and nothing is called. The caller's stream is not changed or delayed.
+- **Live routing** (`TINE_ROUTE_STREAMS`, off by default): a route policy runs on streamed requests too.
+  The cheaper stages are asked without a stream. An accepted answer is written as a stream and sent with
+  `content-type: text/event-stream` and `x-tine-route: stage-N`; for OpenAI a last chunk carries the
+  usage only when the caller asked for `include_usage`. The caller's first byte therefore waits for the
+  cheaper stages and their checks, which is why it is opt-in. An accepted answer that cannot be written
+  as a stream is not served: the request goes on to the frontier and the stages' spend is its routing
+  cost. An escalated stream is relayed from the frontier as before, with the routing cost on its row. With
+  `TINE_AUDIT_RATE`, streamed requests join the holdout comparison; a held-out stream's cost is known
+  only when the stream carries usage, and a held-out request of unknown cost is left out and counted.
 
 For OpenAI-compatible usage, omitted optional cache details retain the zero-cache default. Explicitly null or malformed `prompt_tokens_details` instead leave cached tokens, estimated cost, and the automatic frontier baseline unknown, even if input/output totals are valid. The provider response still passes through unchanged; a later measured cost can be supplied through the outcome endpoint.
 
@@ -90,7 +113,22 @@ Late outcome reversals or newer resolved failures invalidate prior cached succes
 
 `TINE_ALLOWED_MODELS` can explicitly allow client-requested development alternatives, with a single frontier retry on an upstream failure before a response is emitted. Supply a JSON object of provider names and model-name arrays, for example `{"openai": ["EXACT_MODEL_NAME"]}`. Names match exactly. A string in place of an array, an unknown provider key, or an empty model name causes startup to fail before a ledger is opened. This switch is not a calibrated router. Failure after streaming starts cannot safely be retried without duplicating output. Keep it unset for frontier-only operation.
 
-This is a development implementation: SQLite is not the planned production Postgres backend. Tests use mock upstreams, not paid API calls. Do not deploy it as a production guarantee or host it on Colab. Container packaging and its limits are in [DEPLOY.md](DEPLOY.md). No live provider credentials were requested or validated during this work.
+### Postgres ledger
+
+Set `TINE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB` to keep the ledger, outcome history,
+shadow runs and drift history in Postgres instead of the SQLite file; several proxy processes can then
+share one ledger. It needs the optional driver (`pip install -e '.[postgres]'`), which the container image
+does not install as built, and Postgres 14 or later. The tables are created on first start. The same SQL
+runs on both (`tine/db.py` translates placeholders, types and the append-only trigger); writers that
+read before they write take a transaction advisory lock, as SQLite's write lock serialises them. Back it
+up with `pg_dump`: `tine backup-ledger` copies SQLite files only, and `tine billing` and
+`scripts/savings_report.py` still read a SQLite file. Each process keeps its own shadow spending cap
+figures, rate-limit pauses and metrics in memory, so with several processes the cap can be passed by
+about one run per process. The URL is never logged. Tested against a translation of every statement;
+**not yet run against a Postgres server** (`tests/test_db.py` does when `TINE_TEST_POSTGRES_URL` names an
+empty database).
+
+SQLite remains the default and the development store. Tests use mock upstreams, not paid API calls. Do not deploy it as a production guarantee or host it on Colab. Container packaging and its limits are in [DEPLOY.md](DEPLOY.md). No live provider credentials were requested or validated during this work.
 
 ### Where a baseline comes from
 
@@ -202,6 +240,24 @@ Limits:
   `results/2026-11-17-live-pilot-more` (measured saving MedQA 56%, ARC 97%, FinQA 18%). Never run on a
   customer's traffic.
 
+### Billing statement
+
+`GET /v1/billing?start=2026-11-01&end=2026-12-01` (the tenant's token), or offline
+`python -m tine billing --ledger PATH --tenant NAME --start ... --end ...`, works out what Tine would
+charge from the frontier holdout. `start` is inclusive and `end` exclusive; a date is midnight UTC.
+
+- One line per policy file (`policy_sha256`) and holdout rate (`audit_rate`, recorded on each holdout
+  row from `TINE_AUDIT_RATE`). Changing either starts a new line, so periods are never mixed. Rows
+  written before the rate was recorded form a line with `audit_rate` null.
+- A line is billed only when each side has 30 requests of known cost and no routed request's cost is
+  partly unknown (then the saving is an upper limit). Otherwise `not_billed_because` says why and its
+  amounts are null.
+- `billable_saving_usd` is the routed requests' count times the held-out mean cost times the low end of
+  the 95% interval on the saving, floored at zero. `fee_usd` is `TINE_FEE_RATE` (default 0.2) times that.
+  The point estimate is shown beside it as `saving_point_estimate_usd` and is not charged.
+- It is cost only, net of routing cost. Quality rests on the policy's certificate, not on this figure.
+  Built and tested with stand-in rows; never used to invoice anyone.
+
 ### Audit trail
 
 - Ledger rows carry `policy_sha256` and `route_stage`.
@@ -254,6 +310,34 @@ Limits:
   streamed requests (the stream is closed before any byte is relayed). The 502 for an unreachable
   upstream is unchanged, since no answer is served. Shadow runs do not start for a request that got a
   503.
+
+### Monitoring
+
+- **Metrics.** With `TINE_METRICS_TOKEN` set (16 characters or more, not a tenant token),
+  `GET /metrics` answers a caller holding it with counters in the Prometheus text format; unset, it is
+  404. They live in the process and start at zero on a restart. `tine_requests_total` counts chat
+  requests by tenant, provider, route (`stage-N`, `frontier`, `holdout`, `cache`, `none`) and status
+  class; `tine_request_seconds` is the time to response headers (for a stream, not its end);
+  `tine_ledger_unrecorded_total`, `tine_shadow_runs_total` and `tine_shadow_not_run_total` (by reason) count
+  what their names say; `tine_shadow_paused`, `tine_drift_warning` (1 warning, 0.5 notice) and
+  `tine_policy_expired` are gauges. Labels hold tenant names but no request text or token.
+- **Request log.** `tine serve` writes one line per chat request on the `tine.requests` logger: request
+  id, tenant, provider, model, route, status and seconds to headers, never the prompt or reply.
+  `TINE_LOG_FORMAT=json` writes every log line as one JSON object.
+- **Drift history.** Each change of a policy's drift check result (for example to `warning` and back)
+  is added to a `drift_events` table, with its counts, and logged as a warning. It is checked when
+  `GET /v1/shadow` is read and after every 25 stored shadow runs of a tenant. `GET /v1/shadow` lists the
+  changes under `drift_history`, so a warning that went away is still on record.
+- **Certificate expiry.** A policy may carry `expires` (an ISO date or timestamp), and
+  `TINE_POLICY_MAX_AGE_DAYS` sets a largest age after `provenance.created`; the sooner applies, and a
+  policy with a maximum age but no readable creation time counts as expired. An expired route policy is
+  not run: requests go to the frontier with `route_skip_reason` `expired: ...`,
+  `x-tine-route-skipped: expired`, no holdout and zero routing cost. An expired shadow policy is not
+  sampled. `/health` gives `expired_policies` and the log names each one at startup. Re-certifying on
+  the tenant's recent graded tasks and loading the new file is still done by hand
+  (`docs/LEARNING_LOOP.md`).
+
+Built and tested with stand-ins; never scraped by a real Prometheus or used by a customer.
 
 ### Request limits
 
@@ -402,8 +486,9 @@ More fields of `GET /v1/shadow`:
   - `rate_limited_runs`: runs in which a provider refused a call with 429 or 529, or a call was not
     sent because shadow mode had paused. Their rows are kept, so their spend is in `shadow_spend_usd`
     and `shadow_calls`, but they are not in `shadowed_requests`, the projection or the drift check.
-  - `streamed_not_shadowed`: sampled requests that streamed. Shadow mode never runs them; they are
-    counted only when they would otherwise have been shadowed.
+  - `streamed_not_shadowed`: sampled streams that were not shadowed: they could not be put back
+    together, or `TINE_SHADOW_STREAMS` is off (see Shadowing and routing streams). They are counted only
+    when they would otherwise have been shadowed.
   - `shadow_coverage`: `shadowed_requests` / `sampled_requests`, or null when nothing was sampled.
     Coverage below 1 means busy periods count for less than they should in the projection.
   - The counts start when a proxy with this version first opens the ledger, so an older ledger's
@@ -693,8 +778,8 @@ Limits to state with any number from it:
   checks below); otherwise the policy is refused at startup. For such stages the accepted answer is not
   compared with the frontier's, because two right patches rarely match word for word.
 - Projected savings use only requests whose costs are all known, so every stage model needs a price in
-  `TINE_MODEL_PRICES`. Streaming requests are never shadowed; sampled ones are counted in
-  `streamed_not_shadowed`. The streamed share of traffic caps any saving. A streamed request's own
+  `TINE_MODEL_PRICES`. Sampled streams are shadowed once they end; those that cannot be put back
+  together are counted in `streamed_not_shadowed`. A streamed request's own
   cost is recorded in the ledger when its stream carries usage (see above); that does not change these
   counts.
 - Shadow results store no prompt or response text; the request record already holds the tenant's request
@@ -721,12 +806,13 @@ tenant's provider has either a shadow policy or a route policy, never both. Run 
 - `TINE_AUDIT_RATE`: the share of requests held out for the frontier, between 0 and 1. Default 0, off
   (see Measuring the saving under live routing).
 
-For a non-streaming request that would have gone to the frontier, the proxy tries the policy's stages in
+For a request that would have gone to the frontier (a streamed one only with `TINE_ROUTE_STREAMS`; see
+Shadowing and routing streams), the proxy tries the policy's stages in
 order, with the same request and the model swapped. A stage's models are called together. If the
 stage's check passes, the first member's response is returned as it came from the provider, with
 `x-tine-model` naming it and `x-tine-route: stage-N`. If no stage is accepted, or anything in the policy
 path fails, the request goes to the frontier exactly as without a policy (`x-tine-route: frontier`).
-Streaming requests and requests for an allowlisted non-frontier model are not routed.
+Requests for an allowlisted non-frontier model are not routed, nor are streams unless `TINE_ROUTE_STREAMS` is on.
 
 Replies that are never served from a stage, whatever its check:
 

@@ -153,6 +153,13 @@ def main(argv=None):
     backup.add_argument("--output", type=Path, required=True,
                         help="File to write, with mode 600. Only its directory needs to be writable")
     backup.add_argument("--force", action="store_true", help="Replace --output if it exists")
+    bill = commands.add_parser("billing", help="Work out a tenant's billing statement from the frontier holdout")
+    bill.add_argument("--ledger", type=Path,
+                      help="Ledger SQLite file; opened read-only (default: TINE_LEDGER_PATH, as the proxy reads it)")
+    bill.add_argument("--tenant", required=True)
+    bill.add_argument("--start", help="First day or moment of the period, ISO (UTC unless it says)")
+    bill.add_argument("--end", help="Day or moment after the period, ISO")
+    bill.add_argument("--fee-rate", type=float, default=0.2, help="Share of the billable saving charged (default 0.2)")
     server = commands.add_parser("serve", help="Start the authenticated development proxy")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8000)
@@ -290,16 +297,40 @@ def main(argv=None):
         except (OSError, ValueError, sqlite3.Error) as error:
             raise SystemExit(f"tine backup-ledger: {error}") from error
         print(json.dumps(result, indent=2))
+    elif args.command == "billing":
+        import os
+        import sqlite3
+
+        from tine.ledger import DEFAULT_LEDGER_PATH, Ledger
+
+        source = args.ledger or Path(os.environ.get("TINE_LEDGER_PATH") or DEFAULT_LEDGER_PATH)
+        if not source.is_file():
+            raise SystemExit(f"tine billing: no ledger file at {source}")
+        try:
+            ledger = Ledger.__new__(Ledger)
+            ledger._lock = __import__("threading").RLock()
+            ledger._db = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)
+            ledger._db.row_factory = sqlite3.Row
+            try:
+                statement = ledger.billing(args.tenant, start=args.start, end=args.end, fee_rate=args.fee_rate)
+            finally:
+                ledger._db.close()
+        except (ValueError, sqlite3.Error) as error:
+            raise SystemExit(f"tine billing: {error}") from error
+        print(json.dumps(statement, indent=2, allow_nan=False))
     else:
         import logging
 
         import uvicorn
-        from tine.proxy import create_app
+        from tine.proxy import create_app, log_formatter
 
-        # The proxy logs each loaded policy at startup, and warnings about them. Only
-        # Tine's own loggers: httpx would log every upstream request at this level.
+        # The proxy logs each loaded policy at startup, warnings about them, and one line
+        # per request. Only Tine's own loggers: httpx would log every upstream request.
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        try:
+            handler.setFormatter(log_formatter())
+        except ValueError as error:
+            raise SystemExit(f"tine serve: the configuration was refused. {error}") from None
         tine_log = logging.getLogger("tine")
         tine_log.addHandler(handler)
         tine_log.setLevel(logging.INFO)

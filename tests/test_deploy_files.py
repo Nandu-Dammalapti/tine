@@ -214,6 +214,9 @@ def test_every_commented_out_line_validates_when_switched_on(monkeypatch, tmp_pa
     assert config.route_policies and config.tenant_checks and config.openai_api_key
     assert config.ledger_required is True and config.audit_rate == 0.05 and config.max_body_bytes == 10_485_760
     assert config.denied_fields and config.anthropic_beta_allowlist and config.allowed_models
+    # The Postgres line is checked as a setting; the proxy below opens the SQLite file.
+    assert config.database_url.startswith("postgresql://")
+    config.database_url = None
     with TestClient(create_app(config)) as client:
         assert client.get("/health").json()["routing"] == "policy"
     # With shadow sampling on as well, for the shadow-only lines.
@@ -518,7 +521,8 @@ def test_everything_the_package_imports_is_installed_by_its_declared_dependencie
     third_party = {name for name in imported if name not in sys.stdlib_module_names and name != "tine"}
     assert {"fastapi", "httpx", "pydantic", "starlette", "uvicorn", "numpy"} <= third_party
     # tabulate is optional: pandas asks for it only to print a table, and the one use is guarded.
-    for module in sorted(third_party - {"tabulate"}):
+    # psycopg is the optional "postgres" extra, imported only when TINE_DATABASE_URL is set.
+    for module in sorted(third_party - {"tabulate", "psycopg"}):
         assert module in owners, f"{module} is imported by the package and not installed here"
         assert {normal(owner) for owner in owners[module]} & installed, (
             f"tine imports {module}, which no dependency in pyproject.toml installs")

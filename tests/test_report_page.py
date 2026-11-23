@@ -1022,8 +1022,7 @@ def test_the_page_shows_what_the_sample_left_out_beside_the_projection():
     sentences = headline_sentences(None, report)
     assert sentences[1] == ("Shadow mode ran on 4 of 8 sampled requests (50.0%); the rest were skipped (3 while shadow "
                             "runs were busy and 1 because the shadow run failed), so busy periods count for less "
-                            "than they should. 2 more sampled requests were streamed, and shadow mode does not run "
-                            "streamed requests.")
+                            "than they should. 2 more sampled requests were streamed and could not be shadowed.")
     text = text_of(render(None, report, tenant="acme", generated_at="now"))
     for expected in ("Projected saving $2.70 (90.0%) Sampled requests shadow mode could have run 8 (50.0% shadowed)",
                      "Skipped because shadow runs were busy 3", "Skipped because shadowing had stopped 0",

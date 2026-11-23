@@ -32,8 +32,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat
 from starlette.background import BackgroundTask
 
 from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineError, MeasuredCostError
-from .policy import FREEZE_EDITED, answer_mode, freeze_state, run_stages_async
+from .db import is_postgres
+from .metrics import Metrics
+from .policy import FREEZE_EDITED, answer_mode, expired, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
+from .streams import StreamAssembler, replay, unstreamed, wants_usage
 from .shadow import (
     LIMIT_STATUSES, RATE_LIMITED_REASON, TOOLS_SKIP_REASON, NoAnswer, ShadowLimits, ShadowPaused, ShadowStore,
     extract_answer, has_answer, most_calls, plain_finish, refused, sampled, shadow_entries, shadow_stages,
@@ -53,6 +56,8 @@ CONNECT_TIMEOUT_SECONDS = 10.0
 # What a route policy's cheaper stages may add to one request when no deadline is set.
 # This was the upstream timeout while that was 30 seconds, and stays there.
 DEFAULT_ROUTE_DEADLINE_SECONDS = 30.0
+# How many stored shadow runs of a tenant between drift checks made without a reader.
+DRIFT_NOTE_EVERY = 25
 
 
 def _finite_number(value: Any) -> bool:
@@ -134,6 +139,9 @@ class ProxyConfig:
     openai_base_url: str = "https://api.openai.com"
     anthropic_base_url: str = "https://api.anthropic.com"
     ledger_path: str = "artifacts/ledger.sqlite3"
+    # A postgresql:// URL: the ledger is kept there instead of in ledger_path, and
+    # several proxy processes can share it. Never logged: it may hold a password.
+    database_url: str | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     allowed_models: dict[str, list[str]] = field(default_factory=dict)
     prices: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -189,9 +197,22 @@ class ProxyConfig:
     # max_body_bytes gets 413. denied_fields (provider -> top-level field names) and
     # anthropic_beta_allowlist (None: forward any anthropic-beta value) are opt-in and
     # get 400.
+    # Tine's fee: this share of the billable saving (GET /v1/billing).
+    fee_rate: float = 0.2
     max_body_bytes: int = 10_485_760
     denied_fields: dict[str, list[str]] = field(default_factory=dict)
     anthropic_beta_allowlist: list[str] | None = None
+    # Streamed requests. A sampled stream is shadowed once it has ended, from the reply
+    # it carried (shadow_streams, on by default). A route policy runs on streamed
+    # requests only with route_streams: the cheaper answer is buffered, checked and then
+    # replayed as a stream, so the caller's first byte waits for the cheaper stages.
+    shadow_streams: bool = True
+    route_streams: bool = False
+    # Monitoring. GET /metrics answers only a caller holding metrics_token (None: the
+    # endpoint is off). A policy whose certificate is older than policy_max_age_days, or
+    # past its own ``expires``, is not used: requests go to the frontier.
+    metrics_token: str | None = None
+    policy_max_age_days: float | None = None
 
     def __repr__(self) -> str:
         return "ProxyConfig(<credentials and configuration redacted>)"
@@ -215,6 +236,7 @@ class ProxyConfig:
                 "TINE_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
             ),
             ledger_path=os.environ.get("TINE_LEDGER_PATH", "artifacts/ledger.sqlite3"),
+            database_url=os.environ.get("TINE_DATABASE_URL") or None,
             timeout_seconds=_env_number("TINE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
             allowed_models=_env_json("TINE_ALLOWED_MODELS"),
             prices=_env_json("TINE_MODEL_PRICES"),
@@ -236,10 +258,15 @@ class ProxyConfig:
             route_deadline_seconds=_env_number("TINE_ROUTE_DEADLINE_SECONDS", None),
             ledger_required=_env_flag("TINE_LEDGER_REQUIRED", False),
             audit_rate=_env_number("TINE_AUDIT_RATE", 0.0),
+            fee_rate=_env_number("TINE_FEE_RATE", 0.2),
             max_body_bytes=_env_number("TINE_MAX_BODY_BYTES", 10_485_760, int),
             denied_fields=_env_json("TINE_DENIED_FIELDS"),
             anthropic_beta_allowlist=([value.strip() for value in betas.split(",") if value.strip()]
                                       if betas else None),
+            shadow_streams=_env_flag("TINE_SHADOW_STREAMS", True),
+            route_streams=_env_flag("TINE_ROUTE_STREAMS", False),
+            metrics_token=os.environ.get("TINE_METRICS_TOKEN") or None,
+            policy_max_age_days=_env_number("TINE_POLICY_MAX_AGE_DAYS", None),
         )
 
     def checks_for(self, tenant: str) -> dict[str, list]:
@@ -262,6 +289,8 @@ class ProxyConfig:
         if not str(self.ledger_path).strip():
             raise ValueError("TINE_LEDGER_PATH is empty: give the ledger file's path, or remove the line for the "
                              "default")
+        if self.database_url is not None and not is_postgres(self.database_url):
+            raise ValueError("TINE_DATABASE_URL must start with postgresql:// or postgres://")
         if not isinstance(self.verified_cache, bool):
             raise ValueError("verified_cache must be a boolean")
         if not isinstance(self.allowed_models, dict) or any(
@@ -308,6 +337,8 @@ class ProxyConfig:
             raise ValueError("shadow_sample_rate must be between 0 and 1")
         if not _finite_number(self.audit_rate) or not 0 <= self.audit_rate <= 1:
             raise ValueError("audit_rate must be between 0 and 1")
+        if not _finite_number(self.fee_rate) or not 0 <= self.fee_rate <= 1:
+            raise ValueError("TINE_FEE_RATE must be between 0 and 1")
         if self.shadow_max_cost_usd is not None and (
                 not _finite_number(self.shadow_max_cost_usd) or self.shadow_max_cost_usd < 0):
             raise ValueError("shadow_max_cost_usd must be a finite nonnegative amount")
@@ -320,6 +351,15 @@ class ProxyConfig:
             raise ValueError("route_estimate_baseline must be a boolean")
         if not isinstance(self.ledger_required, bool):
             raise ValueError("ledger_required must be a boolean")
+        if self.metrics_token is not None and (not isinstance(self.metrics_token, str) or len(self.metrics_token) < 16
+                                               or self.metrics_token in self.tenant_keys):
+            raise ValueError("TINE_METRICS_TOKEN must be at least 16 characters and not a tenant token")
+        if self.policy_max_age_days is not None and (
+                not _finite_number(self.policy_max_age_days) or self.policy_max_age_days <= 0):
+            raise ValueError("TINE_POLICY_MAX_AGE_DAYS must be a positive number of days")
+        for name in ("shadow_streams", "route_streams"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
         if self.route_policies_sha256 is not None and (
                 not isinstance(self.route_policies_sha256, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", self.route_policies_sha256)):
@@ -624,6 +664,7 @@ def _policy_summary(policy: dict, config: ProxyConfig) -> dict:
     """What an operator needs to know about a loaded policy, for the log and /v1/shadow."""
     reader = _answer_reader(policy, config)
     summary = {"task_type": policy.get("task_type"), "cheaper_stages": len(policy["stages"]),
+               "expired": expired(policy, config.policy_max_age_days),
                "answer_reader": reader, "answer_compare": answer_mode(policy), "freeze_digest": freeze_state(policy)}
     if reader["answer_pattern"] is None and any(stage["check"] == "agreement" for stage in policy["stages"]):
         summary["warning"] = ("agreement stages with no answer reader: whole reply texts are compared, so cheaper "
@@ -646,6 +687,36 @@ class _Watched:
         self.post = post
 
 
+class JsonLogFormatter(logging.Formatter):
+    """One JSON object per log line: time, level, logger, message, and the fields a
+    request line carries under ``tine``."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = {"time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"), "level": record.levelname,
+                "logger": record.name, "message": record.getMessage(), **getattr(record, "tine", {})}
+        if record.exc_info:
+            line["exception"] = self.formatException(record.exc_info)
+        return json.dumps(line, default=str, ensure_ascii=False)
+
+
+def log_formatter() -> logging.Formatter:
+    """How ``tine serve`` writes its log: ``TINE_LOG_FORMAT=json`` for one JSON object
+    per line, else plain text. Request lines (logger ``tine.requests``) carry their
+    fields in either form."""
+    choice = os.environ.get("TINE_LOG_FORMAT", "text").strip().lower() or "text"
+    if choice == "json":
+        return JsonLogFormatter()
+    if choice != "text":
+        raise ValueError("TINE_LOG_FORMAT must be text or json")
+
+    class Text(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            text = super().format(record)
+            fields = getattr(record, "tine", None)
+            return f"{text} {json.dumps(fields, default=str)}" if fields else text
+    return Text("%(levelname)s:     %(name)s: %(message)s")
+
+
 def _upstream_url(base: str, path: str) -> str:
     base = base.rstrip("/")
     return base + (path[3:] if base.endswith("/v1") and path.startswith("/v1/") else path)
@@ -661,7 +732,7 @@ def create_app(
 ) -> FastAPI:
     config = config or ProxyConfig.from_env()
     config.validate()
-    store = ledger if ledger is not None else Ledger(config.ledger_path)
+    store = ledger if ledger is not None else Ledger(config.database_url or config.ledger_path)
     timeout = httpx.Timeout(config.timeout_seconds, connect=min(config.timeout_seconds, CONNECT_TIMEOUT_SECONDS))
     upstream = client if client is not None else httpx.AsyncClient(timeout=timeout)
     # Everything a policy does (cheaper stages, webhooks, judge calls, in shadow mode
@@ -689,6 +760,41 @@ def create_app(
 
     app = FastAPI(title="Tine development proxy", lifespan=lifespan)
     app.state.ledger = store
+    metrics = Metrics()
+    app.state.metrics = metrics
+    for name, kind, text in (
+            ("tine_requests_total", "counter", "Chat requests answered, by tenant, provider, route and status class"),
+            ("tine_request_seconds", "histogram", "Time from a chat request's arrival to its response headers"),
+            ("tine_ledger_unrecorded_total", "counter", "Answers whose ledger row could not be written"),
+            ("tine_shadow_runs_total", "counter", "Shadow runs stored, by tenant"),
+            ("tine_shadow_not_run_total", "counter", "Sampled requests not shadowed, by tenant and reason"),
+            ("tine_shadow_paused", "gauge", "1 while shadow mode is paused on a provider for its rate limit"),
+            ("tine_drift_warning", "gauge", "1 while a policy's last drift check was a warning, 0.5 for a notice"),
+            ("tine_policy_expired", "gauge", "1 for a loaded policy whose certificate has expired")):
+        metrics.describe(name, kind, text)
+    requests_log = logging.getLogger("tine.requests")
+
+    @app.middleware("http")
+    async def observe(request: Request, call_next):
+        started = time.monotonic()
+        response = await call_next(request)
+        provider = {"/v1/chat/completions": "openai", "/v1/messages": "anthropic"}.get(request.url.path)
+        if provider is not None and request.method == "POST":
+            seconds = time.monotonic() - started
+            identity = getattr(request.state, "tenant", None) or "unauthenticated"
+            route = ("cache" if response.headers.get("x-tine-cache") == "hit"
+                     else response.headers.get("x-tine-route", "none"))
+            status = f"{response.status_code // 100}xx"
+            metrics.inc("tine_requests_total", tenant=identity, provider=provider, route=route, status=status)
+            metrics.observe("tine_request_seconds", seconds, provider=provider, route=route)
+            if response.headers.get("x-tine-ledger") == "unavailable":
+                metrics.inc("tine_ledger_unrecorded_total", tenant=identity)
+            # One line per request, with nothing from the request or reply text.
+            requests_log.info("request", extra={"tine": {
+                "request_id": response.headers.get("x-tine-request-id"), "tenant": identity, "provider": provider,
+                "model": response.headers.get("x-tine-model"), "route": route, "status": response.status_code,
+                "seconds_to_headers": round(seconds, 4)}})
+        return response
     shadow_on = bool(config.shadow_policies) and config.shadow_sample_rate > 0
     shadow_store = ShadowStore(store) if shadow_on else None
     if shadow_store is not None:
@@ -719,6 +825,9 @@ def create_app(
                          summary["answer_compare"], summary["freeze_digest"])
                 if "warning" in summary:
                     log.warning("%s policy for tenant %r on %s: %s", label, name, provider, summary["warning"])
+                if expired(policy, config.policy_max_age_days):
+                    log.warning("%s policy for tenant %r on %s is not used: %s", label, name, provider,
+                                expired(policy, config.policy_max_age_days))
                 if summary["freeze_digest"] == FREEZE_EDITED:
                     log.warning("%s policy for tenant %r on %s was edited after freezing: its content does not "
                                 "match the digest tine freeze-policy wrote, so its guarantee is only what the file "
@@ -753,12 +862,35 @@ def create_app(
         token = authorization[7:] if authorization.startswith("Bearer ") else request.headers.get("x-api-key", "")
         for candidate, identity in config.tenant_keys.items():
             if hmac.compare_digest(token.encode("utf-8"), candidate.encode("utf-8")):
+                request.state.tenant = identity
                 return identity
         raise HTTPException(status_code=401, detail="Invalid tenant credentials")
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "routing": routing_mode, "storage": "sqlite-development", "shadow": shadow_mode}
+        expired_count = sum(bool(expired(policy, config.policy_max_age_days))
+                            for policies in (config.route_policies, config.shadow_policies)
+                            for by_provider in policies.values() for policy in by_provider.values())
+        return {"status": "ok", "routing": routing_mode, "storage": "postgres" if getattr(store, "backend", "sqlite") == "postgres" else "sqlite-development", "shadow": shadow_mode,
+                "expired_policies": expired_count}
+
+    @app.get("/metrics")
+    async def metrics_endpoint(request: Request):
+        if config.metrics_token is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        authorization = request.headers.get("authorization", "")
+        token = authorization[7:] if authorization.startswith("Bearer ") else ""
+        if not hmac.compare_digest(token.encode("utf-8"), config.metrics_token.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="Invalid metrics credentials")
+        for label, policies in (("route", config.route_policies), ("shadow", config.shadow_policies)):
+            for name, by_provider in policies.items():
+                for provider, policy in by_provider.items():
+                    metrics.set("tine_policy_expired", float(bool(expired(policy, config.policy_max_age_days))),
+                                tenant=name, provider=provider, mode=label)
+        if shadow_limits is not None:
+            for provider in ("openai", "anthropic"):
+                metrics.set("tine_shadow_paused", float(shadow_limits.paused(provider) is not None), provider=provider)
+        return Response(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.patch("/v1/outcomes/{request_id}")
     async def outcome(request_id: str, update: OutcomeUpdate, identity: str = Depends(tenant)):
@@ -784,6 +916,13 @@ def create_app(
     async def savings(identity: str = Depends(tenant)):
         return store.report(identity)
 
+    @app.get("/v1/billing")
+    async def billing(start: str | None = None, end: str | None = None, identity: str = Depends(tenant)):
+        try:
+            return store.billing(identity, start=start, end=end, fee_rate=config.fee_rate)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+
     @app.get("/v1/shadow")
     async def shadow_report(identity: str = Depends(tenant)):
         if shadow_store is None:
@@ -797,8 +936,29 @@ def create_app(
                    for name in _providers_reached(provider, policy, config.checks_for(identity))}
         # Differing answers are checked per policy: each provider's policy on the requests
         # run with it, against its own quality limit and drift baseline.
-        return {**shadow_store.report(identity, policies=config.shadow_policies.get(identity, {})),
-                "sampling": sampling, "policies": policies, **shadow_limits.report(identity, reached)}
+        report = shadow_store.report(identity, policies=config.shadow_policies.get(identity, {}))
+        note_drift(identity, report)
+        return {**report, "sampling": sampling, "policies": policies, **shadow_limits.report(identity, reached),
+                "drift_history": shadow_store.drift_history(identity)}
+
+    # Shadow runs stored per tenant since start; every DRIFT_NOTE_EVERY-th one checks for
+    # drift, so a change is stored even when nobody reads the shadow report.
+    stored_runs: dict[str, int] = {}
+
+    def note_drift(identity: str, report: dict | None = None) -> None:
+        try:
+            if report is None:
+                report = shadow_store.report(identity, policies=config.shadow_policies.get(identity, {}))
+            for change in shadow_store.note_drift(identity, report):
+                log.warning("drift check for tenant %r, %s policy: now %s (%s differing of %s compared)", identity,
+                            change["policy"], change["status"], change["drift_differing"], change["drift_compared"])
+            results = report.get("drift_policies") or (
+                {report["drift_policy"]: report} if report.get("drift_policy") is not None else {})
+            for label, result in results.items():
+                level = {"warning": 1.0, "notice": 0.5}.get(result.get("drift_check"), 0.0)
+                metrics.set("tine_drift_warning", level, tenant=identity, policy=label)
+        except Exception:
+            log.warning("drift check for tenant %r could not be stored", identity)
 
     def price(provider: str, model: str, payload) -> float | None:
         return _cost(config, provider, model, _usage(provider, payload)) if isinstance(payload, dict) else None
@@ -934,6 +1094,10 @@ def create_app(
             if not limited:
                 for name in reached:
                     shadow_limits.succeeded(name)
+            metrics.inc("tine_shadow_runs_total", tenant=identity)
+            stored_runs[identity] = stored_runs.get(identity, 0) + 1
+            if stored_runs[identity] % DRIFT_NOTE_EVERY == 0:
+                note_drift(identity)
         except Exception:
             count_safely(identity, "failed")
             return
@@ -945,6 +1109,7 @@ def create_app(
 
     def count_safely(identity: str, name: str) -> None:
         # A count that cannot be written must not reach the caller or the shadow run.
+        metrics.inc("tine_shadow_not_run_total", tenant=identity, reason=name)
         try:
             shadow_store.count(identity, name)
         except Exception:
@@ -1081,7 +1246,11 @@ def create_app(
         # The named checks the policy ran, for the ledger row: unknown unless its stages ran.
         routing_checks: list | None = None
         route = config.route_policies.get(identity, {}).get(provider)
-        routable = route is not None and bool(route["stages"]) and not stream and selected == frontier
+        routable = (route is not None and bool(route["stages"]) and (not stream or config.route_streams)
+                    and selected == frontier)
+        # The cheaper stages are always asked without a stream; a streamed caller gets
+        # the accepted answer replayed as one.
+        stage_body = unstreamed(body) if stream else body
         # The frontier holdout: with an audit rate, every request the policy could serve
         # is in one of two groups. A held-out one skips the policy and goes to the
         # frontier with nothing spent on routing. The salt keeps this choice apart from
@@ -1092,22 +1261,31 @@ def create_app(
         # has an agreement stage: cheaper models cannot agree on tool calls. Nothing is
         # spent on the way, and the ledger row says why.
         route_skip = TOOLS_SKIP_REASON if routable and not holdout and skips_for_tools(route, body) else None
+        # A policy whose certificate has run out is not used, and the row says why.
+        stale = expired(route, config.policy_max_age_days) if routable else None
+        if stale is not None:
+            holdout, route_skip = None, stale
         if route_skip is not None or holdout:
             routing_spent = 0.0
         # Only a policy whose stages were tried traces its row to the policy file.
         routing_ran = routable and route_skip is None and not holdout
         if routing_ran:
             try:
-                call, named_checks = stage_tools(identity, provider, route, body, url, headers,
+                call, named_checks = stage_tools(identity, provider, route, stage_body, url, headers,
                                                  request_id=request_id, mode="route")
                 routed = await run_stages_async(route, call, checks=named_checks, deadline_seconds=route_deadline)
                 spent = [entry["cost_usd"] for entry in (*routed["calls"], *routed["checks"])]
                 total = None if any(value is None for value in spent) else math.fsum(spent)
             except Exception:
                 routed = None
+            replayed = None
+            if routed is not None and routed["accepted"] and stream:
+                # An answer that cannot be written as a stream is not served: the request
+                # goes on to the frontier, with what the stages spent as routing cost.
+                replayed = replay(provider, routed["result"]["payload"], include_usage=wants_usage(body))
             if routed is not None:
                 routing_checks = routed["checks"]
-                if routed["accepted"]:
+                if routed["accepted"] and (not stream or replayed is not None):
                     served, result = routed["served_by"], routed["result"]
                     answer_cost = result["cost_usd"]
                     tokens = _usage(provider, result["payload"])
@@ -1122,18 +1300,19 @@ def create_app(
                         # says which model answered.
                         tenant=identity, provider=provider, model=served, requested_model=requested,
                         request_body=body, request_id=request_id, cache_context=cache_context,
-                        response_body=result["payload"], upstream_status=200,
+                        response_body=result["payload"], upstream_status=200, stream=stream,
                         input_tokens=tokens["input_tokens"], output_tokens=tokens["output_tokens"],
                         cached_tokens=tokens["cached_tokens"], cost_usd=answer_cost,
                         routing_cost_usd=(total - answer_cost if total is not None and answer_cost is not None else None),
                         baseline_cost_usd=estimate, baseline_estimated=estimate is not None,
                         policy_sha256=policy_sha256, route_stage=routed["stage"], holdout=holdout,
-                        checks=routing_checks,
+                        audit_rate=config.audit_rate if holdout is not None else None, checks=routing_checks,
                         latency_ms=(time.monotonic() - started) * 1000)
                     if not recorded and config.ledger_required:
                         return unrecorded(request_id)
                     return Response(
-                        result["raw"], status_code=200, media_type="application/json",
+                        replayed if stream else result["raw"], status_code=200,
+                        media_type="text/event-stream" if stream else "application/json",
                         headers={"x-tine-request-id": request_id, "x-tine-model": served,
                                  "x-tine-route": f"stage-{routed['stage']}",
                                  **({"x-tine-baseline": "estimated"} if estimate is not None else {}),
@@ -1173,7 +1352,7 @@ def create_app(
             tenant=identity, provider=provider, model=selected,
             requested_model=requested, request_body=body, request_id=request_id,
             stream=stream, fallback_used=fallback, cache_context=cache_context, route_skip_reason=route_skip,
-            holdout=holdout,
+            holdout=holdout, audit_rate=config.audit_rate if holdout is not None else None,
             # A route policy ran and sent the request on to the frontier.
             **({"policy_sha256": policy_sha256, "route_stage": "frontier", "checks": routing_checks}
                if routing_ran else {}),
@@ -1196,6 +1375,8 @@ def create_app(
                 result_headers[key] = response.headers[key]
 
         shadow_policy = config.shadow_policies.get(identity, {}).get(provider) if shadow_on else None
+        if shadow_policy is not None and expired(shadow_policy, config.policy_max_age_days):
+            shadow_policy = None
         # Whether a shadow run would have been started for this request, had it not streamed.
         shadow_due = (shadow_policy is not None and shadow_policy["stages"] and selected == frontier
                       and not fallback and response.status_code < 400 and sampled(request_id, config.shadow_sample_rate))
@@ -1205,17 +1386,40 @@ def create_app(
             # when the stream ends, if it carried usage. Otherwise they stay unknown
             # until supplied through the outcome endpoint. The baseline and routing
             # cost stay unknown either way.
-            recorded = record_safely(**common, upstream_status=response.status_code)
+            recorded = record_safely(**common, upstream_status=response.status_code, routing_cost_usd=routing_spent)
             if not recorded and config.ledger_required:
                 await response.aclose()
                 return unrecorded(request_id)
             result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
-            # Shadow mode does not run streamed requests. A sampled one is counted, so
-            # that the shadow report says how much of the sample it could not see.
-            streamed = BackgroundTask(count_safely, identity, "streamed") if shadow_due else None
+            if route is not None and route["stages"] and config.route_streams:
+                result_headers["x-tine-route"] = "holdout" if holdout else "frontier"
+            if route_skip is not None:
+                result_headers["x-tine-route-skipped"] = "expired" if route_skip.startswith("expired") else "tools"
 
             usage = _StreamUsage(provider)
             priced_model = None if fallback else selected
+            # A sampled stream is shadowed after it has ended, from the reply it carried.
+            # One that cannot be put back together (cut off, an error event, a kind of
+            # content this proxy does not read), or any stream when shadow_streams is
+            # off, is counted, so that the shadow report says how much it could not see.
+            assembler = StreamAssembler(provider) if shadow_due and config.shadow_streams else None
+
+            async def shadow_stream() -> None:
+                payload = assembler.payload() if assembler is not None else None
+                if payload is None:
+                    count_safely(identity, "streamed")
+                    return
+                tokens = usage.tokens()
+                cost = _cost(config, provider, selected, tokens) if tokens is not None else None
+                if skips_for_tools(shadow_policy, body):
+                    await record_skipped(request_id=request_id, identity=identity, provider=provider,
+                                         policy=shadow_policy, frontier_cost=cost, reason=TOOLS_SKIP_REASON)
+                    return
+                await run_shadow(request_id=request_id, identity=identity, provider=provider, policy=shadow_policy,
+                                 body=unstreamed(body), url=url, headers=dict(headers), frontier_payload=payload,
+                                 frontier_cost=cost)
+
+            streamed = BackgroundTask(shadow_stream) if shadow_due else None
 
             def fill_usage() -> None:
                 # Also after a stream that broke off: what usage arrived is kept, and
@@ -1238,6 +1442,8 @@ def create_app(
                 try:
                     async for chunk in response.aiter_bytes():
                         usage.feed(chunk)
+                        if assembler is not None:
+                            assembler.feed(chunk)
                         yield chunk
                 finally:
                     try:
@@ -1281,7 +1487,7 @@ def create_app(
         if route is not None and route["stages"] and not stream:
             result_headers["x-tine-route"] = "holdout" if holdout else "frontier"
         if route_skip is not None:
-            result_headers["x-tine-route-skipped"] = "tools"
+            result_headers["x-tine-route-skipped"] = "expired" if route_skip.startswith("expired") else "tools"
         result_headers["x-tine-ledger"] = "recorded" if recorded else "unavailable"
         background = None
         if shadow_due and isinstance(payload, dict):

@@ -334,7 +334,7 @@ def _coverage_sentence(shadow: dict | None) -> str | None:
                      "so busy periods count for less than they should")
     if streamed:
         parts.append(f"{count(streamed)} more sampled {'request was' if streamed == 1 else 'requests were'} "
-                     "streamed, and shadow mode does not run streamed requests")
+                     "streamed and could not be shadowed")
     return ". ".join(parts) + "." if parts else None
 
 

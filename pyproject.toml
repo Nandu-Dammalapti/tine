@@ -13,6 +13,10 @@ dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "httpx>=0.27,<1",
 ]
 
+[project.optional-dependencies]
+# A Postgres ledger (TINE_DATABASE_URL). Not in the container image as built.
+postgres = ["psycopg[binary]>=3.2,<4"]
+
 [project.scripts]
 tine = "tine.__main__:main"
 

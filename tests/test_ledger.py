@@ -782,3 +782,93 @@ def test_backup_ledger_command_writes_only_beside_its_output(tmp_path):
     assert sorted(item.name for item in path.parent.iterdir()) == [
         "copy.sqlite3", "ledger.sqlite3", "ledger.sqlite3-shm", "ledger.sqlite3-wal"]
     ledger.close()
+
+
+def holdout_rows(ledger, *, rate=0.5, digest="a" * 64, routed_unknown=0):
+    """30 held-out requests at $0.20 and 30 routed: half $0.006, half $0.206."""
+    for _ in range(30):
+        ledger.record(tenant="a", provider="openai", model="frontier", request_body={"messages": []},
+                      cost_usd=0.2, routing_cost_usd=0.0, holdout=True, audit_rate=rate, policy_sha256=digest)
+    for number in range(30):
+        hard = number % 2
+        ledger.record(tenant="a", provider="openai", model="frontier" if hard else "small", request_body={"messages": []},
+                      cost_usd=0.2 if hard else 0.002, routing_cost_usd=0.006 if hard else 0.004, holdout=False,
+                      audit_rate=rate, policy_sha256=digest)
+    for _ in range(routed_unknown):
+        ledger.record(tenant="a", provider="openai", model="frontier", request_body={"messages": []},
+                      cost_usd=0.2, routing_cost_usd=None, holdout=False, audit_rate=rate, policy_sha256=digest)
+
+
+def test_a_billing_statement_charges_the_fee_on_the_low_end_of_the_holdout_interval():
+    import statistics
+    ledger = Ledger()
+    holdout_rows(ledger)
+    statement = ledger.billing("a")
+    (line,) = statement["lines"]
+    estimate = line["holdout_estimate"]
+    assert line["billable"] and line["routed_requests"] == 30 and line["holdout_requests"] == 30
+    assert estimate["saving_fraction"] == pytest.approx(0.47)
+    low = estimate["saving_fraction_low"]
+    assert 0 < low < 0.47
+    assert line["estimated_frontier_cost_of_routed_usd"] == pytest.approx(6.0)
+    assert line["billable_saving_usd"] == pytest.approx(6.0 * low)
+    assert line["saving_point_estimate_usd"] == pytest.approx(6.0 * 0.47)
+    assert statement["fee_usd"] == pytest.approx(0.2 * 6.0 * low)
+    assert line["routed_spend_usd"] == pytest.approx(statistics.fsum([0.006] * 15 + [0.206] * 15))
+    assert ledger.billing("b")["lines"] == [] and ledger.billing("b")["fee_usd"] == 0.0
+
+
+def test_billing_keeps_rates_apart_and_does_not_bill_an_upper_limit_or_a_small_group():
+    ledger = Ledger()
+    holdout_rows(ledger, rate=0.5)
+    holdout_rows(ledger, rate=0.1, routed_unknown=1)
+    ledger.record(tenant="a", provider="openai", model="frontier", request_body={"messages": []},
+                  cost_usd=0.2, routing_cost_usd=0.0, holdout=True, audit_rate=0.3, policy_sha256="a" * 64)
+    lines = {line["audit_rate"]: line for line in ledger.billing("a")["lines"]}
+    assert set(lines) == {0.1, 0.3, 0.5}
+    assert lines[0.5]["billable"] and not lines[0.1]["billable"] and not lines[0.3]["billable"]
+    assert "upper limit" in lines[0.1]["not_billed_because"] and lines[0.1]["fee_usd"] is None
+    assert "fewer than 30" in lines[0.3]["not_billed_because"]
+    assert ledger.billing("a")["unbilled_lines"] == 2
+
+
+def test_billing_reads_only_the_period_and_refuses_bad_dates():
+    ledger = Ledger()
+    holdout_rows(ledger)
+    assert ledger.billing("a", end="2000-01-01")["lines"] == []
+    assert ledger.billing("a", start="2000-01-01", end="2999-01-01")["lines"][0]["billable"]
+    for bad in ({"start": "yesterday"}, {"start": "2026-12-01", "end": "2026-11-01"}):
+        with pytest.raises(ValueError):
+            ledger.billing("a", **bad)
+    with pytest.raises(ValueError, match="audit_rate"):
+        ledger.record(tenant="a", provider="openai", model="m", request_body={}, audit_rate=0.5)
+
+
+def test_the_billing_endpoint_and_command_give_the_statement(tmp_path, capsys):
+    import asyncio
+    import json
+
+    import httpx
+
+    from tine.__main__ import main
+    from tine.proxy import ProxyConfig, create_app
+
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path)
+    holdout_rows(ledger)
+
+    async def scenario():
+        app = create_app(ProxyConfig(tenant_keys={"t": "a"}, fee_rate=0.1), ledger=ledger)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+            auth = {"authorization": "Bearer t"}
+            good = await client.get("/v1/billing", params={"start": "2000-01-01"}, headers=auth)
+            bad = await client.get("/v1/billing", params={"start": "soon"}, headers=auth)
+            anonymous = await client.get("/v1/billing")
+            return good, bad, anonymous
+    good, bad, anonymous = asyncio.run(scenario())
+    assert good.status_code == 200 and good.json()["fee_rate"] == 0.1 and good.json()["lines"][0]["billable"]
+    assert bad.status_code == 400 and anonymous.status_code == 401
+    ledger.close()
+    main(["billing", "--ledger", str(path), "--tenant", "a"])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["fee_rate"] == 0.2 and printed["fee_usd"] == pytest.approx(2 * good.json()["fee_usd"])

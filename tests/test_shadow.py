@@ -481,7 +481,7 @@ def test_a_limit_per_tenant_keeps_one_busy_tenant_from_taking_every_slot():
             create_app(config(shadow_max_concurrent_per_tenant=bad), ledger=Ledger())
 
 
-def test_a_sampled_request_that_streamed_is_counted_and_not_shadowed():
+def test_a_sampled_stream_that_cannot_be_put_back_together_is_counted_and_not_shadowed():
     seen = []
     # One stream carries usage and one does not: a known cost changes none of the counts.
     streams = [b'data: {"usage": null}\n\ndata: {"choices": [], "usage": {"prompt_tokens": 1000, '
@@ -884,3 +884,40 @@ def test_a_proxy_restarted_with_the_policy_frozen_again_keeps_the_drift_warning(
     assert (healthy["drift_requests"], healthy["drift_differing"], healthy["drift_other_policy_requests"]) == (45, 40, 0)
     assert (healthy["accepted_differing_from_frontier"], healthy["accepted_matching_frontier"],
             healthy["accepted_compared_with_frontier"]) == (40, 5, 45)
+
+
+def test_a_sampled_stream_is_shadowed_from_the_reply_it_carried_and_can_be_turned_off():
+    stream = (b'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"B"}}]}\n\n'
+              b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+              b'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":1000}}\n\n'
+              b'data: [DONE]\n\n')
+
+    def run_one(app_config):
+        seen = []
+
+        async def provider(request):
+            sent = json.loads(request.content)
+            seen.append(sent["model"])
+            if sent.get("stream"):
+                return httpx.Response(200, content=stream, headers={"content-type": "text/event-stream"})
+            assert "stream_options" not in sent
+            return httpx.Response(200, json=reply("B"))
+
+        async def scenario():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+                app = create_app(app_config, ledger=Ledger(), client=upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tine") as client:
+                    headers = {"authorization": "Bearer token-a"}
+                    response = await client.post("/v1/chat/completions", headers=headers, json={
+                        "model": "frontier", "stream": True, "stream_options": {"include_usage": True},
+                        "messages": [{"role": "user", "content": "q"}]})
+                    assert response.content == stream
+                    return (await client.get("/v1/shadow", headers=headers)).json()
+        return asyncio.run(scenario()), seen
+
+    body, seen = run_one(config())
+    assert seen == ["frontier", "small-a", "small-b"]
+    assert body["shadowed_requests"] == 1 and body["streamed_not_shadowed"] == 0
+    assert body["accepted_matching_frontier_share"] == 1.0 and body["frontier_cost_usd"] == pytest.approx(0.2)
+    body, seen = run_one(config(shadow_streams=False))
+    assert seen == ["frontier"] and body["streamed_not_shadowed"] == 1 and body["shadowed_requests"] == 0

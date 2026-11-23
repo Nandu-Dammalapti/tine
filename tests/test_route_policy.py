@@ -1012,7 +1012,7 @@ def test_a_routed_row_names_the_policy_file_and_the_stage_that_answered(monkeypa
     _, escalated = ask(routed, world({"small-a": "41", "small-b": "42", "frontier": "42"}, []))
     assert (served["policy_sha256"], served["route_stage"]) == (canonical, "0")
     assert (escalated["policy_sha256"], escalated["route_stage"]) == (canonical, "frontier")
-    # No policy ran: a streamed request, a tenant without one, a policy with no stages.
+    # No policy ran: a streamed request (route_streams is off), a tenant without one, a policy with no stages.
     _, streamed = ask(routed, world({"frontier": "42"}, []),
                       body={"model": "frontier", "stream": True, "messages": [{"role": "user", "content": "q"}]})
     _, unrouted = ask(config(), world({"frontier": "42"}, []))
@@ -1206,6 +1206,7 @@ def test_the_holdout_estimate_reaches_the_savings_endpoint_with_its_interval(mon
                                          bodies)
     assert [row["holdout"] for row in rows] == [1] * 30 + [0] * 30
     assert {reply.headers["x-tine-route"] for reply in replies[30:]} == {"stage-0", "frontier"}
+    assert {row["audit_rate"] for row in rows} == {0.5}
     estimate = savings["holdout_estimate"]
     assert estimate["holdout_requests"] == 30 == estimate["routed_requests"]
     assert estimate["routed_mean_cost_usd"] == pytest.approx(0.106)
@@ -1271,3 +1272,54 @@ def test_the_audit_rate_is_read_from_the_environment(monkeypatch):
     assert ProxyConfig.from_env().audit_rate == 0.0
     monkeypatch.setenv("TINE_AUDIT_RATE", "0.05")
     assert ProxyConfig.from_env().audit_rate == 0.05
+
+
+def stream_world(answers, seen, frontier_stream):
+    """Cheaper models answer without a stream; the frontier streams ``frontier_stream``.
+    A streamed request reaching a cheaper model is a failure of the test."""
+    def handler(request):
+        sent = json.loads(request.content)
+        seen.append(sent["model"])
+        if sent["model"] == "frontier":
+            assert sent.get("stream") is True
+            return httpx.Response(200, content=frontier_stream, headers={"content-type": "text/event-stream"})
+        assert "stream" not in sent and "stream_options" not in sent
+        return httpx.Response(200, json=chat(answers[sent["model"]]))
+    return handler
+
+
+STREAM_BODY = {"model": "frontier", "stream": True, "stream_options": {"include_usage": True},
+               "messages": [{"role": "user", "content": "q"}]}
+FRONTIER_STREAM = (b'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"42"}}]}\n\n'
+                   b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                   b'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":1000}}\n\n'
+                   b'data: [DONE]\n\n')
+
+
+def test_a_streamed_request_is_routed_only_when_route_streams_is_on_and_gets_the_answer_as_a_stream():
+    from tine.streams import StreamAssembler
+    seen = []
+    on = config(route_policies={"a": {"openai": AGREE}}, route_streams=True)
+    response, row = ask(on, stream_world({"small-a": "42", "small-b": "42"}, seen, FRONTIER_STREAM), body=STREAM_BODY)
+    assert seen == ["small-a", "small-b"] and response.headers["x-tine-route"] == "stage-0"
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assembler = StreamAssembler("openai")
+    assembler.feed(response.content)
+    assert assembler.payload()["choices"][0]["message"]["content"] == "42"
+    assert assembler.payload()["usage"] == {"prompt_tokens": 1000, "completion_tokens": 1000}
+    assert row["stream"] == 1 and row["model"] == "small-a" and row["route_stage"] == "0"
+    # Off (the default), the policy does not run on streams.
+    seen.clear()
+    _, row = ask(config(route_policies={"a": {"openai": AGREE}}),
+                 stream_world({"small-a": "42", "small-b": "42"}, seen, FRONTIER_STREAM), body=STREAM_BODY)
+    assert seen == ["frontier"] and row["route_stage"] is None
+
+
+def test_an_escalated_stream_relays_the_frontier_and_records_the_routing_cost():
+    seen = []
+    on = config(route_policies={"a": {"openai": AGREE}}, route_streams=True)
+    response, row = ask(on, stream_world({"small-a": "41", "small-b": "42"}, seen, FRONTIER_STREAM), body=STREAM_BODY)
+    assert seen == ["small-a", "small-b", "frontier"] and response.content == FRONTIER_STREAM
+    assert response.headers["x-tine-route"] == "frontier" and row["route_stage"] == "frontier"
+    # 2,000 tokens each at $1 and $2 per million; the frontier's cost is filled when the stream ends.
+    assert row["routing_cost_usd"] == pytest.approx(0.006) and row["cost_usd"] == pytest.approx(0.2)

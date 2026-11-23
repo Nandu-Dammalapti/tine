@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .db import PostgresConnection, is_postgres
+
 
 _UNSET = object()
 MAX_TOKEN_COUNT = 2**63 - 1  # SQLite INTEGER storage limit.
@@ -57,7 +59,7 @@ HOLDOUT_SCOPE = (
     "served (TINE_AUDIT_RATE, chosen from the request id) skipped the policy and went to the frontier model. It "
     "compares the mean cost per request of the routed group (answer plus routing cost, escalations included) with "
     "that of the held-out group, so it assumes the two groups are alike; the random choice is what makes them so. "
-    "Cache hits, streamed requests and requests for an allowlisted model are in neither group. A routed request "
+    "Cache hits, requests for an allowlisted model and, unless TINE_ROUTE_STREAMS is on, streamed requests are in neither group. A routed request "
     "whose cost is not fully known (a cheaper call failed, a check raised or the route deadline ran out, and it "
     "usually escalated) is counted at its known part, so while there are any the routed mean is a lower limit "
     "and the saving an upper limit (saving_is_upper_limit); held-out requests whose cost is not known are left "
@@ -144,6 +146,8 @@ def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False
     The ledger file is never changed. When no process has it open, the read-only
     connection leaves an empty ``-wal`` and a ``-shm`` file beside it.
     """
+    if is_postgres(str(source)):
+        raise ValueError("This copies a SQLite ledger. Back up a Postgres ledger with pg_dump")
     source, output = Path(source), Path(output)
     if not source.is_file():
         raise FileNotFoundError(f"No ledger file at {source}")
@@ -236,18 +240,109 @@ def holdout_estimate(routed: list[float], holdout: list[float], *, routed_unknow
     return result
 
 
+# What Tine charges: this share of the verified saving (AGENTS.md, section 1).
+DEFAULT_FEE_RATE = 0.2
+BILLING_METHOD = (
+    "per policy file and holdout rate, in the period: the routed group's saving is its request count times "
+    "the held-out group's mean cost times the lower end of the holdout estimate's interval "
+    f"({HOLDOUT_CONFIDENCE:.0%}, saving_fraction_low), floored at zero; the fee is fee_rate times that. "
+    "Billing on the low end means a saving the sample cannot tell from noise is not charged"
+)
+BILLING_SCOPE = (
+    "a statement worked out from the frontier holdout (TINE_AUDIT_RATE): cost only, net of routing cost, and "
+    "only on requests in the comparison. A group is not billed until each side has "
+    f"{HOLDOUT_MIN_REQUESTS} requests of known cost, nor while any routed request's cost is not fully known "
+    "(the saving would be an upper limit). Held-out requests saved nothing and are not charged. Rows written "
+    "before the holdout rate was recorded form a group of their own with audit_rate null. It does not measure "
+    "quality; the quality limit rests on the policy's certificate. Development quality: review it with the "
+    "customer before it is used to invoice"
+)
+
+
+def billing_statement(rows, *, tenant: str, start: str | None, end: str | None,
+                      fee_rate: float = DEFAULT_FEE_RATE) -> dict[str, Any]:
+    """A billing statement from holdout rows (``policy_sha256``, ``audit_rate``,
+    ``holdout``, ``cost_usd``, ``routing_cost_usd``). See ``BILLING_METHOD``."""
+    if isinstance(fee_rate, bool) or not isinstance(fee_rate, (int, float)) or not 0 <= fee_rate <= 1:
+        raise ValueError("fee_rate must be between 0 and 1")
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        if row["holdout"] in (0, 1):
+            groups.setdefault((row["policy_sha256"], row["audit_rate"]), []).append(row)
+    lines = []
+    for (digest, rate), chosen in sorted(groups.items(), key=lambda item: (str(item[0][0]), item[0][1] or -1)):
+        routed, held, partial, held_unknown = [], [], [], 0
+        for row in chosen:
+            known = row["cost_usd"] is not None and row["routing_cost_usd"] is not None
+            if known:
+                (held if row["holdout"] else routed).append(row["cost_usd"] + row["routing_cost_usd"])
+            elif row["holdout"] == 0:
+                partial.append((row["cost_usd"] or 0.0) + (row["routing_cost_usd"] or 0.0))
+            else:
+                held_unknown += 1
+        estimate = holdout_estimate(routed, held, routed_unknown=partial, holdout_unknown=held_unknown)
+        count = len(routed) + len(partial)
+        reason = None
+        if estimate["saving_fraction_low"] is None:
+            reason = (f"fewer than {HOLDOUT_MIN_REQUESTS} requests of known cost on a side, or no held-out cost to "
+                      "compare with")
+        elif estimate["saving_is_upper_limit"]:
+            reason = (f"{len(partial)} routed request(s) of cost not fully known: the saving is an upper limit and "
+                      "is not billed")
+        saving = fee = baseline = point = None
+        if reason is None:
+            baseline = count * estimate["holdout_mean_cost_usd"]
+            point = baseline * estimate["saving_fraction"]
+            saving = baseline * max(0.0, estimate["saving_fraction_low"])
+            fee = fee_rate * saving
+        lines.append({
+            "policy_sha256": digest, "audit_rate": rate, "billable": reason is None, "not_billed_because": reason,
+            "routed_requests": count, "holdout_requests": len(held) + held_unknown,
+            "routed_spend_usd": _cost_sum([*routed, *partial]),
+            "estimated_frontier_cost_of_routed_usd": baseline,
+            "saving_point_estimate_usd": point, "billable_saving_usd": saving, "fee_usd": fee,
+            "holdout_estimate": estimate})
+    billable = [line for line in lines if line["billable"]]
+    return {
+        "tenant": tenant, "period_start": start, "period_end": end, "fee_rate": fee_rate,
+        "billable_saving_usd": _cost_sum(line["billable_saving_usd"] for line in billable) if billable else 0.0,
+        "fee_usd": _cost_sum(line["fee_usd"] for line in billable) if billable else 0.0,
+        "lines": lines, "unbilled_lines": len(lines) - len(billable),
+        "method": BILLING_METHOD, "scope": BILLING_SCOPE,
+    }
+
+
+def _period(value: str | None, name: str) -> str | None:
+    """A period end as an ISO timestamp in UTC, from a date or a timestamp."""
+    if value is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an ISO date or timestamp, such as 2026-11-01") from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat()
+
+
 class Ledger:
     """A single local DB can contain tenants; every read/update requires one."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
-        if str(path) != ":memory:":
-            db_path = Path(path)
-            db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if not db_path.exists():
-                db_path.touch(mode=0o600)
+        """``path`` is a SQLite file, ``:memory:``, or a ``postgresql://`` URL
+        (``tine.db``). A Postgres ledger is shared by every process that opens it."""
+        self.backend = "postgres" if is_postgres(path) else "sqlite"
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(str(path), check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        if self.backend == "postgres":
+            self._db = PostgresConnection(str(path))
+        else:
+            if str(path) != ":memory:":
+                db_path = Path(path)
+                db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if not db_path.exists():
+                    db_path.touch(mode=0o600)
+            self._db = sqlite3.connect(str(path), check_same_thread=False)
+            self._db.row_factory = sqlite3.Row
         with self._db:
             self._db.execute("PRAGMA journal_mode=WAL")
             # Serialize schema upgrades across processes, including column checks.
@@ -283,7 +378,8 @@ class Ledger:
                     policy_sha256 TEXT,
                     route_stage TEXT,
                     holdout INTEGER CHECK(holdout IN (0, 1) OR holdout IS NULL),
-                    checks_json TEXT
+                    checks_json TEXT,
+                    audit_rate REAL
                 )"""
             )
             self._db.execute(
@@ -320,6 +416,9 @@ class Ledger:
             if "holdout" not in columns:
                 # Older rows were never part of a holdout comparison.
                 self._db.execute("ALTER TABLE requests ADD COLUMN holdout INTEGER")
+            if "audit_rate" not in columns:
+                # Older holdout rows do not say at what rate they were held out.
+                self._db.execute("ALTER TABLE requests ADD COLUMN audit_rate REAL")
             if "checks_json" not in columns:
                 # Older rows did not keep the checks a route policy ran: unknown, not none.
                 self._db.execute("ALTER TABLE requests ADD COLUMN checks_json TEXT")
@@ -392,6 +491,7 @@ class Ledger:
         route_stage: int | str | None = None,
         holdout: bool | None = None,
         checks: list[dict[str, Any]] | None = None,
+        audit_rate: float | None = None,
     ) -> str:
         """Store one request. ``baseline_estimated`` marks a ``baseline_cost_usd`` that
         was worked out, not measured: the frontier model was not called for this
@@ -408,7 +508,9 @@ class Ledger:
         response text; None means no policy's stages ran or their record was lost.
 
         ``holdout`` is set only on a request in the frontier holdout comparison: True
-        when it was held out and sent to the frontier, False when it was routed."""
+        when it was held out and sent to the frontier, False when it was routed.
+        ``audit_rate`` is the holdout share in force for it (``TINE_AUDIT_RATE``), so
+        that a billing statement compares groups held out at one rate."""
         if not all(isinstance(x, str) and x for x in (tenant, provider, model)):
             raise ValueError("tenant, provider, and model must be nonempty strings")
         if not isinstance(baseline_estimated, bool) or (baseline_estimated and baseline_cost_usd is None):
@@ -430,6 +532,9 @@ class Ledger:
             raise ValueError("success must be bool or None")
         if holdout is not None and not isinstance(holdout, bool):
             raise ValueError("holdout must be bool or None")
+        if audit_rate is not None and (holdout is None or isinstance(audit_rate, bool)
+                                       or not isinstance(audit_rate, (int, float)) or not 0 < audit_rate <= 1):
+            raise ValueError("audit_rate must be above 0 and at most 1, and is set only with holdout")
         if checks is not None and (not isinstance(checks, list) or not all(isinstance(run, dict) for run in checks)):
             raise ValueError("checks must be a list of check records or None")
         if route_skip_reason is not None and (not isinstance(route_skip_reason, str) or not route_skip_reason):
@@ -487,6 +592,7 @@ class Ledger:
             "route_stage": None if route_stage is None else str(route_stage),
             "holdout": None if holdout is None else int(holdout),
             "checks_json": None if checks is None else json.dumps(checks, allow_nan=False),
+            "audit_rate": None if audit_rate is None else float(audit_rate),
         }
         columns = ", ".join(values)
         placeholders = ", ".join(f":{key}" for key in values)
@@ -509,6 +615,7 @@ class Ledger:
     @staticmethod
     def _decode(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
+        result.pop("rowid", None)  # Postgres keeps it as a column
         result["request_body"] = json.loads(result.pop("request_json"))
         raw_response = result.pop("response_json")
         result["response_body"] = json.loads(raw_response) if raw_response else None
@@ -676,6 +783,32 @@ class Ledger:
         ):
             return None
         return self._decode(row)
+
+    def billing(self, tenant: str, *, start: str | None = None, end: str | None = None,
+                fee_rate: float = DEFAULT_FEE_RATE) -> dict[str, Any]:
+        """The tenant's billing statement for requests created at or after ``start``
+        and before ``end`` (ISO dates or timestamps; a date is midnight UTC). See
+        ``billing_statement``."""
+        since, until = _period(start, "start"), _period(end, "end")
+        if since and until and since >= until:
+            raise ValueError("start must be before end")
+        with self._lock:
+            columns = {row["name"] for row in self._db.execute("PRAGMA table_info(requests)")}
+            if "holdout" not in columns:
+                rows = []
+            else:
+                rate = "audit_rate" if "audit_rate" in columns else "NULL AS audit_rate"
+                sql = (f"SELECT policy_sha256, {rate}, holdout, cost_usd, routing_cost_usd FROM requests "
+                       "WHERE tenant=? AND holdout IS NOT NULL")
+                values: list[Any] = [tenant]
+                if since:
+                    sql += " AND created_at >= ?"
+                    values.append(since)
+                if until:
+                    sql += " AND created_at < ?"
+                    values.append(until)
+                rows = self._db.execute(sql, values).fetchall()
+        return billing_statement(rows, tenant=tenant, start=since, end=until, fee_rate=fee_rate)
 
     def report(self, tenant: str) -> dict[str, Any]:
         """Report known ledger amounts, never extrapolate missing costs.

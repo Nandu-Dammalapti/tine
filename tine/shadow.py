@@ -484,6 +484,17 @@ class ShadowStore:
                     count INTEGER NOT NULL,
                     PRIMARY KEY (tenant, name)
                 )""")
+            # Every change of a policy's drift check result, so that a warning that goes
+            # away still leaves a trace. Rows are only added.
+            ledger._db.execute(
+                """CREATE TABLE IF NOT EXISTS drift_events (
+                    tenant TEXT NOT NULL,
+                    policy TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    details_json TEXT NOT NULL
+                )""")
+            ledger._db.execute("CREATE INDEX IF NOT EXISTS drift_event_tenant ON drift_events(tenant, policy)")
         # Per tenant: what the spending cap has counted so far (see ``admit``).
         self._budgets: dict[str, dict] = {}
 
@@ -509,6 +520,44 @@ class ShadowStore:
                  json.dumps(spent, allow_nan=False),
                  _known_sum(entry["cost_usd"] for entry in spent), frontier_cost_usd, skip_reason,
                  policy_chain_digest(policy)))
+
+    def note_drift(self, tenant: str, report: dict) -> list[dict]:
+        """Store each policy's drift check result from a shadow report when it differs
+        from the last one stored for that tenant and policy label (the provider).
+        Returns the changes stored."""
+        if report.get("drift_policies"):
+            results = report["drift_policies"]
+        elif report.get("drift_policy") is not None:
+            results = {report["drift_policy"]: report}
+        else:
+            return []
+        stored = []
+        now = datetime.now(timezone.utc).isoformat()
+        with self._ledger._lock, self._ledger._db:
+            for label, result in sorted(results.items()):
+                status = result.get("drift_check")
+                if not isinstance(status, str):
+                    continue
+                last = self._ledger._db.execute(
+                    "SELECT status FROM drift_events WHERE tenant=? AND policy=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (tenant, label)).fetchone()
+                if last is not None and last["status"] == status:
+                    continue
+                details = {key: result.get(key) for key in ("drift_requests", "drift_compared", "drift_differing",
+                                                            "drift_epsilon")}
+                self._ledger._db.execute("INSERT INTO drift_events VALUES (?,?,?,?,?)",
+                                         (tenant, label, now, status, json.dumps(details, allow_nan=False)))
+                stored.append({"policy": label, "created_at": now, "status": status, **details})
+        return stored
+
+    def drift_history(self, tenant: str) -> list[dict]:
+        """Every stored change of the tenant's drift check results, oldest first."""
+        with self._ledger._lock:
+            rows = self._ledger._db.execute(
+                "SELECT policy, created_at, status, details_json FROM drift_events WHERE tenant=? "
+                "ORDER BY created_at, rowid", (tenant,)).fetchall()
+        return [{"policy": row["policy"], "created_at": row["created_at"], "status": row["status"],
+                 **json.loads(row["details_json"])} for row in rows]
 
     def adopt(self, tenant: str, policy: dict) -> int:
         """Mark the tenant's rows that were run with this very policy file, and stored

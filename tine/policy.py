@@ -21,7 +21,7 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 # The offline toolkit (numpy, pandas, scikit-learn, matplotlib) is imported inside
@@ -347,6 +347,8 @@ def validate_policy(policy: dict) -> dict:
             raise ValueError("A policy's answer_pattern must be a valid, nonempty regular expression") from None
     if policy.get("answer_compare") is not None and policy["answer_compare"] not in ANSWER_COMPARE_MODES:
         raise ValueError(f"A policy's answer_compare must be one of {list(ANSWER_COMPARE_MODES)}")
+    if policy.get("expires") is not None and _moment(policy["expires"]) is None:
+        raise ValueError("A policy's expires must be an ISO date or timestamp, such as 2027-02-01")
     if "drift_baseline" in policy:
         # The drift check turns these counts into the share of differing answers it
         # allows for; counts that cannot be ones would give a level that means nothing.
@@ -359,6 +361,43 @@ def validate_policy(policy: dict) -> dict:
                              f"{DRIFT_BASELINE_MAX_TASKS:,}, and 0 <= differing_not_lost <= differing <= compared "
                              "<= tasks")
     return policy
+
+
+def _moment(value) -> datetime | None:
+    """An ISO date or timestamp as an aware datetime (UTC unless it says), or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def expiry(policy: dict, max_age_days: float | None = None) -> datetime | None:
+    """When a policy's certificate stops being used: its own ``expires``, or
+    ``max_age_days`` after its ``provenance.created``, whichever is sooner. None when
+    neither applies. A policy with a maximum age and no creation time it can read has
+    already expired: its age cannot be known."""
+    moments = []
+    if policy.get("expires") is not None:
+        moments.append(_moment(policy["expires"]))
+    if max_age_days is not None:
+        provenance = policy.get("provenance")
+        created = _moment(provenance.get("created")) if isinstance(provenance, dict) else None
+        moments.append(created + timedelta(days=max_age_days) if created is not None
+                       else datetime.min.replace(tzinfo=timezone.utc))
+    moments = [moment for moment in moments if moment is not None]
+    return min(moments) if moments else None
+
+
+def expired(policy: dict, max_age_days: float | None = None, now: datetime | None = None) -> str | None:
+    """Why a policy's certificate is no longer used, or None while it is."""
+    until = expiry(policy, max_age_days)
+    now = now or datetime.now(timezone.utc)
+    if until is None or now < until:
+        return None
+    return f"expired: the policy's certificate ran out at {until.isoformat()}; certify it again on recent tasks"
 
 
 def answer_mode(policy: dict) -> str:
