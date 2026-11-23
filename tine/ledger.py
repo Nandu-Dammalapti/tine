@@ -138,8 +138,10 @@ def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False
     writers. The copy is switched to a rollback journal, so it has no ``-wal`` or
     ``-shm`` file beside it and can be read from a read-only place. It is written with
     mode 600 (a ledger holds prompts and responses) under a temporary name in
-    ``output``'s directory and renamed when complete, so only that directory needs to
-    be writable. An existing ``output`` is replaced only with ``force``.
+    ``output``'s directory and published when complete, so only that directory needs
+    to be writable. An existing ``output`` is replaced only with ``force``; without
+    it, publication atomically refuses an occupied name, including a dangling
+    symlink. The source's SQLite sidecar paths are never valid destinations.
 
     The ledger file is never changed. When no process has it open, the read-only
     connection leaves an empty ``-wal`` and a ``-shm`` file beside it.
@@ -147,13 +149,19 @@ def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False
     source, output = Path(source), Path(output)
     if not source.is_file():
         raise FileNotFoundError(f"No ledger file at {source}")
+    resolved_source = source.resolve()
+    sidecars = [resolved_source.with_name(resolved_source.name + suffix)
+                for suffix in ("-wal", "-shm", "-journal")]
+    if (output.resolve() in sidecars or (output.exists()
+            and any(sidecar.exists() and output.samefile(sidecar) for sidecar in sidecars))):
+        raise ValueError(f"{output} is a SQLite sidecar of the ledger: write the copy somewhere else")
     if output.is_dir():
         raise IsADirectoryError(f"{output} is a directory: name the file to write")
-    if output.exists():
-        if output.samefile(source):
-            raise ValueError(f"{output} is the ledger itself: write the copy somewhere else")
-        if not force:
-            raise FileExistsError(f"{output} already exists: choose another name, or replace it with --force")
+    if output.exists() and output.samefile(source):
+        raise ValueError(f"{output} is the ledger itself: write the copy somewhere else")
+    occupied = f"{output} already exists: choose another name, or replace it with --force"
+    if not force and (output.exists() or output.is_symlink()):
+        raise FileExistsError(occupied)
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -167,7 +175,7 @@ def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False
             os.fchmod(descriptor, 0o600)  # whatever the umask
         finally:
             os.close(descriptor)
-        reader = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+        reader = sqlite3.connect(f"{resolved_source.as_uri()}?mode=ro", uri=True, timeout=30)
         try:
             copy = sqlite3.connect(str(temporary))
             try:
@@ -185,11 +193,16 @@ def backup_ledger(source: str | Path, output: str | Path, *, force: bool = False
                 copy.close()
         finally:
             reader.close()
-        # Checked again: the backup of a large ledger takes a while. Two backups racing
-        # for one name can still both finish; each is a complete copy.
-        if output.exists() and not force:
-            raise FileExistsError(f"{output} already exists: choose another name, or replace it with --force")
-        os.replace(temporary, output)
+        if force:
+            os.replace(temporary, output)
+        else:
+            # A second existence check followed by rename still races with another
+            # writer. Link the complete file under its final name only if vacant;
+            # the finally block removes the temporary name, leaving one private copy.
+            try:
+                os.link(temporary, output)
+            except FileExistsError:
+                raise FileExistsError(occupied) from None
     finally:
         for suffix in ("", "-journal", "-wal", "-shm"):
             temporary.with_name(temporary.name + suffix).unlink(missing_ok=True)
