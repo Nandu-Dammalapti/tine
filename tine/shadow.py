@@ -108,6 +108,9 @@ LIMIT_STATUSES = (429, 529)
 # to wait: the first pause, doubled for each pause in a row, up to the longest.
 PAUSE_FIRST_SECONDS = 30.0
 PAUSE_MAX_SECONDS = 600.0
+# Bound the exponent before evaluating it: a long refusal history must not
+# overflow and prevent the proxy from recording its next pause.
+PAUSE_MAX_DOUBLINGS = math.ceil(math.log2(PAUSE_MAX_SECONDS / PAUSE_FIRST_SECONDS))
 # A retry-after header above this is read as this, so that a malformed one cannot stop
 # shadow mode for good.
 RETRY_AFTER_MAX_SECONDS = 3600.0
@@ -350,7 +353,8 @@ class ShadowLimits:
         ongoing = pause["until"] > now
         in_a_row = pause["in_a_row"] if ongoing else pause["in_a_row"] + 1
         asked = retry_after_seconds(retry_after)
-        wait = asked if asked is not None else min(PAUSE_FIRST_SECONDS * 2 ** (in_a_row - 1), PAUSE_MAX_SECONDS)
+        wait = asked if asked is not None else min(
+            PAUSE_FIRST_SECONDS * 2 ** min(in_a_row - 1, PAUSE_MAX_DOUBLINGS), PAUSE_MAX_SECONDS)
         until = now + max(wait, 1.0)
         if ongoing and until <= pause["until"]:
             return False
