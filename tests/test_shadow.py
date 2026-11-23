@@ -884,3 +884,26 @@ def test_a_proxy_restarted_with_the_policy_frozen_again_keeps_the_drift_warning(
     assert (healthy["drift_requests"], healthy["drift_differing"], healthy["drift_other_policy_requests"]) == (45, 40, 0)
     assert (healthy["accepted_differing_from_frontier"], healthy["accepted_matching_frontier"],
             healthy["accepted_compared_with_frontier"]) == (40, 5, 45)
+
+
+
+def test_shadow_does_not_project_acceptance_for_refusal_text():
+    seen = []
+
+    def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        payload = reply("42")
+        if model != "frontier":
+            payload["choices"][0]["finish_reason"] = "stop"
+            payload["choices"][0]["message"]["refusal"] = "Cannot answer"
+        return httpx.Response(200, json=payload)
+
+    answers, report, _ = ask(config(), provider)
+    assert answers[0].json() == reply("42")
+    body = report.json()
+    assert seen == ["frontier", "small-a", "small-b"]
+    assert body["policy_would_accept"] == body["accepted_compared_with_frontier"] == 0
+    assert body["failed_shadow_calls"] == 2 and body["unknown_cost_shadow_calls"] == 0
+    assert body["shadow_spend_usd"] == pytest.approx(0.006)
+    assert body["projected_policy_cost_usd"] == pytest.approx(0.206)

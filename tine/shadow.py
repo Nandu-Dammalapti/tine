@@ -161,6 +161,9 @@ def _blocks(provider: str, payload: Any) -> tuple[list, list, Any]:
         if provider == "openai":
             choice = payload["choices"][0]
             message = choice["message"]
+            if message.get("refusal"):
+                # A refusal may accompany text or tools and a normal stop reason.
+                return [], [], "refusal"
             text = message.get("content")
             tools = [*(message.get("tool_calls") or []), *([message["function_call"]] if message.get("function_call") else [])]
             return ([text] if isinstance(text, str) and text.strip() else []), tools, choice.get("finish_reason")

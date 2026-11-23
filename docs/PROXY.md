@@ -732,6 +732,9 @@ Replies that are never served from a stage, whatever its check:
 
 - A 200 reply with no answer in it: no text and no tool call, an error body, a content-filtered reply
   or a refusal. It is a provider failure, not an answer. What it cost is kept as routing cost.
+  For OpenAI-compatible replies, a nonempty `message.refusal` also rejects the candidate, even when
+  the message contains text or tool calls and `finish_reason` is `stop`. No named check runs on that
+  candidate. This applies to live routing and shadow comparisons; known usage costs are retained.
 - A reply that holds `NaN` or `Infinity`, which JSON cannot carry.
 
 For an agreement stage, a reply that calls a tool or did not finish normally (cut off by the token
