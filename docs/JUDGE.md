@@ -35,6 +35,14 @@ Every judge sees the same instructions (`INSTRUCTIONS` in `tine/judge.py`, versi
 `PROMPT_VERSION`) and returns, per case, `accept` or `reject`, a probability that the
 patch resolves the issue, and a short reason.
 
+The shared reply parser reads whole outer JSON objects. A nested example or an
+object inside an array is not a verdict; braces and escaped quotes inside the
+reason are ordinary text. Duplicate JSON fields make the reply unusable, rather
+than letting the last field overwrite a rejection or a lower probability. Multiple
+outer verdict objects must agree on accept/reject; the last usable one is returned.
+Boolean and out-of-range probabilities are unusable. Runtime and Claude patch checks
+reject unusable replies while retaining the call's measured cost.
+
 **A model behind an OpenAI-compatible endpoint** (the deployment case: an open model
 on customer hardware behind vLLM, Ollama or LM Studio; also any provider API):
 
@@ -47,7 +55,9 @@ python scripts/judge_patches.py judge --cases RUNS/judge/cases.jsonl \
 One request per case, temperature 0. It records prompt and completion tokens from
 the endpoint's `usage`, and seconds per request, and resumes if rerun. A reply with
 no usable verdict is recorded as `unparsed` and scored as a rejection, since a chain
-would escalate. For an endpoint that needs a key, pass `--api-key-env NAME`; the key
+would escalate. The OpenAI-compatible endpoint must report `finish_reason: "stop"`
+and no tool call or refusal; otherwise even parseable approval text is `unparsed`,
+with reported token usage retained. For an endpoint that needs a key, pass `--api-key-env NAME`; the key
 is read from that environment variable and never written anywhere. Calling a paid
 model needs the task's authorization (AGENTS.md).
 

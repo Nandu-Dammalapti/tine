@@ -8,9 +8,10 @@ from tine.runtime_checks import build_checks
 from tine.shadow import shadow_stages
 
 
-def check_reply(*, stop_reason="end_turn", tool_type=None, threshold=None, cost=0.03):
+def check_reply(*, stop_reason="end_turn", tool_type=None, threshold=None, cost=0.03, verdict_text=None):
     async def scenario():
-        text = json.dumps({"verdict": "accept", "probability": 0.9, "reason": "looks correct"})
+        text = (verdict_text if verdict_text is not None else
+                json.dumps({"verdict": "accept", "probability": 0.9, "reason": "looks correct"}))
         content = [{"type": "text", "text": text}]
         if tool_type:
             content.append({"type": tool_type, "id": "tool-1", "name": "review", "input": {}})
@@ -72,3 +73,27 @@ def test_completed_judge_approval_retains_acceptance_and_known_or_unknown_cost(s
     outcome = check_reply(stop_reason=stop_reason, threshold=0.8, cost=cost)
     assert outcome["accepted"] is True
     assert outcome["checks"][0]["cost_usd"] == cost
+
+
+@pytest.mark.parametrize("text", [
+    '{"verdict":"reject","verdict":"accept","probability":0.99}',
+    '{"verdict":"accept","probability":0.01,"probability":0.99}',
+    '{"example":{"verdict":"accept","probability":0.99},"verdict":"reject","probability":0.01}',
+    '{"example":{"verdict":"accept","probability":0.99}}',
+    '{"verdict":"accept","probability":true}',
+    '{"verdict":"accept","probability":' + '9' * 400 + '}',
+])
+@pytest.mark.parametrize("threshold", [None, 0.8])
+def test_invalid_or_nested_approvals_do_not_accept_and_keep_judge_cost(text, threshold):
+    outcome = check_reply(verdict_text=text, threshold=threshold)
+    assert outcome["accepted"] is False
+    check = outcome["checks"][0]
+    assert check["cost_usd"] == 0.03
+    assert check["steps"] == [{"type": "judge", "passed": False, "cost_usd": 0.03}]
+
+
+def test_valid_approval_with_braces_in_its_reason_is_usable():
+    text = json.dumps({"verdict": "accept", "probability": 0.9, "reason": 'handles {"key": "value"}'})
+    outcome = check_reply(verdict_text=text, threshold=0.8)
+    assert outcome["accepted"] is True
+    assert outcome["checks"][0]["cost_usd"] == 0.03
