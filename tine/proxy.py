@@ -532,8 +532,10 @@ class _StreamUsage:
     ``stream_options.include_usage``. ``tokens()`` is None while no usage has arrived.
     """
 
-    # A longer line is skipped, not buffered: usage events are short.
+    # Usage events are short. Bound both a line and all data lines of an event;
+    # discard an oversized event whole, never interpret its remaining fragments.
     MAX_LINE = 1 << 20
+    MAX_EVENT = 1 << 20
 
     def __init__(self, provider: str) -> None:
         self.provider = provider
@@ -542,7 +544,8 @@ class _StreamUsage:
         self._line = bytearray()
         self._skipping = False
         self._after_cr = False
-        self._data: list[bytes] = []
+        self._data = bytearray()
+        self._event_skipping = False
 
     def feed(self, chunk: bytes) -> None:
         try:
@@ -554,10 +557,12 @@ class _StreamUsage:
                 ended = piece.endswith((b"\n", b"\r"))
                 self._after_cr = piece.endswith(b"\r")
                 if not self._skipping:
-                    self._line += piece
-                    if len(self._line) > self.MAX_LINE:
+                    if len(self._line) + len(piece) > self.MAX_LINE:
                         self._line.clear()
                         self._skipping = True
+                        self._drop_event()
+                    else:
+                        self._line += piece
                 if ended:
                     if not self._skipping:
                         self._take(bytes(self._line).rstrip(b"\r\n"))
@@ -566,6 +571,7 @@ class _StreamUsage:
         except Exception:
             # Reading usage must never interrupt the relayed stream.
             self._line.clear()
+            self._drop_event()
 
     def close(self) -> None:
         """The stream ended: read a last event that had no blank line after it."""
@@ -573,19 +579,33 @@ class _StreamUsage:
             self._take(bytes(self._line).rstrip(b"\r\n"))
         self._take(b"")
 
+    def _drop_event(self) -> None:
+        self._data.clear()
+        self._event_skipping = True
+
     def _take(self, line: bytes) -> None:
+        if self._event_skipping:
+            if not line:
+                self._event_skipping = False
+            return
         if line.startswith(b"data:"):
-            self._data.append(line[5:].removeprefix(b" "))
+            value = line[5:].removeprefix(b" ")
+            if len(self._data) + len(value) + 1 > self.MAX_EVENT:
+                self._drop_event()
+            else:
+                self._data.extend(value)
+                self._data.append(10)  # SSE joins data fields with newlines.
             return
         if line or not self._data:
             return
-        data, self._data = b"\n".join(self._data), []
+        data = bytes(self._data)
+        self._data.clear()
         # Most events carry no usage: skip decoding them.
         if b'"usage"' not in data:
             return
         try:
             event = json.loads(data)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             return
         if not isinstance(event, dict):
             return

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 from decimal import Decimal
 from pathlib import Path
 
@@ -1192,3 +1193,87 @@ def test_copying_the_ledger_loads_none_of_the_offline_toolkit(tmp_path):
                           cwd=Path(__file__).resolve().parents[1])
     assert done.returncode == 0, done.stderr[-500:]
     assert done.stdout.strip().splitlines()[-1] == "[]" and (tmp_path / "copy.sqlite3").is_file()
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r", b"\r\n"])
+@pytest.mark.parametrize("size", [1, 7, 4096])
+def test_stream_usage_discards_an_entire_oversized_event_and_recovers(monkeypatch, newline, size):
+    monkeypatch.setattr(_StreamUsage, "MAX_LINE", 96)
+    monkeypatch.setattr(_StreamUsage, "MAX_EVENT", 128)
+    # Valid JSON spread over many short data lines previously bypassed the line cap.
+    oversized = newline.join([b'data: {"usage":{"prompt_tokens":900,"completion_tokens":900}',
+                              *([b"data: " + b" " * 30] * 100), b"data: }", b"", b""])
+    reader = _StreamUsage("openai")
+    for start in range(0, len(oversized), size):
+        reader.feed(oversized[start:start + size])
+        assert len(reader._data) <= reader.MAX_EVENT
+        assert len(reader._line) <= reader.MAX_LINE
+    assert reader.tokens() is None
+    good = b'data: {"usage":{"prompt_tokens":3,"completion_tokens":4}}' + newline * 2
+    for start in range(0, len(good), size):
+        reader.feed(good[start:start + size])
+    reader.close()
+    assert reader.tokens()["input_tokens"] == 3 and reader.tokens()["output_tokens"] == 4
+
+
+@pytest.mark.parametrize("size", [1, 7, 4096])
+@pytest.mark.parametrize("long_first", [False, True])
+def test_stream_usage_never_prices_a_fragment_of_an_overlong_event(monkeypatch, size, long_first):
+    monkeypatch.setattr(_StreamUsage, "MAX_LINE", 96)
+    valid_line = b'data: {"usage":{"prompt_tokens":900,"completion_tokens":900}}\n'
+    long_line = b"data: " + b"x" * 200 + b"\n"
+    data = (long_line + valid_line if long_first else valid_line + long_line) + b"\n"
+    reader = _StreamUsage("openai")
+    for start in range(0, len(data), size):
+        reader.feed(data[start:start + size])
+    reader.close()
+    assert reader.tokens() is None
+
+
+def test_stream_usage_retains_previous_counts_when_final_event_is_too_deep():
+    reader = _StreamUsage("openai")
+    reader.feed(b'data: {"usage":{"prompt_tokens":3,"completion_tokens":4}}\n\n')
+    reader.feed(b'data: {"usage":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}")
+    previous = sys.getrecursionlimit()
+    try:
+        # Some offline script imports raise the process-wide recursion limit.
+        sys.setrecursionlimit(1000)
+        reader.close()
+    finally:
+        sys.setrecursionlimit(previous)
+    assert reader.tokens()["input_tokens"] == 3
+
+
+@pytest.mark.parametrize("provider_name", ["openai", "anthropic"])
+@pytest.mark.parametrize("recover", [False, True])
+def test_oversized_stream_event_is_relayed_without_fabricating_cost(monkeypatch, provider_name, recover):
+    monkeypatch.setattr(_StreamUsage, "MAX_LINE", 256)
+    monkeypatch.setattr(_StreamUsage, "MAX_EVENT", 256)
+    fragment = (b'data: {"usage":{"prompt_tokens":900,"completion_tokens":900}}\n'
+                if provider_name == "openai" else
+                b'data: {"type":"message_delta","usage":{"input_tokens":900,"output_tokens":900}}\n')
+    data = b"data: " + b"x" * 300 + b"\n" + fragment + b"\n"
+    if recover:
+        data += OPENAI_STREAM if provider_name == "openai" else ANTHROPIC_STREAM
+    content, record, _, _ = stream_through(provider_name, PiecewiseStream(data, 7))
+    assert content == data
+    if recover:
+        assert record["output_tokens"] == (500 if provider_name == "openai" else 400)
+        assert record["cost_usd"] is not None
+    else:
+        assert record["input_tokens"] is None and record["output_tokens"] is None
+        assert record["cost_usd"] is None
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_multiline_stream_usage_at_the_event_size_limit(monkeypatch, extra):
+    payload = b'{"usage":{"prompt_tokens":3,\n"completion_tokens":4}}'
+    monkeypatch.setattr(_StreamUsage, "MAX_EVENT", len(payload) + 1)
+    data = b"data: " + payload.replace(b"\n", b"\ndata: ") + b" " * extra + b"\n\n"
+    reader = _StreamUsage("openai")
+    reader.feed(data)
+    reader.close()
+    if extra:
+        assert reader.tokens() is None
+    else:
+        assert reader.tokens()["input_tokens"] == 3 and reader.tokens()["output_tokens"] == 4
