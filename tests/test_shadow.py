@@ -1036,6 +1036,17 @@ def test_a_proxy_restarted_with_the_policy_frozen_again_keeps_the_drift_warning(
             healthy["accepted_compared_with_frontier"]) == (40, 5, 45)
 
 
+def test_math_shadow_keeps_small_but_real_frontier_disagreements():
+    a, b = "0.1234567890123456789012345678901", "0.1234567890123456789012345678902"
+    policy = {**POLICY, "answer_compare": "math"}
+    _, report, _ = ask(config(shadow_policies={"a": {"openai": policy}}),
+                       serve({"small-a": a, "small-b": a + "0", "frontier": b}, []))
+    body = report.json()
+    assert body["policy_would_accept"] == body["accepted_compared_with_frontier"] == 1
+    assert body["accepted_matching_frontier"] == 0
+    assert body["accepted_differing_from_frontier"] == 1
+
+
 
 def test_shadow_does_not_project_acceptance_for_refusal_text():
     seen = []
