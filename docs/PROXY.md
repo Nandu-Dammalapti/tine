@@ -75,6 +75,10 @@ the row's token counts and answer cost (`cost_usd`) from that usage and `TINE_MO
   `"stream_options": {"include_usage": true}`. The proxy does not add that option to a request.
 - No usage, or a stream that broke off before the final count: the cost stays unknown, as before. What
   arrived is kept (an Anthropic stream cut off mid-reply keeps its input tokens).
+- The usage reader buffers at most 1 MiB per line and 1 MiB of joined data per event. An oversized
+  line or event causes that entire event to be ignored for accounting, and parsing resumes at the
+  next event boundary. Malformed usage events are ignored too. Previously read usage is kept;
+  missing counts remain unknown. These limits do not truncate or alter the stream sent to the caller.
 - A stream served after a fallback gets token counts and no cost, as a buffered reply does.
 - Only empty fields are filled. A cost the caller sent through the outcome endpoint first is kept.
 
@@ -625,13 +629,16 @@ runs and 65% in the server test (`results/2026-11-17-live-pilot-more`). Shadow m
   So refusals do not count toward the unknown-cost stop.
 - `TINE_SHADOW_MAX_CALLS_PER_MINUTE` caps a tenant's shadow provider calls in any 60 seconds. A run
   reserves the most calls it can make (each stage model once, plus each judge step) when it starts,
-  and gives back the ones it did not make when it ends. A sampled request whose run would pass the cap
+  and gives back the ones it did not make when it ends. Unused slots remain reserved even when a run
+  lasts longer than a minute; each sent call counts for 60 seconds from its own start, including a
+  call that later fails or times out. A sampled request whose run would pass the cap
   is skipped and counted as `skipped_rate_cap`. The proxy refuses to start when one run of a shadow
   policy can make more calls than the cap.
 - The pauses and the call count are kept in memory, in each proxy process. A restart clears them.
 - `GET /v1/shadow` also returns `shadow_paused` (provider to null, or to `{paused_until, seconds_left,
   reason}`, for each provider the tenant's shadow policies call), `shadow_max_calls_per_minute` and
-  `shadow_calls_last_minute` (null without a cap). `sampling` still says `on` during a pause.
+  `shadow_calls_last_minute` (sent calls in the last 60 seconds plus slots held for calls not yet
+  sent; null without a cap). `sampling` still says `on` during a pause.
 
 Status: built and tested with stand-in providers that answer 429 and 529, with and without
 `retry-after`, on a test clock. It met a real provider's limit once
@@ -738,6 +745,9 @@ Replies that are never served from a stage, whatever its check:
 
 - A 200 reply with no answer in it: no text and no tool call, an error body, a content-filtered reply
   or a refusal. It is a provider failure, not an answer. What it cost is kept as routing cost.
+  For OpenAI-compatible replies, a nonempty `message.refusal` also rejects the candidate, even when
+  the message contains text or tool calls and `finish_reason` is `stop`. No named check runs on that
+  candidate. This applies to live routing and shadow comparisons; known usage costs are retained.
 - A reply that holds `NaN` or `Infinity`, which JSON cannot carry.
 
 For an agreement stage, a reply that calls a tool or did not finish normally (cut off by the token

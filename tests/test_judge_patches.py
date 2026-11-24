@@ -44,6 +44,60 @@ def test_the_judge_is_told_the_tests_passed_only_when_they_did():
         judge.build_messages(case, "think", tests_passed=False)
 
 
+@pytest.mark.parametrize("reason", ['handles {} correctly', 'checks {"key": "value"}',
+                                  'a quoted "}" and a backslash \\ do not end the object'])
+def test_verdict_reason_can_contain_json_braces_and_escaped_quotes(reason):
+    verdict = {"verdict": "reject", "probability": 0.1, "reason": reason}
+    assert judge_module.parse_verdict(json.dumps(verdict)) == verdict
+
+
+def test_nested_example_does_not_replace_the_outer_rejection():
+    text = json.dumps({"example": {"verdict": "accept", "probability": 0.99},
+                       "verdict": "reject", "probability": 0.01, "reason": "example is not my verdict"})
+    assert judge_module.parse_verdict(text) == {
+        "verdict": "reject", "probability": 0.01, "reason": "example is not my verdict"}
+
+
+@pytest.mark.parametrize("text", [
+    '{"verdict":"reject","verdict":"accept","probability":0.99}',
+    '{"verdict":"accept","probability":0.01,"probability":0.99}',
+    '{"example":{"verdict":"accept","probability":0.99}}',
+    '[{"verdict":"accept","probability":0.99}]',
+    '{"broken": , "example":{"verdict":"accept","probability":0.99}}',
+    '{"example":{"verdict":"accept","probability":0.99}',
+    '{"verdict":"accept","probability":true}',
+    '{"verdict":"accept","probability":' + '9' * 400 + '}',
+])
+def test_ambiguous_nested_or_invalid_verdicts_are_rejected(text):
+    with pytest.raises(ValueError):
+        judge_module.parse_verdict(text)
+
+
+def test_duplicate_fields_cannot_be_hidden_by_a_later_approval():
+    text = ('{"verdict":"reject","verdict":"accept","probability":0.99}\n'
+            '{"verdict":"accept","probability":0.99}')
+    with pytest.raises(ValueError, match="duplicate"):
+        judge_module.parse_verdict(text)
+
+
+@pytest.mark.parametrize("text", [
+    '{"verdict":"reject","verdict":"accept","probability":0.99}',
+    '{"example":{"verdict":"accept","probability":0.99},"verdict":"reject","probability":0.01}',
+    '{"verdict":"accept","probability":' + '9' * 400 + '}',
+])
+def test_offline_patch_check_rejects_ambiguous_approvals_and_retains_cost(text):
+    from types import SimpleNamespace as NS
+    from tine.judge import patch_judge_check
+
+    response = NS(content=[NS(type="text", text=text)], stop_reason="end_turn",
+                  usage=NS(input_tokens=1000, output_tokens=2000))
+    client = NS(messages=NS(create=lambda **kwargs: response))
+    check = patch_judge_check(client, model="claude-sonnet-5-5", threshold=0.8)
+    result = check({"repository": "r", "issue": "i", "patch": "p"})
+    assert result["passed"] is False
+    assert result["cost_usd"] == pytest.approx(0.022)
+
+
 def fixtures(tmp_path):
     """Two tasks. t-1: models a and b give the same patch that passed every free check;
     c failed the existing tests; d failed the static checks. t-2 is invalid here."""
@@ -105,7 +159,7 @@ def test_judge_records_verdicts_and_tokens_and_resumes(tmp_path):
         reply = ("not json" if "GARBLED" in patch else json.dumps(
             {"verdict": "accept" if "GOOD" in patch else "reject", "probability": 0.9 if "GOOD" in patch else 0.1,
              "reason": "r"}))
-        return httpx.Response(200, json={"choices": [{"message": {"content": reply}}],
+        return httpx.Response(200, json={"choices": [{"message": {"content": reply}, "finish_reason": "stop"}],
                                          "usage": {"prompt_tokens": 120, "completion_tokens": 30}})
 
     client = httpx.Client(transport=httpx.MockTransport(endpoint))
@@ -118,6 +172,32 @@ def test_judge_records_verdicts_and_tokens_and_resumes(tmp_path):
     assert rows["c0"]["prompt_tokens"] == "120" and rows["c0"]["judge"] == "local-model"
     again = judge_module.judge(cases, output, base_url="http://judge.test/v1", model="local-model", client=client)
     assert again == {"judged": 0, "skipped": 3, "unparsed": 0} and len(seen) == 3
+
+
+@pytest.mark.parametrize("finish,extra", [
+    ("length", {}), ("content_filter", {}), ("tool_calls", {}), (None, {}),
+    ("stop", {"tool_calls": [{"id": "call", "type": "function"}]}),
+    ("stop", {"function_call": {"name": "review", "arguments": "{}"}}),
+    ("stop", {"refusal": "cannot review"}),
+])
+def test_openai_judge_rejects_unfinished_approvals_and_keeps_usage(tmp_path, finish, extra):
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text(json.dumps({"case_id": "c", "repository": "r", "issue": "i", "patch": "p"}))
+    choice = {"message": {"content": '{"verdict":"accept","probability":0.99}', **extra}}
+    if finish is not None:
+        choice["finish_reason"] = finish
+
+    def endpoint(request):
+        return httpx.Response(200, json={"choices": [choice],
+                                        "usage": {"prompt_tokens": 120, "completion_tokens": 30}})
+
+    output = tmp_path / "verdicts.csv"
+    with httpx.Client(transport=httpx.MockTransport(endpoint)) as client:
+        counts = judge_module.judge(cases, output, base_url="http://judge.test/v1", model="local-model", client=client)
+    assert counts == {"judged": 1, "skipped": 0, "unparsed": 1}
+    row = judge_module.read_csv(output)[0]
+    assert row["verdict"] == "unparsed" and row["probability"] == ""
+    assert (row["prompt_tokens"], row["completion_tokens"]) == ("120", "30")
 
 
 def test_score_reports_catch_rate_false_rejects_and_token_cost(tmp_path):

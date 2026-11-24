@@ -67,6 +67,7 @@ import re
 import sqlite3
 import time
 from collections import Counter, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import accumulate
 from typing import Any
@@ -108,6 +109,9 @@ LIMIT_STATUSES = (429, 529)
 # to wait: the first pause, doubled for each pause in a row, up to the longest.
 PAUSE_FIRST_SECONDS = 30.0
 PAUSE_MAX_SECONDS = 600.0
+# Bound the exponent before evaluating it: a long refusal history must not
+# overflow and prevent the proxy from recording its next pause.
+PAUSE_MAX_DOUBLINGS = math.ceil(math.log2(PAUSE_MAX_SECONDS / PAUSE_FIRST_SECONDS))
 # A retry-after header above this is read as this, so that a malformed one cannot stop
 # shadow mode for good.
 RETRY_AFTER_MAX_SECONDS = 3600.0
@@ -163,6 +167,9 @@ def _blocks(provider: str, payload: Any) -> tuple[list, list, Any]:
         if provider == "openai":
             choice = payload["choices"][0]
             message = choice["message"]
+            if message.get("refusal"):
+                # A refusal may accompany text or tools and a normal stop reason.
+                return [], [], "refusal"
             text = message.get("content")
             tools = [*(message.get("tool_calls") or []), *([message["function_call"]] if message.get("function_call") else [])]
             return ([text] if isinstance(text, str) and text.strip() else []), tools, choice.get("finish_reason")
@@ -315,6 +322,12 @@ def retry_after_seconds(value: Any) -> float | None:
     return min(seconds, RETRY_AFTER_MAX_SECONDS) if math.isfinite(seconds) and seconds >= 0 else None
 
 
+@dataclass
+class _ShadowReservation:
+    tenant: str
+    remaining: int
+
+
 class ShadowLimits:
     """When shadow mode holds back so that it never competes with real traffic.
 
@@ -328,8 +341,9 @@ class ShadowLimits:
       pause in a row up to 10 minutes. A shadow run that ends with no call refused
       resets the doubling. Nothing is retried.
     - With ``max_calls_per_minute``, a cap per tenant on shadow provider calls started in
-      any 60 seconds. A run reserves the most calls it can make when it starts and gives
-      back the ones it did not make when it ends.
+      any 60 seconds. A run reserves the most calls it can make when it starts.
+      Unused slots stay reserved until the run ends; each sent call counts for 60
+      seconds from its own start, even when the run takes longer than a minute.
 
     ``clock`` gives the time in seconds since the epoch; tests pass their own.
     """
@@ -339,6 +353,7 @@ class ShadowLimits:
         self._clock = clock
         self._pauses: dict[str, dict] = {}
         self._calls: dict[str, deque] = {}
+        self._held: Counter[str] = Counter()
 
     def limited(self, provider: str, status: int, retry_after: Any, where: str) -> bool:
         """Pause shadow mode on ``provider`` after it refused a call with ``status``.
@@ -349,7 +364,8 @@ class ShadowLimits:
         ongoing = pause["until"] > now
         in_a_row = pause["in_a_row"] if ongoing else pause["in_a_row"] + 1
         asked = retry_after_seconds(retry_after)
-        wait = asked if asked is not None else min(PAUSE_FIRST_SECONDS * 2 ** (in_a_row - 1), PAUSE_MAX_SECONDS)
+        wait = asked if asked is not None else min(
+            PAUSE_FIRST_SECONDS * 2 ** min(in_a_row - 1, PAUSE_MAX_DOUBLINGS), PAUSE_MAX_SECONDS)
         until = now + max(wait, 1.0)
         if ongoing and until <= pause["until"]:
             return False
@@ -373,25 +389,35 @@ class ShadowLimits:
 
     def _window(self, tenant: str) -> deque:
         window = self._calls.setdefault(tenant, deque())
-        while window and window[0][0] <= self._clock() - 60:
+        while window and window[0] <= self._clock() - 60:
             window.popleft()
         return window
 
-    def reserve(self, tenant: str, calls: int) -> list | None:
+    def reserve(self, tenant: str, calls: int) -> _ShadowReservation | None:
         """Hold room for a run of at most ``calls`` provider calls under the tenant's cap.
         None when the cap has no room; otherwise a reservation for ``release``."""
         if self.max_calls_per_minute is None:
-            return [self._clock(), 0]
+            return _ShadowReservation(tenant, 0)
         window = self._window(tenant)
-        if sum(held for _, held in window) + calls > self.max_calls_per_minute:
+        if len(window) + self._held[tenant] + calls > self.max_calls_per_minute:
             return None
-        reservation = [self._clock(), calls]
-        window.append(reservation)
-        return reservation
+        self._held[tenant] += calls
+        return _ShadowReservation(tenant, calls)
 
-    def release(self, reservation: list, made: int) -> None:
-        """The run ended having made ``made`` calls: give back the rest of its room."""
-        reservation[1] = min(reservation[1], made)
+    def started(self, reservation: _ShadowReservation) -> None:
+        """Convert one held slot to a call started now, immediately before sending it."""
+        if self.max_calls_per_minute is None:
+            return
+        if reservation.remaining <= 0:
+            raise ValueError("shadow run has no reserved provider calls left")
+        reservation.remaining -= 1
+        self._held[reservation.tenant] -= 1
+        self._window(reservation.tenant).append(self._clock())
+
+    def release(self, reservation: _ShadowReservation) -> None:
+        """Give back unused slots. Sent calls keep their own 60-second windows."""
+        self._held[reservation.tenant] -= reservation.remaining
+        reservation.remaining = 0
 
     def report(self, tenant: str, providers) -> dict:
         """The pause on each of ``providers`` and the tenant's call cap, for ``GET /v1/shadow``."""
@@ -404,7 +430,7 @@ class ShadowLimits:
                 "seconds_left": round(pause["until"] - now, 3), "reason": pause["reason"]}
         capped = self.max_calls_per_minute is not None
         return {"shadow_paused": pauses, "shadow_max_calls_per_minute": self.max_calls_per_minute,
-                "shadow_calls_last_minute": sum(held for _, held in self._window(tenant)) if capped else None}
+                "shadow_calls_last_minute": len(self._window(tenant)) + self._held[tenant] if capped else None}
 
 
 def _known_part(entry: dict) -> float:

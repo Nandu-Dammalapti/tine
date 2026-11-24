@@ -835,7 +835,10 @@ docker compose exec tine rm /data/ledger-copy.sqlite3
 
 `backup-ledger` reads the ledger at `TINE_LEDGER_PATH` through a read-only connection with SQLite's
 online backup, and writes one file with mode 600 and no `-wal` or `-shm` beside it. It prints the row
-counts of the copy. It refuses to replace an existing file without `--force`. Write the copy to
+counts of the copy. It refuses to replace an existing file without `--force`, including when
+another backup creates that file concurrently or the destination is a dangling symbolic link.
+The ledger itself and its `-wal`, `-shm` and `-journal` paths cannot be backup destinations,
+even with `--force`. Write the copy to
 `/data`: `/tmp` is a tmpfs, and `docker cp` cannot read a file from one. Check the mode of the copy on
 the host as well. [REPORT.md](REPORT.md), Getting the ledger out of a running container, has the
 details and what was run: `docker exec` and `docker cp` in the earlier image, beside a

@@ -142,7 +142,12 @@ def judge(cases_path: Path, output: Path, *, base_url: str, model: str, judge_na
                "prompt_tokens": usage.get("prompt_tokens", ""), "completion_tokens": usage.get("completion_tokens", ""),
                "tokens_estimated": False, "seconds": round(time.time() - started, 2)}
         try:
-            row.update(parse_verdict(payload["choices"][0]["message"]["content"] or ""))
+            choice = payload["choices"][0]
+            message = choice["message"]
+            if (choice.get("finish_reason") != "stop" or not isinstance(message, dict)
+                    or message.get("tool_calls") or message.get("function_call") or message.get("refusal")):
+                raise ValueError("unfinished judge reply or refusal")
+            row.update(parse_verdict(message["content"] or ""))
         except (ValueError, KeyError, IndexError, TypeError):
             # An unusable reply is recorded as such; scoring treats it as a rejection.
             row.update({"verdict": "unparsed", "probability": "", "reason": ""})
