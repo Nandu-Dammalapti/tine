@@ -532,8 +532,10 @@ class _StreamUsage:
     ``stream_options.include_usage``. ``tokens()`` is None while no usage has arrived.
     """
 
-    # A longer line is skipped, not buffered: usage events are short.
+    # Usage events are short. Bound both a line and all data lines of an event;
+    # discard an oversized event whole, never interpret its remaining fragments.
     MAX_LINE = 1 << 20
+    MAX_EVENT = 1 << 20
 
     def __init__(self, provider: str) -> None:
         self.provider = provider
@@ -542,7 +544,8 @@ class _StreamUsage:
         self._line = bytearray()
         self._skipping = False
         self._after_cr = False
-        self._data: list[bytes] = []
+        self._data = bytearray()
+        self._event_skipping = False
 
     def feed(self, chunk: bytes) -> None:
         try:
@@ -554,10 +557,12 @@ class _StreamUsage:
                 ended = piece.endswith((b"\n", b"\r"))
                 self._after_cr = piece.endswith(b"\r")
                 if not self._skipping:
-                    self._line += piece
-                    if len(self._line) > self.MAX_LINE:
+                    if len(self._line) + len(piece) > self.MAX_LINE:
                         self._line.clear()
                         self._skipping = True
+                        self._drop_event()
+                    else:
+                        self._line += piece
                 if ended:
                     if not self._skipping:
                         self._take(bytes(self._line).rstrip(b"\r\n"))
@@ -566,6 +571,7 @@ class _StreamUsage:
         except Exception:
             # Reading usage must never interrupt the relayed stream.
             self._line.clear()
+            self._drop_event()
 
     def close(self) -> None:
         """The stream ended: read a last event that had no blank line after it."""
@@ -573,19 +579,33 @@ class _StreamUsage:
             self._take(bytes(self._line).rstrip(b"\r\n"))
         self._take(b"")
 
+    def _drop_event(self) -> None:
+        self._data.clear()
+        self._event_skipping = True
+
     def _take(self, line: bytes) -> None:
+        if self._event_skipping:
+            if not line:
+                self._event_skipping = False
+            return
         if line.startswith(b"data:"):
-            self._data.append(line[5:].removeprefix(b" "))
+            value = line[5:].removeprefix(b" ")
+            if len(self._data) + len(value) + 1 > self.MAX_EVENT:
+                self._drop_event()
+            else:
+                self._data.extend(value)
+                self._data.append(10)  # SSE joins data fields with newlines.
             return
         if line or not self._data:
             return
-        data, self._data = b"\n".join(self._data), []
+        data = bytes(self._data)
+        self._data.clear()
         # Most events carry no usage: skip decoding them.
         if b'"usage"' not in data:
             return
         try:
             event = json.loads(data)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             return
         if not isinstance(event, dict):
             return
@@ -819,24 +839,24 @@ def create_app(
             pass
 
     def stage_tools(identity: str, provider: str, policy: dict, body: dict, url: str, headers: dict,
-                    *, request_id: str, mode: str, run: dict | None = None):
+                    *, request_id: str, mode: str, reservation=None):
         """How a policy's cheaper stages call a model and run a named check for one request.
         ``mode`` is ``"shadow"`` or ``"route"``; it and the request id go to webhooks.
 
         Every provider reply is looked at on the way: a 429 or 529 pauses shadow mode on
-        that provider. In a shadow run (``run``), a provider call is not sent while shadow
-        mode is paused on its provider, and the calls sent are counted in ``run["calls"]``
-        for the per-minute cap. Webhooks pass through untouched."""
+        that provider. In a shadow run (``reservation``), a provider call is not sent while
+        shadow mode is paused on its provider. Each call consumes a reserved slot and is
+        counted from its own start for the per-minute cap. Webhooks pass through untouched."""
         judge_url = _upstream_url(config.anthropic_base_url, "/v1/messages")
         providers = {judge_url: "anthropic", url: provider}
         where = "a shadow call" if mode == "shadow" else "a routed cheaper call"
 
         async def post(target: str, **kwargs):
             reached = providers.get(target)
-            if reached is not None and run is not None:
+            if reached is not None and reservation is not None:
                 if shadow_limits.paused(reached) is not None:
                     raise ShadowPaused()
-                run["calls"] += 1
+                shadow_limits.started(reservation)
             response = await side.post(target, **kwargs)
             if reached is not None:
                 note_limit(reached, response, where)
@@ -908,7 +928,7 @@ def create_app(
                 admitted = shadow_store.admit(identity, *limits)
             finally:
                 if not admitted:  # the run will not start: its calls are not held
-                    shadow_limits.release(reservation, 0)
+                    shadow_limits.release(reservation)
             if not admitted:
                 # The cap's room is held by runs in flight, or no run has finished yet
                 # to say what one costs.
@@ -920,10 +940,9 @@ def create_app(
         shadow_running += 1
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
-        run = {"calls": 0}
         try:
             call, checks = stage_tools(identity, provider, policy, body, url, headers,
-                                       request_id=request_id, mode="shadow", run=run)
+                                       request_id=request_id, mode="shadow", reservation=reservation)
             outcome = await shadow_stages(policy, call, checks)
             entries = shadow_entries(outcome)
             limited = any(refused(entry) for entry in entries)
@@ -940,7 +959,7 @@ def create_app(
         finally:
             shadow_running -= 1
             shadow_running_by_tenant[identity] -= 1
-            shadow_limits.release(reservation, run["calls"])
+            shadow_limits.release(reservation)
             shadow_store.settle(identity, entries)
 
     def count_safely(identity: str, name: str) -> None:

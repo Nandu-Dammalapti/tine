@@ -532,6 +532,12 @@ USAGE = {"prompt_tokens": 1000, "completion_tokens": 1000}
     ({"error": {"message": "model overloaded"}}, None),
     ({"choices": [{"finish_reason": "content_filter", "message": {"content": None}}], "usage": USAGE}, 0.01),
     ({"choices": [{"finish_reason": "content_filter", "message": {"content": "partial"}}], "usage": USAGE}, 0.01),
+    ({"choices": [{"finish_reason": "stop", "message": {"content": "42", "refusal": "Cannot answer"}}],
+      "usage": USAGE}, 0.01),
+    ({"choices": [{"finish_reason": "stop", "message": {"content": "42", "refusal": "Cannot answer"}}]}, None),
+    ({"choices": [{"finish_reason": "tool_calls", "message": {"content": None, "refusal": "Cannot answer",
+      "tool_calls": [{"type": "function", "function": {"name": "action", "arguments": "{}"}}]}}],
+      "usage": USAGE}, 0.01),
 ])
 def test_a_reply_with_no_answer_is_never_served_even_by_an_unchecked_stage(empty, routing_cost):
     """A 200 reply that holds no answer is a provider failure, not an answer the policy
@@ -1281,3 +1287,22 @@ def test_math_agreement_escalates_when_digits_beyond_decimal_precision_differ():
     assert seen == ["small-a", "small-b", "frontier"]
     assert response.json() == chat(b) and response.headers["x-tine-route"] == "frontier"
     assert row["routing_cost_usd"] == pytest.approx(0.006)
+
+
+@pytest.mark.parametrize("refusal", [None, "", "Cannot answer"])
+def test_agreement_respects_message_refusal_even_with_a_normal_stop_reason(refusal):
+    from tine.shadow import has_answer, plain_finish
+
+    payload = {"choices": [{"finish_reason": "stop", "message": {"content": "42", "refusal": refusal}}],
+               "usage": USAGE}
+    assert has_answer("openai", payload) is (not bool(refusal))
+    assert plain_finish("openai", payload) is (not bool(refusal))
+    seen = []
+    response, row = ask(config(route_policies={"a": {"openai": AGREE}}),
+                        world({"small-a": payload, "small-b": payload, "frontier": "frontier answer"}, seen))
+    if refusal:
+        assert seen == ["small-a", "small-b", "frontier"]
+        assert response.json() == chat("frontier answer") and row["routing_cost_usd"] == pytest.approx(0.006)
+    else:
+        assert seen == ["small-a", "small-b"]
+        assert response.headers["x-tine-route"] == "stage-0"

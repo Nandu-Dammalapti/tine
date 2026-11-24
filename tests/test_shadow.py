@@ -763,6 +763,59 @@ def test_the_pause_is_capped_honours_retry_after_and_is_only_lengthened_by_later
     assert limits.paused("openai")["in_a_row"] == 1
 
 
+@pytest.mark.parametrize("retry_after", [None, "1"])
+def test_long_refusal_sequences_keep_the_backoff_bounded_and_can_recover(retry_after):
+    now = [START]
+    limits = ShadowLimits(clock=lambda: now[0])
+    for count in range(1, 1101):
+        assert limits.limited("openai", 429, retry_after, "real traffic")
+        pause = limits.paused("openai")
+        expected = 1 if retry_after else [30, 60, 120, 240, 480, 600][min(count - 1, 5)]
+        assert pause["until"] - now[0] == expected
+        assert pause["in_a_row"] == count
+        now[0] = pause["until"]
+    # A provider can stop sending retry-after after a long sequence of short waits.
+    assert limits.limited("openai", 529, None, "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 600
+    assert "pause 1101 in a row" in limits.paused("openai")["reason"]
+    # Explicit provider waits still take precedence, and recovery resets the series.
+    assert not limits.limited("openai", 429, "900", "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 900
+    now[0] = limits.paused("openai")["until"]
+    limits.succeeded("openai")
+    assert limits.limited("openai", 429, None, "real traffic")
+    assert limits.paused("openai")["until"] - now[0] == 30
+    assert limits.paused("anthropic") is None
+
+
+def test_long_provider_refusal_history_still_pauses_shadow_through_the_proxy(caplog):
+    caplog.set_level(logging.ERROR, logger="tine.proxy")
+    seen, refusals = [], [0]
+
+    async def provider(request):
+        body = json.loads(request.content)
+        seen.append(body["model"])
+        if body["messages"][0]["content"] == "refuse":
+            refusals[0] += 1
+            headers = {"retry-after": "1"} if refusals[0] <= 1100 else {}
+            return httpx.Response(429, headers=headers, json={"error": {"type": "rate_limit_error"}})
+        return httpx.Response(200, json=reply("B"))
+
+    async def script(post, report, now):
+        # Tenant b's real calls share the provider key with a's shadow calls.
+        for _ in range(1100):
+            assert (await post("refuse", token="token-b")).status_code == 429
+            now[0] += 1
+        assert (await post("refuse", token="token-b")).status_code == 429
+        assert (await post("usable frontier reply")).status_code == 200
+        return await report()
+
+    body = with_clock(config(), provider, script)
+    assert body["skipped_rate_limited"] == 1 and body["shadowed_requests"] == 0
+    assert body["shadow_paused"]["openai"]["seconds_left"] == 600
+    assert set(seen) == {"frontier"}  # real traffic is served; shadow calls stay paused
+
+
 def test_real_traffic_refused_for_the_rate_limit_pauses_shadow_mode_on_that_provider():
     seen = []
 
@@ -825,6 +878,103 @@ def test_the_shadow_call_cap_per_minute_skips_and_counts_runs_that_could_pass_it
     for bad in (0, True, 2.5):
         with pytest.raises(ValueError, match="calls_per_minute"):
             create_app(config(shadow_max_calls_per_minute=bad), ledger=Ledger())
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_slow_shadow_calls_use_their_start_times_for_the_per_minute_cap(timeout):
+    seen, clock = [], []
+
+    async def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if model == "small-a" and seen.count(model) == 1:
+            clock[0][0] += 61  # The second model starts a minute after the first.
+        if timeout and model == "small-b" and seen.count(model) == 1:
+            raise httpx.ReadTimeout("timed out after sending the call")
+        return httpx.Response(200, json=reply("B"))
+
+    async def script(post, report, now):
+        clock.append(now)
+        await post("slow")
+        first = await report()
+        await post("no room for two more")
+        capped = await report()
+        now[0] += 60
+        await post("room again")
+        return first, capped, await report()
+
+    first, capped, after = with_clock(
+        config(shadow_max_calls_per_minute=2, shadow_max_unknown_cost_calls=10), provider, script)
+    assert first["shadow_calls_last_minute"] == 1
+    assert (capped["shadowed_requests"], capped["skipped_rate_cap"]) == (1, 1)
+    assert capped["shadow_calls_last_minute"] == 1
+    assert after["shadowed_requests"] == 2 and after["shadow_calls_last_minute"] == 2
+    assert seen == ["frontier", "small-a", "small-b", "frontier", "frontier", "small-a", "small-b"]
+
+
+def test_a_judge_call_after_a_slow_candidate_keeps_its_own_rate_limit_slot():
+    clock, seen = [], []
+    policy = {**POLICY, "stages": [{"models": ["small-a"], "check": "review"}]}
+    checks = {"review": [{"type": "judge", "model": "judge"}]}
+    prices = {**PRICES, "anthropic:judge": {"input_per_million": 1.0, "output_per_million": 1.0}}
+
+    async def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if model == "small-a":
+            clock[0][0] += 61
+        if model == "judge":
+            return httpx.Response(200, json={
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": json.dumps(
+                    {"verdict": "accept", "probability": 0.9, "reason": "correct"})}],
+                "usage": {"input_tokens": 1000, "output_tokens": 1000}})
+        return httpx.Response(200, json=reply("B"))
+
+    async def script(post, report, now):
+        clock.append(now)
+        await post("slow candidate")
+        await post("not enough room")
+        return await report()
+
+    body = with_clock(config(shadow_max_calls_per_minute=2, shadow_policies={"a": {"openai": policy}},
+                             checks=checks, prices=prices, anthropic_api_key="fake"), provider, script)
+    assert seen == ["frontier", "small-a", "judge", "frontier"]
+    assert body["shadow_calls_last_minute"] == 1 and body["skipped_rate_cap"] == 1
+    assert body["policy_would_accept"] == 1
+
+
+def test_unstarted_shadow_reservations_stay_held_until_released():
+    now = [START]
+    limits = ShadowLimits(2, clock=lambda: now[0])
+    held = limits.reserve("a", 2)
+    now[0] += 61
+    assert limits.report("a", [])["shadow_calls_last_minute"] == 2
+    assert limits.reserve("a", 1) is None
+    other = limits.reserve("b", 2)
+    assert other is not None
+    limits.release(held)
+    assert limits.report("a", [])["shadow_calls_last_minute"] == 0
+    assert limits.reserve("a", 2) is not None
+    assert limits.reserve("b", 1) is None  # releasing a never frees b's slots
+
+
+def test_shadow_release_keeps_recent_calls_and_frees_only_unused_slots():
+    now = [START]
+    limits = ShadowLimits(3, clock=lambda: now[0])
+    held = limits.reserve("a", 3)
+    limits.started(held)
+    now[0] += 61
+    assert limits.report("a", [])["shadow_calls_last_minute"] == 2
+    limits.started(held)
+    limits.release(held)
+    assert limits.report("a", [])["shadow_calls_last_minute"] == 1
+    next_run = limits.reserve("a", 2)
+    assert next_run is not None
+    assert limits.reserve("a", 1) is None
+    limits.release(next_run)
+    now[0] += 60
+    assert limits.report("a", [])["shadow_calls_last_minute"] == 0
+    assert limits.reserve("a", 3) is not None
 
 
 def test_refused_calls_cost_nothing_and_a_webhook_429_is_not_a_provider_refusal():
@@ -895,3 +1045,26 @@ def test_math_shadow_keeps_small_but_real_frontier_disagreements():
     assert body["policy_would_accept"] == body["accepted_compared_with_frontier"] == 1
     assert body["accepted_matching_frontier"] == 0
     assert body["accepted_differing_from_frontier"] == 1
+
+
+
+def test_shadow_does_not_project_acceptance_for_refusal_text():
+    seen = []
+
+    def provider(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        payload = reply("42")
+        if model != "frontier":
+            payload["choices"][0]["finish_reason"] = "stop"
+            payload["choices"][0]["message"]["refusal"] = "Cannot answer"
+        return httpx.Response(200, json=payload)
+
+    answers, report, _ = ask(config(), provider)
+    assert answers[0].json() == reply("42")
+    body = report.json()
+    assert seen == ["frontier", "small-a", "small-b"]
+    assert body["policy_would_accept"] == body["accepted_compared_with_frontier"] == 0
+    assert body["failed_shadow_calls"] == 2 and body["unknown_cost_shadow_calls"] == 0
+    assert body["shadow_spend_usd"] == pytest.approx(0.006)
+    assert body["projected_policy_cost_usd"] == pytest.approx(0.206)
