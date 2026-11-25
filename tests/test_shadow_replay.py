@@ -77,6 +77,22 @@ def test_zero_priced_replay_has_no_defined_savings_fraction(evidence):
     assert result["graded"]["policy_accuracy"] == 1.0
 
 
+@pytest.mark.parametrize("mode", ["shadow", "route"])
+@pytest.mark.parametrize("recorded_tenant", ["acme", "deployment", "unrelated"])
+def test_replay_honors_the_frozen_source_and_deployment_tenants(evidence, mode, recorded_tenant):
+    frame, answers = evidence
+    frame["tenant"] = recorded_tenant
+    policy = {**POLICY, "tenant": "deployment", "provenance": {"outcomes_tenant": "acme"}}
+    run = replay_module.replay(frame, answers, policy, PRICES, ["t"], mode=mode)
+    if recorded_tenant == "unrelated":
+        with pytest.raises(ValueError, match="policy tenant"):
+            asyncio.run(run)
+    else:
+        result = asyncio.run(run)
+        assert result["requests"] == 1
+        assert result["graded"] == {"policy_accuracy": 1.0, "frontier_accuracy": 1.0, "degradation_rate": 0.0}
+
+
 @pytest.mark.parametrize("contents, message", [
     ("task_id,model,answer\nt,big,A\nt,big,B\n", "Duplicate recorded answer"),
     ("task_id,model,answer\nt,big,A,extra\n", "fields; expected"),

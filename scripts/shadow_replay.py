@@ -19,6 +19,9 @@ reads each request's served model, answer cost and routing cost back from the le
 Replay requires one tenant's known grades, recorded answers and token counts for
 every requested task and policy model. Missing evidence is an error, not a failed
 answer or an assumed frontier result.
+When a policy was frozen for a different deployment tenant, its recorded
+``provenance.outcomes_tenant`` also identifies valid source outcomes; the replay
+still runs under the policy's deployment tenant.
 """
 
 from __future__ import annotations
@@ -76,9 +79,12 @@ async def replay(outcomes, answers: dict, policy: dict, prices: dict, task_ids: 
         raise ValueError("Replay mode must be shadow or route")
     if outcomes.tenant.nunique() != 1:
         raise ValueError("Replay outcomes must belong to one tenant")
-    tenant, frontier = outcomes.tenant.iloc[0], policy["frontier"]
-    if policy.get("tenant") is not None and policy["tenant"] != tenant:
-        raise ValueError("Replay outcomes must match the policy tenant")
+    recorded_tenant = outcomes.tenant.iloc[0]
+    tenant, frontier = policy.get("tenant") or recorded_tenant, policy["frontier"]
+    provenance = policy.get("provenance")
+    source_tenant = provenance.get("outcomes_tenant") if isinstance(provenance, dict) else None
+    if recorded_tenant != tenant and recorded_tenant != source_tenant:
+        raise ValueError("Replay outcomes must match the policy tenant or its recorded source tenant")
     task_ids = list(task_ids)
     if not task_ids or len(set(task_ids)) != len(task_ids):
         raise ValueError("Replay task IDs must be a nonempty unique selection")
