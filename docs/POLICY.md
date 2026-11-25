@@ -337,7 +337,9 @@ The rewrite:
   is `1234`. Commas count only between groups of three digits.
 
 Numbers are compared exactly. There is no tolerance: two answers agree only when they
-are the same value.
+are the same value. All digits of a plain decimal are retained, including beyond the
+default 28-digit Decimal precision; the application's Decimal precision, rounding,
+and exponent limits do not change this comparison.
 
 It does not catch:
 

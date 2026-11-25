@@ -438,7 +438,11 @@ def canonical_answer(answer, mode: str = "exact") -> str | None:
         except InvalidOperation:  # the pattern admits only plain numbers
             value = None
         if value is not None:
-            text = "0" if value == 0 else format(value.normalize(), "f")
+            # normalize() rounds to the active Decimal context (28 digits by
+            # default). Formatting without arithmetic keeps every input digit.
+            text = "0" if value == 0 else format(value, "f")
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
     return text if text and text not in NO_ANSWER_WORDS else None
 
 
