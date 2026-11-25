@@ -1269,3 +1269,18 @@ def test_the_policy_section_describes_the_drift_check_only_where_it_applies():
     # A baseline count too large to be one is described as no baseline, not a traceback.
     huge = {**POLICY, "drift_baseline": {**BASELINE, "tasks": 10**30}}
     assert "records no drift baseline" in render(None, None, tenant="acme", generated_at="now", policy=huge)
+
+
+def test_cancelled_shadow_run_is_reported_without_projecting_its_savings():
+    from tine.shadow import CANCELLED_REASON
+
+    store = add_shadow_rows(Ledger())
+    store.record(request_id="cancelled", tenant="acme", provider="openai", policy=POLICY,
+                 outcome={"accepted": False, "stage": None, "served_by": None, "answer": None,
+                          "calls": [{"model": "small-a", "cost_usd": 0.1, "error": None}]},
+                 frontier_answer=None, frontier_cost_usd=1.0, skip_reason=CANCELLED_REASON)
+    report = store.report("acme")
+    assert report["shadowed_requests"] == 4 and report["sampled_requests"] == 5
+    assert "1 because the shadow run was cancelled" in headline_sentences(None, report)[1]
+    page = text_of(render(None, report, tenant="acme", generated_at="now"))
+    assert "Shadow runs left out because they were cancelled 1" in page

@@ -10,6 +10,7 @@ guarantee.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -35,7 +36,7 @@ from .ledger import MAX_TOKEN_COUNT, HoldoutCostError, Ledger, MeasuredBaselineE
 from .policy import FREEZE_EDITED, answer_mode, freeze_state, run_stages_async
 from .runtime_checks import build_checks, token_variables, validate_checks
 from .shadow import (
-    LIMIT_STATUSES, RATE_LIMITED_REASON, TOOLS_SKIP_REASON, NoAnswer, ShadowLimits, ShadowPaused, ShadowStore,
+    CANCELLED_REASON, LIMIT_STATUSES, RATE_LIMITED_REASON, TOOLS_SKIP_REASON, NoAnswer, ShadowLimits, ShadowPaused, ShadowStore,
     extract_answer, has_answer, most_calls, plain_finish, refused, sampled, shadow_entries, shadow_stages,
     skips_for_tools, validate_shadow_policy,
 )
@@ -940,10 +941,11 @@ def create_app(
         shadow_running += 1
         shadow_running_by_tenant[identity] = mine + 1
         entries: list[dict] = []
+        audit = {"calls": [], "checks": []}
         try:
             call, checks = stage_tools(identity, provider, policy, body, url, headers,
                                        request_id=request_id, mode="shadow", reservation=reservation)
-            outcome = await shadow_stages(policy, call, checks)
+            outcome = await shadow_stages(policy, call, checks, audit=audit)
             entries = shadow_entries(outcome)
             limited = any(refused(entry) for entry in entries)
             shadow_store.record(
@@ -953,7 +955,20 @@ def create_app(
             if not limited:
                 for name in reached:
                     shadow_limits.succeeded(name)
+        except asyncio.CancelledError:
+            # Cancellation must reach the server, but it must not erase work already
+            # billed or in flight. Persist an incomplete run so the stop survives restart.
+            entries = shadow_entries(audit)
+            try:
+                shadow_store.record(
+                    request_id=request_id, tenant=identity, provider=provider, policy=policy,
+                    outcome={**audit, "accepted": False, "stage": None, "served_by": None, "answer": None},
+                    frontier_answer=None, frontier_cost_usd=frontier_cost, skip_reason=CANCELLED_REASON)
+            except Exception:
+                count_safely(identity, "failed")
+            raise
         except Exception:
+            entries = shadow_entries(audit)
             count_safely(identity, "failed")
             return
         finally:

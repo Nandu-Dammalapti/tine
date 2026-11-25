@@ -17,6 +17,7 @@ escalated. Nothing here calls a provider itself; the caller supplies ``call``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -603,7 +604,7 @@ def _step(step: dict) -> dict:
 
 
 async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | None = None,
-                           deadline_seconds: float | None = None) -> dict:
+                           deadline_seconds: float | None = None, audit: dict | None = None) -> dict:
     """The cheaper stages of ``policy`` for one request, for an asynchronous caller.
 
     Like ``run_policy`` without its last step: the frontier is not called, because
@@ -622,12 +623,14 @@ async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | Non
     and not by every stage's own timeout in turn. A call or check that was cut off is
     listed with an unknown cost: the provider may still charge for it.
 
+    If supplied, ``audit`` receives the calls and checks lists, including completed
+    and interrupted work when the caller cancels. Cancellation still propagates.
+
     A named check may carry a ``skip_reason``: why, from the request alone, it cannot
     pass whatever a model answers (``tine.runtime_checks``). Its stage is then skipped
     before any of its models is called, and the check is listed as not passed, at no
     cost, with that reason.
     """
-    import asyncio
     import inspect
 
     validate_policy(policy)
@@ -637,7 +640,10 @@ async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | Non
     if missing:
         raise ValueError(f"No check supplied for: {missing}")
     calls, seen, check_runs = [], {}, []
-    calling, checking = [], []  # what is in flight, so a deadline can account for it
+    if audit is not None:
+        audit.update(calls=calls, checks=check_runs)
+    calling, checking = [], []  # what is in flight, so interruption can account for it
+    cancelled_checks = []
 
     async def attempt(model: str):
         if model in seen:
@@ -661,6 +667,14 @@ async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | Non
             verdict = checks[name](result)
             if inspect.isawaitable(verdict):
                 verdict = await verdict
+        except asyncio.CancelledError as error:
+            verdict = getattr(error, "check_verdict", None)
+            if isinstance(verdict, dict):
+                checking.remove((name, model))
+                entry = {**_check_run(name, model, verdict), "checked_model": model}
+                check_runs.append(entry)
+                cancelled_checks.append(entry)
+            raise
         except Exception as error:
             checking.remove((name, model))
             check_runs.append({"check": name, "model": model, "passed": False, "cost_usd": None,
@@ -693,13 +707,23 @@ async def run_stages_async(policy: dict, call, *, agree=None, checks: dict | Non
                         "check": stage["check"], "calls": calls, "checks": check_runs}
         return None
 
+    def interrupted(error: str):
+        calls.extend({"model": model, "cost_usd": None, "error": error} for model in calling)
+        check_runs.extend({"check": name, "model": model, "passed": False, "cost_usd": None,
+                           "error": error, "checked_model": model} for name, model in checking)
+        for entry in cancelled_checks:
+            entry["error"] = error
+            if entry.get("steps"):
+                entry["steps"][-1]["error"] = error
+
     try:
         accepted = await asyncio.wait_for(stages(), deadline_seconds)
     except TimeoutError:
         accepted = None
-        calls.extend({"model": model, "cost_usd": None, "error": "DeadlineExceeded"} for model in calling)
-        check_runs.extend({"check": name, "model": model, "passed": False, "cost_usd": None,
-                           "error": "DeadlineExceeded", "checked_model": model} for name, model in checking)
+        interrupted("DeadlineExceeded")
+    except asyncio.CancelledError:
+        interrupted("CancelledError")
+        raise
     return accepted or {"accepted": False, "stage": None, "served_by": None, "result": None, "check": None,
                         "calls": calls, "checks": check_runs}
 
