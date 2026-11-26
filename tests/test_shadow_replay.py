@@ -1,10 +1,14 @@
 import asyncio
 import csv
 import importlib.util
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+from tine.data import synthetic_fixture, write_outcomes
+from tine.policy import freeze_policy
 
 spec = importlib.util.spec_from_file_location(
     "tine_shadow_replay", Path(__file__).parents[1] / "scripts" / "shadow_replay.py")
@@ -24,6 +28,70 @@ def evidence():
              "model": model, "success": True, "cost_usd": 0.0,
              "input_tokens": 100, "output_tokens": 10} for model in PRICES]
     return pd.DataFrame(rows), {("t", model): "A" for model in PRICES}
+
+
+@pytest.fixture
+def frozen_group():
+    frame = synthetic_fixture(30)
+    checks = frame[["tenant", "task_id", "model"]].assign(passed=True)
+    policy = freeze_policy(frame, "frontier", checks, epsilon=0.04, tenant="deployment")
+    return frame, policy
+
+
+def test_replay_reconstructs_only_the_frozen_task_groups_test_part(frozen_group):
+    frame, policy = frozen_group
+    selected = replay_module.test_part(frame, policy)
+    assert len(selected) == policy["estimate"]["test_tasks"]
+    assert selected == replay_module.test_part(frame.sample(frac=1, random_state=7), policy)
+    # The freeze operation deduplicates copied prompts before assigning splits.
+    copied = frame.loc[frame.task_id == "synthetic-0"].assign(task_id="zz-copy")
+    assert selected == replay_module.test_part(pd.concat([frame, copied], ignore_index=True), policy)
+
+
+@pytest.mark.parametrize("change, message", [
+    ("missing", "task set"), ("replaced", "task set"), ("pending", "task set"),
+    ("mixed_tenants", "one tenant"), ("wrong_tenant", "source tenant"),
+    ("wrong_type", "task type"), ("no_hash", "provenance"),
+])
+def test_replay_rejects_group_files_that_cannot_recover_the_original_holdout(frozen_group, change, message):
+    frame, policy = frozen_group
+    if change == "missing":
+        frame = frame.loc[frame.task_id != "synthetic-0"]
+    elif change == "replaced":
+        frame.loc[frame.task_id == "synthetic-0", "task_id"] = "replacement"
+    elif change == "pending":
+        frame.loc[frame.task_id == "synthetic-0", "success"] = None
+    elif change == "mixed_tenants":
+        frame = pd.concat([frame, frame.assign(tenant="other")], ignore_index=True)
+    elif change == "wrong_tenant":
+        frame = frame.assign(tenant="other")
+    elif change == "wrong_type":
+        frame = frame.assign(task_type="other")
+    elif change == "no_hash":
+        del policy["provenance"]["task_ids_sha256"]
+    with pytest.raises(ValueError, match=message):
+        replay_module.test_part(frame, policy)
+
+
+def test_replay_cli_rejects_a_changed_holdout_before_replacing_its_report(frozen_group, tmp_path, monkeypatch):
+    frame, policy = frozen_group
+    paths = {name: tmp_path / name for name in ("outcomes.jsonl", "group.jsonl", "policy.json", "prices.json",
+                                               "answers.csv", "report.json")}
+    write_outcomes(frame, paths["outcomes.jsonl"])
+    write_outcomes(frame.loc[frame.task_id != "synthetic-0"], paths["group.jsonl"])
+    paths["policy.json"].write_text(json.dumps(policy))
+    paths["prices.json"].write_text("{}")
+    paths["answers.csv"].write_text("task_id,model,answer\n")
+    paths["report.json"].write_text("previous report\n")
+
+    def unexpected_replay(*args, **kwargs):
+        raise AssertionError("Do not replay a misidentified holdout")
+    monkeypatch.setattr(replay_module, "replay", unexpected_replay)
+    with pytest.raises(ValueError, match="frozen task set"):
+        replay_module.main(["--outcomes", str(paths["outcomes.jsonl"]), "--group-outcomes", str(paths["group.jsonl"]),
+                            "--policy", str(paths["policy.json"]), "--prices", str(paths["prices.json"]),
+                            "--answers", str(paths["answers.csv"]), "--output", str(paths["report.json"])])
+    assert paths["report.json"].read_text() == "previous report\n"
 
 
 @pytest.mark.parametrize("mode", ["shadow", "route"])

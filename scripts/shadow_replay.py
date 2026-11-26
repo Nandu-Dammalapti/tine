@@ -22,6 +22,9 @@ answer or an assumed frontier result.
 When a policy was frozen for a different deployment tenant, its recorded
 ``provenance.outcomes_tenant`` also identifies valid source outcomes; the replay
 still runs under the policy's deployment tenant.
+``--group-outcomes`` must recover the frozen policy's complete task set and source
+group before its held-out split can be reconstructed. The recorded task-ID hash
+checks membership, not the content of answers, grades or prompts.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -46,10 +50,27 @@ from tine.proxy import ProxyConfig, create_app  # noqa: E402
 from tine.shadow import WHOLE_REPLY_PATTERN  # noqa: E402
 
 
-def test_part(group_outcomes, frontier: str, seed: int, fractions) -> set[str]:
-    """Task ids of the test part, split exactly as ``tine.policy.freeze_policy`` does."""
-    _, tasks, _ = complete_tasks(group_outcomes, frontier)
-    part = np.random.default_rng(seed).choice(3, size=len(tasks), p=list(fractions))
+def test_part(group_outcomes, policy: dict) -> set[str]:
+    """Recover the frozen test split only from its recorded complete task group."""
+    provenance = policy.get("provenance")
+    required = {"seed", "fractions", "complete_tasks", "task_ids_sha256"}
+    if not isinstance(provenance, dict) or not required.issubset(provenance):
+        raise ValueError("Frozen split provenance is required to recover the held-out test part")
+    _, tasks, _ = complete_tasks(group_outcomes, policy["frontier"])
+    if tasks.tenant.nunique() != 1 or tasks.task_type.nunique() != 1:
+        raise ValueError("The frozen group must contain one tenant and one task type")
+    source_tenant = provenance.get("outcomes_tenant", policy.get("tenant"))
+    if tasks.tenant.iloc[0] != source_tenant:
+        raise ValueError("The group outcomes must match the policy's recorded source tenant")
+    if tasks.task_type.iloc[0] != policy.get("task_type"):
+        raise ValueError("The group outcomes must match the policy's recorded task type")
+    identity = hashlib.sha256()
+    for task_id in sorted(tasks.task_id):
+        identity.update(str(task_id).encode("utf-8") + b"\n")
+    if (len(tasks) != provenance["complete_tasks"]
+            or identity.hexdigest() != provenance["task_ids_sha256"]):
+        raise ValueError("Group outcomes do not recover the frozen task set; use the original group outcomes")
+    part = np.random.default_rng(provenance["seed"]).choice(3, size=len(tasks), p=list(provenance["fractions"]))
     return set(tasks.task_id[part == 2])
 
 
@@ -198,9 +219,7 @@ def main(argv=None) -> None:
     answers = read_answers(args.answers)
     task_ids = sorted(outcomes.task_id.unique())
     if args.group_outcomes:
-        provenance = policy["provenance"]
-        keep = test_part(read_outcomes(args.group_outcomes), policy["frontier"], provenance["seed"],
-                         provenance["fractions"])
+        keep = test_part(read_outcomes(args.group_outcomes), policy)
         task_ids = [task_id for task_id in task_ids if task_id in keep]
     result = asyncio.run(replay(outcomes, answers, policy, json.loads(args.prices.read_text()),
                                 task_ids[:args.limit], mode=args.mode))
