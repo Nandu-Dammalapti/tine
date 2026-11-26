@@ -207,6 +207,14 @@ def test_certify_tasks_and_plan():
     assert plan(0, 0.5, 0.04, true_rate=0.01)["pass_probability"] == 0.0
 
 
+@pytest.mark.parametrize("total,fraction", [(0, 0.3), (3, 0.0), (3, 0.3), (3, 1.0)])
+def test_random_split_includes_empty_certify_parts_when_the_bound_is_allowed(total, fraction):
+    expected = sum(binom.pmf(size, total, fraction) * pass_probability(size, 1.0, 0.05, 0.2)
+                   for size in range(total + 1))
+    assert expected == pytest.approx(1.0)
+    assert split_pass_probability(total, fraction, 1.0, 0.05, 0.2, split="random") == pytest.approx(expected)
+
+
 def test_random_split_is_the_average_over_certify_sizes():
     total, fraction, rate = 120, 0.5, 0.01
     expected = sum(binom.pmf(n, total, fraction) * pass_probability(n, 0.04, 0.05, rate)
