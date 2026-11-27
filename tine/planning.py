@@ -275,6 +275,10 @@ def split_pass_probability(total_tasks: int, certify_fraction: float, epsilon: f
     epsilon = _probability(epsilon, "epsilon")
     delta = _probability(delta, "delta", open_interval=True)
     true_rate = _probability(true_rate, "true_rate")
+    if epsilon == 1:
+        # Every upper bound passes, including 1.0 for an empty certify part.
+        # failure_steps starts at nonempty sizes, so it omits that probability mass.
+        return 1.0
     if split == "fixed":
         return pass_probability(certify_tasks(total_tasks, certify_fraction), epsilon, delta,
                                 true_rate)
