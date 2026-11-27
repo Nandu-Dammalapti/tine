@@ -184,6 +184,40 @@ def test_recorded_answer_csv_preserves_literal_text_and_empty_answers(tmp_path):
     assert replay_module.read_answers(path) == {("001", "NA"): "", ("null", "big"): 'Explain "λ",\nthen answer'}
 
 
+@pytest.mark.parametrize("tenants", [("other",), ("acme", "other"), ("",), (" ",)])
+def test_recorded_answers_reject_mismatched_or_missing_explicit_tenants(tmp_path, tenants):
+    path = tmp_path / "answers.csv"
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("tenant", "task_id", "model", "answer"))
+        writer.writerows((tenant, f"t{index}", "big", "A") for index, tenant in enumerate(tenants))
+    with pytest.raises(ValueError, match="tenant"):
+        replay_module.read_answers(path, tenant="acme")
+
+
+def test_recorded_answers_keep_matching_literal_tenants(tmp_path):
+    path = tmp_path / "answers.csv"
+    path.write_text("tenant,task_id,model,answer\nNA,001,big,A\n")
+    assert replay_module.read_answers(path, tenant="NA") == {("001", "big"): "A"}
+
+
+def test_replay_cli_matches_answers_to_source_outcomes_before_starting(evidence, tmp_path, monkeypatch):
+    frame, _ = evidence
+    outcomes, answers, policy, prices = [tmp_path / name for name in (
+        "outcomes.jsonl", "answers.csv", "policy.json", "prices.json")]
+    write_outcomes(frame, outcomes)
+    answers.write_text("tenant,task_id,model,answer\ndeployment,t,big,A\n")
+    policy.write_text(json.dumps({**POLICY, "tenant": "deployment", "provenance": {"outcomes_tenant": "acme"}}))
+    prices.write_text("{}")
+
+    def unexpected_replay(*args, **kwargs):
+        raise AssertionError("Answers must be checked against their outcome tenant first")
+    monkeypatch.setattr(replay_module, "replay", unexpected_replay)
+    with pytest.raises(ValueError, match="tenant"):
+        replay_module.main(["--outcomes", str(outcomes), "--answers", str(answers),
+                            "--policy", str(policy), "--prices", str(prices)])
+
+
 def test_replay_reports_savings_and_grades_from_recorded_answers():
     truth = "ABCD"
     given = {"big": "ABCA", "a": "ABDD", "b": "ABCD"}  # the pair agrees on tasks 1, 2 and 4

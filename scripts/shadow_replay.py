@@ -25,6 +25,8 @@ still runs under the policy's deployment tenant.
 ``--group-outcomes`` must recover the frozen policy's complete task set and source
 group before its held-out split can be reconstructed. The recorded task-ID hash
 checks membership, not the content of answers, grades or prompts.
+If an answer CSV names a tenant, every row must match the outcome table's tenant;
+files without that optional column are treated as belonging to the selected outcomes.
 """
 
 from __future__ import annotations
@@ -74,15 +76,20 @@ def test_part(group_outcomes, policy: dict) -> set[str]:
     return set(tasks.task_id[part == 2])
 
 
-def read_answers(path: Path) -> dict:
-    """Read one recorded answer per task/model without overwriting duplicate rows."""
+def read_answers(path: Path, *, tenant: str | None = None) -> dict:
+    """Read one tenant's answers without overwriting duplicate task/model rows."""
     with path.open(newline="", encoding="utf-8-sig") as stream:
         _validate_csv_structure(stream)
         reader = csv.DictReader(stream)
         if not {"task_id", "model", "answer"}.issubset(reader.fieldnames or []):
             raise ValueError("Replay answers require task_id, model, and answer columns")
         answers = {}
+        source_tenant = tenant
         for row in reader:
+            if "tenant" in row:
+                if not row["tenant"].strip() or (source_tenant is not None and row["tenant"] != source_tenant):
+                    raise ValueError("Replay answer CSV must contain only the outcomes' tenant")
+                source_tenant = row["tenant"]
             key = (row["task_id"], row["model"])
             if not all(value.strip() for value in key):
                 raise ValueError("Replay answer identifiers must be nonempty")
@@ -216,7 +223,9 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     policy = json.loads(args.policy.read_text(encoding="utf-8"))
     outcomes = read_outcomes(args.outcomes)
-    answers = read_answers(args.answers)
+    if outcomes.tenant.nunique() != 1:
+        raise ValueError("Replay outcomes must belong to one tenant")
+    answers = read_answers(args.answers, tenant=outcomes.tenant.iloc[0])
     task_ids = sorted(outcomes.task_id.unique())
     if args.group_outcomes:
         keep = test_part(read_outcomes(args.group_outcomes), policy)
